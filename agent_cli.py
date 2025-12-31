@@ -214,8 +214,77 @@ def cmd_status(db_path: Path, plan_id: Optional[str], *, verbose: bool = False) 
             missing = (r.get("missing_requirements") or "").strip()
             extra = f" missing: {missing}" if missing else ""
             req_path = config.REQUIRED_DOCS_DIR / f"{r['task_id']}.md"
-            hint = f" required_docs: {req_path}" if req_path.exists() else ""
-            print(f"- {r['title']} ({r['task_id']}): {br}{extra}{hint}")
+            print(f"- {r['title']} ({r['task_id']}): {br}{extra}")
+
+            # Always show where the user should fill inputs, even if the file isn't created yet.
+            print(f"  - 填写/查看缺输入清单：{req_path}")
+
+            # If required_docs exists, show its concrete suggested paths (most intuitive for users).
+            if req_path.exists():
+                try:
+                    lines = req_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    current_name: str | None = None
+                    current_desc: str = ""
+                    current_types: str = ""
+                    current_suggested: str = ""
+                    parsed: list[dict[str, str]] = []
+
+                    def flush() -> None:
+                        nonlocal current_name, current_desc, current_types, current_suggested
+                        if current_name:
+                            parsed.append(
+                                {
+                                    "name": current_name.strip(),
+                                    "description": current_desc.strip(),
+                                    "accepted_types": current_types.strip(),
+                                    "suggested_path": current_suggested.strip(),
+                                }
+                            )
+                        current_name = None
+                        current_desc = ""
+                        current_types = ""
+                        current_suggested = ""
+
+                    for ln in lines:
+                        s = ln.rstrip()
+                        if s.startswith("- ") and not s.startswith("  - "):
+                            flush()
+                            body = s[2:].strip()
+                            if ":" in body:
+                                n, d = body.split(":", 1)
+                                current_name = n.strip()
+                                current_desc = d.strip()
+                            else:
+                                current_name = body.strip()
+                            continue
+                        if s.strip().startswith("- accepted_types:"):
+                            current_types = s.split(":", 1)[1].strip()
+                            continue
+                        if s.strip().startswith("- suggested_path:"):
+                            current_suggested = s.split(":", 1)[1].strip()
+                            continue
+                    flush()
+
+                    if parsed:
+                        print("  - 需要补充：")
+                        for item in parsed[:12]:
+                            sp = item.get("suggested_path") or ""
+                            at = item.get("accepted_types") or ""
+                            nm = item.get("name") or "doc"
+                            line = f"    - {nm}"
+                            if sp:
+                                line += f" -> 放到 {sp}"
+                            if at:
+                                line += f" (types={at})"
+                            print(line)
+                except Exception:
+                    pass
+            else:
+                # If the file doesn't exist yet, fall back to DB counts already shown.
+                if br == "WAITING_INPUT" and missing:
+                    print("  - 提示：先创建上述 required_docs 文件里写的 suggested_path 对应文件后，再运行 `run`。")
+                elif br == "WAITING_EXTERNAL":
+                    print("  - 提示：需要外部决策/资料，查看 `errors --task-id ...` 或 UI 的 LLM Explorer。")
         print("")
 
     if ready:
