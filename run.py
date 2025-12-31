@@ -239,7 +239,7 @@ def xiaobo_round(*, conn, plan_id: str, prompts, llm: LLMClient, llm_calls: int,
             artifact_text_snippets=extracted_snippets,
         )
         res = llm.call_json(prompt)
-        llm_calls += 1
+        llm_calls += 1 + int(getattr(res, "extra_calls", 0))
 
         _append_jsonl(
             config.LLM_RUNS_LOG_PATH,
@@ -366,7 +366,7 @@ def xiaojing_round(
             artifact_text=artifact_text,
         )
         res = llm.call_json(prompt)
-        llm_calls += 1
+        llm_calls += 1 + int(getattr(res, "extra_calls", 0))
 
         _append_jsonl(
             config.LLM_RUNS_LOG_PATH,
@@ -567,7 +567,7 @@ def xiaojing_check_round(
             reviewer="xiaojing",
         )
         res = llm.call_json(prompt)
-        llm_calls += 1
+        llm_calls += 1 + int(getattr(res, "extra_calls", 0))
 
         _append_jsonl(
             config.LLM_RUNS_LOG_PATH,
@@ -711,7 +711,7 @@ def xiaoxie_check_round(
             reviewer="xiaoxie",
         )
         res = llm.call_json(prompt)
-        llm_calls += 1
+        llm_calls += 1 + int(getattr(res, "extra_calls", 0))
 
         _append_jsonl(
             config.LLM_RUNS_LOG_PATH,

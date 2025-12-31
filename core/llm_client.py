@@ -23,6 +23,9 @@ class LLMCallResult:
     error_code: Optional[str]
     error: Optional[str]
     provider: str
+    extra_calls: int = 0
+    repair_used: bool = False
+    repair_original_response: Optional[str] = None
 
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -51,6 +54,35 @@ def _extract_json_object(text: str) -> str:
     if not match:
         raise ValueError("response does not contain a JSON object")
     return match.group(0)
+
+
+_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
+
+
+def _remove_trailing_commas(json_text: str) -> str:
+    """
+    Best-effort repair for a common model mistake:
+      { "a": 1, }
+      [1,2,]
+    """
+    return _TRAILING_COMMA_RE.sub(r"\\1", json_text)
+
+
+def _build_json_repair_prompt(raw_response: str) -> str:
+    # Keep it simple: ask for a single valid JSON object, no code fences, no extra text.
+    return (
+        "You previously responded with INVALID JSON.\n"
+        "Please rewrite it as a single VALID JSON object only (no markdown, no code fences, no commentary).\n"
+        "Rules:\n"
+        "- Output must be a JSON object starting with '{' and ending with '}'.\n"
+        "- Remove trailing commas.\n"
+        "- Escape all newlines inside strings as \\n.\n"
+        "- Preserve the original fields/values as much as possible.\n"
+        "\n"
+        "INVALID_JSON_START\n"
+        f"{raw_response}\n"
+        "INVALID_JSON_END\n"
+    )
 
 
 def _escape_control_chars_in_json_strings(json_text: str) -> str:
@@ -182,7 +214,11 @@ class LLMClient:
             except json.JSONDecodeError as exc:
                 # Common repair: escape raw control chars inside strings (e.g. multi-line code).
                 repaired = _escape_control_chars_in_json_strings(json_text)
-                parsed = json.loads(repaired)
+                try:
+                    parsed = json.loads(repaired)
+                except json.JSONDecodeError:
+                    # Common repair: remove trailing commas.
+                    parsed = json.loads(_remove_trailing_commas(repaired))
             if not isinstance(parsed, dict):
                 raise ValueError("parsed JSON is not an object")
             return LLMCallResult(
@@ -196,6 +232,33 @@ class LLMClient:
                 provider=res.provider,
             )
         except Exception as exc:  # noqa: BLE001
+            # Last resort: ask the model to rewrite into valid JSON (1 extra call, no recursion).
+            try:
+                repair_prompt = _build_json_repair_prompt(res.raw_response_text)
+                repair_res = self.call_text(repair_prompt, timeout_s=timeout_s)
+                if not repair_res.error:
+                    json_text2 = _extract_json_object(repair_res.raw_response_text)
+                    try:
+                        parsed2 = json.loads(json_text2)
+                    except json.JSONDecodeError:
+                        repaired2 = _escape_control_chars_in_json_strings(json_text2)
+                        parsed2 = json.loads(_remove_trailing_commas(repaired2))
+                    if isinstance(parsed2, dict):
+                        return LLMCallResult(
+                            started_at_ts=res.started_at_ts,
+                            finished_at_ts=repair_res.finished_at_ts,
+                            prompt=res.prompt,
+                            raw_response_text=repair_res.raw_response_text,
+                            parsed_json=parsed2,
+                            error_code=None,
+                            error=None,
+                            provider=res.provider,
+                            extra_calls=1,
+                            repair_used=True,
+                            repair_original_response=res.raw_response_text,
+                        )
+            except Exception:
+                pass
             if _looks_like_refusal(res.raw_response_text):
                 return LLMCallResult(
                     started_at_ts=res.started_at_ts,

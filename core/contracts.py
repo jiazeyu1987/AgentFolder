@@ -453,9 +453,9 @@ def validate_xiaojing_review(obj: Dict[str, Any], *, review_target: str) -> Tupl
     if err:
         return False, err
     if obj.get("schema_version") != "xiaojing_review_v1":
-        return False, "schema_version mismatch"
+        return False, f"schema_version mismatch (got {obj.get('schema_version')})"
     if obj.get("review_target") != review_target:
-        return False, "review_target mismatch"
+        return False, f"review_target mismatch (got {obj.get('review_target')}, expected {review_target})"
     if not is_str(obj.get("task_id")):
         return False, "task_id must be string"
     total = obj.get("total_score")

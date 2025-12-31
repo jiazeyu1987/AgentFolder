@@ -1,0 +1,253 @@
+{
+  "title": "斗地主游戏开发 (Dou Dizhu Game)",
+  "description": "Create a complete single-page web implementation of the popular card game 'Dou Dizhu'. The implementation includes card logic, game state management, AI opponents, and a responsive UI.",
+  "language": "zh-CN",
+  "nodes": [
+    {
+      "id": "node_spec_analysis",
+      "title": "需求分析与技术栈确认",
+      "type": "system_task",
+      "details": "Analyze requirements for Dou Dizhu: 54 cards, 3 players (1 human, 2 AI), bidding phase, playing phase, hand ranking validation. Confirm HTML/CSS/JS stack.",
+      "task_id": "e6e0f3a9-8463-4f58-92f1-e47a931baf82",
+      "node_type": "ACTION",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "owner_agent_id": "xiaobo",
+      "priority": 0,
+      "tags": []
+    },
+    {
+      "id": "node_game_logic",
+      "title": "核心游戏逻辑实现",
+      "type": "agent_task",
+      "agent": "xiaobo",
+      "input_artifacts": [
+        "node_spec_analysis"
+      ],
+      "output_format": "js",
+      "details": "Implement card deck, shuffling, dealing, hand evaluation (singles, pairs, triples, straights, bombs, rocket), and turn management logic.",
+      "task_id": "3ebb9b6a-0437-4141-984c-b6c47ff7584b",
+      "node_type": "ACTION",
+      "owner_agent_id": "xiaobo",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "priority": 0,
+      "tags": []
+    },
+    {
+      "id": "node_ui_html",
+      "title": "UI界面结构 (HTML)",
+      "type": "agent_task",
+      "agent": "xiaobo",
+      "input_artifacts": [
+        "node_spec_analysis"
+      ],
+      "output_format": "html",
+      "details": "Create semantic HTML structure for game board, player areas, hand cards, control buttons, and status display.",
+      "task_id": "92ff9807-a316-424f-b3da-18f2c1a00c02",
+      "node_type": "ACTION",
+      "owner_agent_id": "xiaobo",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "priority": 0,
+      "tags": []
+    },
+    {
+      "id": "node_ui_css",
+      "title": "视觉样式 (CSS)",
+      "type": "agent_task",
+      "agent": "xiaobo",
+      "input_artifacts": [
+        "node_ui_html"
+      ],
+      "output_format": "css",
+      "details": "Style the card table, card components (suit/rank colors), responsive layout, and animations for card movement.",
+      "task_id": "8fc3b871-1c28-48f7-8c8c-459ce80c498b",
+      "node_type": "ACTION",
+      "owner_agent_id": "xiaobo",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "priority": 0,
+      "tags": []
+    },
+    {
+      "id": "node_integration",
+      "title": "前端集成与交互 (JS)",
+      "type": "agent_task",
+      "agent": "xiaobo",
+      "input_artifacts": [
+        "node_game_logic",
+        "node_ui_html",
+        "node_ui_css"
+      ],
+      "output_format": "html",
+      "details": "Combine Logic and UI into a single HTML file. Wire up click handlers, AI logic, and game state updates.",
+      "task_id": "7e13c879-90fe-4a27-978d-442da247cc5c",
+      "node_type": "ACTION",
+      "owner_agent_id": "xiaobo",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "priority": 0,
+      "tags": []
+    },
+    {
+      "id": "node_review",
+      "title": "功能测试与Review",
+      "type": "agent_task",
+      "agent": "xiaobo",
+      "input_artifacts": [
+        "node_integration"
+      ],
+      "details": "Validate the single HTML file runs correctly. Check rules implementation (bomb beats rocket, etc.)",
+      "task_id": "2471e333-89a7-4574-bce8-264892a7452d",
+      "node_type": "ACTION",
+      "owner_agent_id": "xiaobo",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "priority": 0,
+      "tags": []
+    },
+    {
+      "task_id": "7571832d-131a-4e0d-ba4e-06d7c7a295e2",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "node_type": "GOAL",
+      "title": "Root Task",
+      "goal_statement": "创建一个斗地主的游戏",
+      "rationale": "Autocreated placeholder node for referential integrity.",
+      "owner_agent_id": "xiaobo",
+      "priority": 0,
+      "tags": [
+        "autofix",
+        "placeholder"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "node_spec_analysis",
+      "to": "node_game_logic",
+      "from_task_id": "e6e0f3a9-8463-4f58-92f1-e47a931baf82",
+      "to_task_id": "3ebb9b6a-0437-4141-984c-b6c47ff7584b",
+      "edge_id": "962ef59e-306d-4413-87c7-b8254b386b6d",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "from": "node_spec_analysis",
+      "to": "node_ui_html",
+      "from_task_id": "e6e0f3a9-8463-4f58-92f1-e47a931baf82",
+      "to_task_id": "92ff9807-a316-424f-b3da-18f2c1a00c02",
+      "edge_id": "e746b1a5-6d79-4bf1-96de-5159af53334c",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "from": "node_ui_html",
+      "to": "node_ui_css",
+      "from_task_id": "92ff9807-a316-424f-b3da-18f2c1a00c02",
+      "to_task_id": "8fc3b871-1c28-48f7-8c8c-459ce80c498b",
+      "edge_id": "d7641232-3e99-4aa4-8549-c48919ee22ee",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "from": "node_game_logic",
+      "to": "node_integration",
+      "from_task_id": "3ebb9b6a-0437-4141-984c-b6c47ff7584b",
+      "to_task_id": "7e13c879-90fe-4a27-978d-442da247cc5c",
+      "edge_id": "e84d62b0-10d2-486d-9068-87324cd4354d",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "from": "node_ui_css",
+      "to": "node_integration",
+      "from_task_id": "8fc3b871-1c28-48f7-8c8c-459ce80c498b",
+      "to_task_id": "7e13c879-90fe-4a27-978d-442da247cc5c",
+      "edge_id": "ccf4fefa-bfa7-4306-a4ff-898206a5cab9",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "from": "node_integration",
+      "to": "node_review",
+      "from_task_id": "7e13c879-90fe-4a27-978d-442da247cc5c",
+      "to_task_id": "2471e333-89a7-4574-bce8-264892a7452d",
+      "edge_id": "a48762af-5474-49a4-a47e-367c41df648a",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "edge_id": "cadb3f92-e74b-4a0e-9039-715c74e3b393",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "from_task_id": "7571832d-131a-4e0d-ba4e-06d7c7a295e2",
+      "to_task_id": "e6e0f3a9-8463-4f58-92f1-e47a931baf82",
+      "edge_type": "DECOMPOSE",
+      "metadata": {
+        "and_or": "AND"
+      }
+    },
+    {
+      "edge_id": "04ee9b06-7133-497b-b495-e0905790b36e",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "from_task_id": "7571832d-131a-4e0d-ba4e-06d7c7a295e2",
+      "to_task_id": "3ebb9b6a-0437-4141-984c-b6c47ff7584b",
+      "edge_type": "DECOMPOSE",
+      "metadata": {
+        "and_or": "AND"
+      }
+    },
+    {
+      "edge_id": "403c09fe-c758-449b-bdf1-34d6f9407909",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "from_task_id": "7571832d-131a-4e0d-ba4e-06d7c7a295e2",
+      "to_task_id": "92ff9807-a316-424f-b3da-18f2c1a00c02",
+      "edge_type": "DECOMPOSE",
+      "metadata": {
+        "and_or": "AND"
+      }
+    },
+    {
+      "edge_id": "de7e31f9-b59b-4e60-bdeb-f34220010aae",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "from_task_id": "7571832d-131a-4e0d-ba4e-06d7c7a295e2",
+      "to_task_id": "8fc3b871-1c28-48f7-8c8c-459ce80c498b",
+      "edge_type": "DECOMPOSE",
+      "metadata": {
+        "and_or": "AND"
+      }
+    },
+    {
+      "edge_id": "b5f0ffc5-21a1-438c-9495-02d1cde93df7",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "from_task_id": "7571832d-131a-4e0d-ba4e-06d7c7a295e2",
+      "to_task_id": "7e13c879-90fe-4a27-978d-442da247cc5c",
+      "edge_type": "DECOMPOSE",
+      "metadata": {
+        "and_or": "AND"
+      }
+    },
+    {
+      "edge_id": "84f59d89-6798-4744-8291-ba86a74b1b1f",
+      "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+      "from_task_id": "7571832d-131a-4e0d-ba4e-06d7c7a295e2",
+      "to_task_id": "2471e333-89a7-4574-bce8-264892a7452d",
+      "edge_type": "DECOMPOSE",
+      "metadata": {
+        "and_or": "AND"
+      }
+    }
+  ],
+  "requirements": [],
+  "plan": {
+    "title": "创建一个斗地主的游戏",
+    "plan_id": "08eda525-0ce6-4e78-ad78-2a0e5b36bd51",
+    "root_task_id": "7571832d-131a-4e0d-ba4e-06d7c7a295e2",
+    "created_at": "2025-12-31T09:41:55Z",
+    "owner_agent_id": "xiaobo",
+    "constraints": {
+      "deadline": null,
+      "priority": "HIGH"
+    }
+  }
+}

@@ -14,11 +14,12 @@ from core.db import apply_migrations, connect
 from core.doctor import run_doctor
 from core.events import emit_event
 from core.llm_client import LLMClient
-from core.plan_workflow import generate_and_review_plan
+from core.plan_workflow import PlanNotApprovedError, PlanWorkflowError, _summarize_plan_review, generate_and_review_plan
 from core.prompts import load_prompts, register_prompt_versions
 from core.repair import repair_missing_root_tasks
 from core.util import stable_hash_text, utc_now_iso
 from core.contract_audit import audit_llm_calls
+from core.deliverables import export_deliverables
 from skills.registry import load_registry
 
 
@@ -34,7 +35,7 @@ def _print_table(rows: List[Dict[str, Any]], *, columns: List[str]) -> None:
         print("  ".join(str(r.get(c, "")).ljust(widths[c]) for c in columns))
 
 
-def cmd_status(db_path: Path, plan_id: Optional[str]) -> int:
+def cmd_status(db_path: Path, plan_id: Optional[str], *, verbose: bool = False) -> int:
     conn = connect(db_path)
     apply_migrations(conn, config.MIGRATIONS_DIR)
 
@@ -126,47 +127,143 @@ def cmd_status(db_path: Path, plan_id: Optional[str]) -> int:
             if isinstance(v, str) and len(v) > 80:
                 row[k] = v[:80] + "..."
 
+    if verbose:
+        print(f"plan_id: {plan['plan_id']}")
+        print(f"title:   {plan['title']}")
+        print(f"root:    {plan['root_task_id']}")
+        print("")
+
+        counts = conn.execute(
+            """
+            SELECT status, COUNT(1) AS cnt
+            FROM task_nodes
+            WHERE plan_id = ?
+            GROUP BY status
+            ORDER BY cnt DESC
+            """,
+            (plan_id,),
+        ).fetchall()
+        print("Status counts:")
+        _print_table([dict(r) for r in counts], columns=["status", "cnt"])
+        print("")
+
+        print("Tasks:")
+        _print_table(
+            data,
+            columns=[
+                "task_id",
+                "active_branch",
+                "status",
+                "blocked_reason",
+                "missing_requirements",
+                "attempt_count",
+                "waiting_skill_count",
+                "last_error_code",
+                "last_error_message",
+                "last_error_at",
+                "last_validator_error",
+                "priority",
+                "owner_agent_id",
+                "node_type",
+                "title",
+                "tags_json",
+            ],
+        )
+        return 0
+
+    # Concise mode (default): focus on why we are blocked/failed and what to do next.
+    print(f"plan: {plan['title']}")
     print(f"plan_id: {plan['plan_id']}")
-    print(f"title:   {plan['title']}")
-    print(f"root:    {plan['root_task_id']}")
+    print(f"root: {plan['root_task_id']}")
     print("")
 
+    rows = data
     counts = conn.execute(
         """
-        SELECT status, COUNT(1) AS cnt
+        SELECT node_type, status, COUNT(1) AS cnt
         FROM task_nodes
-        WHERE plan_id = ?
-        GROUP BY status
-        ORDER BY cnt DESC
+        WHERE plan_id = ? AND active_branch = 1
+        GROUP BY node_type, status
+        ORDER BY node_type ASC, cnt DESC
         """,
         (plan_id,),
     ).fetchall()
-    print("Status counts:")
-    _print_table([dict(r) for r in counts], columns=["status", "cnt"])
+    print("By node_type/status:")
+    for r in counts:
+        print(f"- {r['node_type']}: {r['status']} = {int(r['cnt'])}")
     print("")
 
-    print("Tasks:")
-    _print_table(
-        data,
-        columns=[
-            "task_id",
-            "active_branch",
-            "status",
-            "blocked_reason",
-            "missing_requirements",
-            "attempt_count",
-            "waiting_skill_count",
-            "last_error_code",
-            "last_error_message",
-            "last_error_at",
-            "last_validator_error",
-            "priority",
-            "owner_agent_id",
-            "node_type",
-            "title",
-            "tags_json",
-        ],
-    )
+    failed = [r for r in rows if r.get("status") == "FAILED"]
+    blocked = [r for r in rows if r.get("status") == "BLOCKED"]
+    pending = [r for r in rows if r.get("status") == "PENDING"]
+    ready = [r for r in rows if r.get("status") == "READY" and r.get("node_type") == "ACTION"]
+
+    if failed:
+        print("FAILED tasks (why failed):")
+        for r in failed[:20]:
+            msg = (r.get("last_error_message") or r.get("last_validator_error") or "").strip()
+            if len(msg) > 180:
+                msg = msg[:180] + "..."
+            print(f"- {r['title']} ({r['task_id']}): {r.get('last_error_code') or 'FAILED'} {msg}".strip())
+        print("")
+
+    if blocked:
+        print("BLOCKED tasks (what is missing):")
+        for r in blocked[:20]:
+            br = r.get("blocked_reason") or "BLOCKED"
+            missing = (r.get("missing_requirements") or "").strip()
+            extra = f" missing: {missing}" if missing else ""
+            req_path = config.REQUIRED_DOCS_DIR / f"{r['task_id']}.md"
+            hint = f" required_docs: {req_path}" if req_path.exists() else ""
+            print(f"- {r['title']} ({r['task_id']}): {br}{extra}{hint}")
+        print("")
+
+    if ready:
+        print("READY to run next:")
+        for r in ready[:20]:
+            print(f"- {r['title']} ({r['task_id']})")
+        print("")
+
+    if pending and not (ready or blocked or failed):
+        # If everything is pending, it's usually either missing deps or readiness hasn't recomputed.
+        print("PENDING tasks (not runnable yet):")
+        for r in pending[:20]:
+            # deps not done?
+            dep_missing = conn.execute(
+                """
+                SELECT COUNT(1)
+                FROM task_edges e
+                JOIN task_nodes n ON n.task_id = e.from_task_id
+                WHERE e.plan_id = ? AND e.to_task_id = ? AND e.edge_type='DEPENDS_ON'
+                  AND (n.status IS NULL OR n.status != 'DONE')
+                """,
+                (plan_id, r["task_id"]),
+            ).fetchone()[0]
+            req_missing = 0
+            try:
+                reqs = conn.execute(
+                    "SELECT requirement_id, required, min_count FROM input_requirements WHERE task_id=?",
+                    (r["task_id"],),
+                ).fetchall()
+                for req in reqs:
+                    if int(req["required"]) != 1:
+                        continue
+                    have = conn.execute("SELECT COUNT(1) FROM evidences WHERE requirement_id=?", (req["requirement_id"],)).fetchone()[0]
+                    if int(have) < int(req["min_count"]):
+                        req_missing += 1
+            except Exception:
+                req_missing = 0
+            why = []
+            if int(dep_missing) > 0:
+                why.append(f"deps_not_done={int(dep_missing)}")
+            if int(req_missing) > 0:
+                why.append(f"missing_inputs={int(req_missing)}")
+            print(f"- {r['title']} ({r['task_id']}): " + (", ".join(why) if why else "waiting readiness recompute"))
+        print("")
+
+    if pending and (ready or blocked or failed):
+        print(f"Other pending: {len(pending)} (run loop will pick them when deps/inputs are satisfied)")
+
     return 0
 
 
@@ -395,6 +492,25 @@ def cmd_contract_audit(db_path: Path, plan_id: Optional[str], limit: int) -> int
     return 0
 
 
+def cmd_export(db_path: Path, plan_id: Optional[str], out_dir: Optional[Path], include_reviews: bool) -> int:
+    conn = connect(db_path)
+    apply_migrations(conn, config.MIGRATIONS_DIR)
+
+    if plan_id is None:
+        row = conn.execute("SELECT plan_id FROM plans ORDER BY created_at DESC LIMIT 1").fetchone()
+        if not row:
+            print("No plan found in DB.", file=sys.stderr)
+            return 1
+        plan_id = row["plan_id"]
+
+    if out_dir is None:
+        out_dir = config.DELIVERABLES_DIR / plan_id
+
+    res = export_deliverables(conn, plan_id=plan_id, out_dir=out_dir, include_reviews=include_reviews)
+    print(json.dumps({"plan_id": res.plan_id, "out_dir": str(res.out_dir), "files_copied": int(res.files_copied)}, ensure_ascii=False))
+    return 0
+
+
 @dataclass(frozen=True)
 class PromptSlot:
     kind: str  # SHARED|AGENT
@@ -519,10 +635,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_create.add_argument("--priority", type=str, default="HIGH", choices=["LOW", "MED", "HIGH"])
     p_create.add_argument("--deadline", type=str, default=None, help="ISO8601 deadline or null")
     p_create.add_argument("--max-attempts", type=int, default=3)
+    p_create.add_argument("--keep-trying", action="store_true", help="Keep retrying after max-attempts until max-total-attempts.")
+    p_create.add_argument("--max-total-attempts", type=int, default=None, help="Total attempts cap when --keep-trying is set.")
     p_create.add_argument("--out", type=Path, default=config.PLAN_PATH_DEFAULT)
 
     p_status = sub.add_parser("status", help="Show plan/task status from state.db")
     p_status.add_argument("--plan-id", type=str, default=None)
+    p_status.add_argument("--verbose", action="store_true", help="Show full table output")
 
     p_events = sub.add_parser("events", help="Show recent task events (JSON)")
     p_events.add_argument("--plan-id", type=str, default=None)
@@ -551,6 +670,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_audit = sub.add_parser("contract-audit", help="Audit recent llm_calls for contract drift (scopes/keys/errors).")
     p_audit.add_argument("--plan-id", type=str, default=None)
     p_audit.add_argument("--limit", type=int, default=200)
+
+    p_export = sub.add_parser("export", help="Export final deliverables for a plan into one folder.")
+    p_export.add_argument("--plan-id", type=str, default=None)
+    p_export.add_argument("--out-dir", type=Path, default=None)
+    p_export.add_argument("--include-reviews", action="store_true")
 
     p_prompt = sub.add_parser("prompt", help="Manage shared/agent prompts (versioned)")
     p_prompt_sub = p_prompt.add_subparsers(dest="prompt_cmd", required=True)
@@ -591,22 +715,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         skills = load_registry(config.SKILLS_REGISTRY_PATH)
         llm = LLMClient()
 
-        res = generate_and_review_plan(
-            conn,
-            prompts=prompts,
-            llm=llm,
-            top_task=top_task,
-            constraints=constraints,
-            available_skills=sorted(skills.keys()),
-            max_plan_attempts=int(args.max_attempts),
-            plan_output_path=args.out,
-        )
-        print(f"Approved plan written to: {res.plan_path}")
-        print(f"plan_id: {res.plan_json['plan']['plan_id']}")
-        print(f"score:   {res.review_json.get('total_score')}")
-        return 0
+        try:
+            res = generate_and_review_plan(
+                conn,
+                prompts=prompts,
+                llm=llm,
+                top_task=top_task,
+                constraints=constraints,
+                available_skills=sorted(skills.keys()),
+                max_plan_attempts=int(args.max_attempts),
+                keep_trying=bool(getattr(args, "keep_trying", False)),
+                max_total_attempts=getattr(args, "max_total_attempts", None),
+                plan_output_path=args.out,
+            )
+            print(f"Approved plan written to: {res.plan_path}")
+            print(f"plan_id: {res.plan_json['plan']['plan_id']}")
+            print(f"score:   {res.review_json.get('total_score')}")
+            return 0
+        except PlanNotApprovedError as exc:
+            plan_id = exc.plan_id or "(unknown)"
+            print(_summarize_plan_review(exc.last_review))
+            print(f"plan_id: {plan_id}")
+            print(f"max_attempts: {exc.max_attempts}")
+            return 1
+        except PlanWorkflowError as exc:
+            print(f"create-plan 失败：{exc}", file=sys.stderr)
+            print("建议：打开 UI 的 LLM Explorer 查看 PLAN_GEN/PLAN_REVIEW 的输入输出，或运行 `agent_cli.py llm-calls --limit 50`。", file=sys.stderr)
+            return 1
     if args.cmd == "status":
-        return cmd_status(args.db, args.plan_id)
+        return cmd_status(args.db, args.plan_id, verbose=bool(getattr(args, "verbose", False)))
     if args.cmd == "events":
         return cmd_events(args.db, args.plan_id, args.limit)
     if args.cmd == "errors":
@@ -621,6 +758,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_repair_db(args.db, args.plan_id)
     if args.cmd == "contract-audit":
         return cmd_contract_audit(args.db, args.plan_id, args.limit)
+    if args.cmd == "export":
+        return cmd_export(args.db, args.plan_id, args.out_dir, bool(getattr(args, "include_reviews", False)))
     if args.cmd == "prompt":
         if args.prompt_cmd == "list":
             return cmd_prompt_list(args.db)

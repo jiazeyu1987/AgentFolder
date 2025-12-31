@@ -32,7 +32,7 @@ class LLMExplorer(tk.Toplevel):
         self._db_path = db_path
 
         self._plan_id_var = tk.StringVar(value="")
-        self._task_id_var = tk.StringVar(value="")
+        self._plan_title_var = tk.StringVar(value="")
         self._agent_var = tk.StringVar(value="")
         self._scope_var = tk.StringVar(value="")
         self._limit_var = tk.StringVar(value="200")
@@ -52,21 +52,23 @@ class LLMExplorer(tk.Toplevel):
         outer = ttk.Frame(self, padding=10)
         outer.pack(fill=BOTH, expand=True)
 
-        filters = ttk.Frame(outer)
-        filters.pack(fill=X)
+        filters1 = ttk.Frame(outer)
+        filters1.pack(fill=X)
+        ttk.Label(filters1, text="plan-id").pack(side=LEFT)
+        ttk.Entry(filters1, textvariable=self._plan_id_var, width=44).pack(side=LEFT, padx=(6, 14))
+        ttk.Label(filters1, text="plan-title contains").pack(side=LEFT)
+        ttk.Entry(filters1, textvariable=self._plan_title_var, width=40).pack(side=LEFT, padx=(6, 14), fill=X, expand=True)
 
-        ttk.Label(filters, text="plan-id").pack(side=LEFT)
-        ttk.Entry(filters, textvariable=self._plan_id_var, width=38).pack(side=LEFT, padx=(6, 14))
-        ttk.Label(filters, text="task-id").pack(side=LEFT)
-        ttk.Entry(filters, textvariable=self._task_id_var, width=38).pack(side=LEFT, padx=(6, 14))
-        ttk.Label(filters, text="agent").pack(side=LEFT)
-        ttk.Entry(filters, textvariable=self._agent_var, width=10).pack(side=LEFT, padx=(6, 14))
-        ttk.Label(filters, text="scope").pack(side=LEFT)
-        ttk.Entry(filters, textvariable=self._scope_var, width=18).pack(side=LEFT, padx=(6, 14))
-        ttk.Label(filters, text="limit").pack(side=LEFT)
-        ttk.Entry(filters, textvariable=self._limit_var, width=6).pack(side=LEFT, padx=(6, 14))
-        ttk.Checkbutton(filters, text="errors only", variable=self._errors_only_var).pack(side=LEFT)
-        ttk.Button(filters, text="Refresh", command=self._refresh).pack(side=LEFT, padx=(14, 0))
+        filters2 = ttk.Frame(outer)
+        filters2.pack(fill=X, pady=(6, 0))
+        ttk.Label(filters2, text="agent").pack(side=LEFT)
+        ttk.Entry(filters2, textvariable=self._agent_var, width=10).pack(side=LEFT, padx=(6, 14))
+        ttk.Label(filters2, text="scope").pack(side=LEFT)
+        ttk.Entry(filters2, textvariable=self._scope_var, width=18).pack(side=LEFT, padx=(6, 14))
+        ttk.Label(filters2, text="limit").pack(side=LEFT)
+        ttk.Entry(filters2, textvariable=self._limit_var, width=6).pack(side=LEFT, padx=(6, 14))
+        ttk.Checkbutton(filters2, text="errors only", variable=self._errors_only_var).pack(side=LEFT)
+        ttk.Button(filters2, text="Search", command=self._refresh).pack(side=tk.RIGHT)
 
         paned = ttk.PanedWindow(outer, orient="vertical")
         paned.pack(fill=BOTH, expand=True, pady=(10, 0))
@@ -133,20 +135,14 @@ class LLMExplorer(tk.Toplevel):
         except ValueError:
             limit = 200
 
-        plan_id = self._plan_id_var.get().strip()
-        task_id = self._task_id_var.get().strip()
+        plan_id_filter = self._plan_id_var.get().strip()
+        plan_title_filter = self._plan_title_var.get().strip().lower()
         agent = self._agent_var.get().strip()
         scope = self._scope_var.get().strip()
         errors_only = bool(self._errors_only_var.get())
 
         where: list[str] = []
         params: list[object] = []
-        if plan_id:
-            where.append("c.plan_id = ?")
-            params.append(plan_id)
-        if task_id:
-            where.append("c.task_id = ?")
-            params.append(task_id)
         if agent:
             where.append("c.agent = ?")
             params.append(agent)
@@ -181,7 +177,9 @@ class LLMExplorer(tk.Toplevel):
                   c.task_id,
                   n.title AS task_title,
                   c.error_code,
-                  c.validator_error
+                  c.validator_error,
+                  c.parsed_json,
+                  c.normalized_json
                 FROM llm_calls c
                 LEFT JOIN plans p ON p.plan_id = c.plan_id
                 LEFT JOIN task_nodes n ON n.task_id = c.task_id
@@ -189,15 +187,69 @@ class LLMExplorer(tk.Toplevel):
                 ORDER BY c.created_at DESC
                 LIMIT ?
                 """,
-                (*params, int(limit)),
+                (*params, int(max(limit * 5, limit, 200))),
             ).fetchall()
         finally:
             conn.close()
 
-        for r in rows:
+        def derive_plan_fields(row: sqlite3.Row) -> tuple[str | None, str | None]:
+            pid = row["plan_id"]
+            ptitle = row["plan_title"]
+            if pid and ptitle:
+                return pid, ptitle
+
+            # For PLAN_GEN records, plan_id may be NULL at insert-time. Try to derive from JSON payload.
+            for field in ("normalized_json", "parsed_json"):
+                txt = row[field]
+                if not txt or not isinstance(txt, str):
+                    continue
+                try:
+                    obj = json.loads(txt)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                # normalized_json is already plan_json, parsed_json may be an outer wrapper {schema_version, plan_json}.
+                plan_obj = obj
+                if "plan" not in plan_obj and isinstance(obj.get("plan_json"), dict):
+                    plan_obj = obj.get("plan_json")  # type: ignore[assignment]
+                if not isinstance(plan_obj, dict):
+                    continue
+                meta = plan_obj.get("plan")
+                if not isinstance(meta, dict):
+                    continue
+                pid2 = meta.get("plan_id")
+                title2 = meta.get("title")
+                if isinstance(pid2, str) and pid2.strip():
+                    if not pid:
+                        pid = pid2.strip()
+                    if not ptitle and isinstance(title2, str) and title2.strip():
+                        ptitle = title2.strip()
+            return pid, ptitle
+
+        def passes_filters(row: sqlite3.Row) -> bool:
+            pid, ptitle = derive_plan_fields(row)
+            if plan_id_filter and (not pid or pid != plan_id_filter):
+                return False
+            if plan_title_filter:
+                t = (ptitle or "").lower()
+                if plan_title_filter not in t:
+                    return False
+            return True
+
+        filtered_rows = [r for r in rows if passes_filters(r)]
+        filtered_rows = filtered_rows[:limit]
+
+        for r in filtered_rows:
             ve = r["validator_error"]
             if isinstance(ve, str) and len(ve) > 120:
                 ve = ve[:120] + "..."
+            plan_id_val, plan_title = derive_plan_fields(r)
+            if not plan_title and plan_id_val:
+                plan_title = "(plan title unknown)"
+            task_title = r["task_title"]
+            if not task_title and not r["task_id"] and str(r["scope"] or "").startswith("PLAN_"):
+                task_title = "(PLAN)"
             self._tree.insert(
                 "",
                 "end",
@@ -206,9 +258,9 @@ class LLMExplorer(tk.Toplevel):
                     r["created_at"],
                     r["scope"],
                     r["agent"],
-                    r["plan_title"],
-                    r["plan_id"],
-                    r["task_title"],
+                    plan_title,
+                    plan_id_val,
+                    task_title,
                     r["task_id"],
                     r["error_code"],
                     ve,
@@ -226,6 +278,18 @@ class LLMExplorer(tk.Toplevel):
             return
         llm_call_id = sel[0]
         self._selected_llm_call_id = llm_call_id
+        # Auto-fill plan-id/plan-title fields from the selected row for easier filtering.
+        try:
+            vals = self._tree.item(llm_call_id, "values") or []
+            if len(vals) >= 5:
+                plan_title = str(vals[3] or "")
+                plan_id = str(vals[4] or "")
+                if plan_id:
+                    self._plan_id_var.set(plan_id)
+                if plan_title and plan_title != "(plan title unknown)":
+                    self._plan_title_var.set(plan_title)
+        except Exception:
+            pass
         self._load_details(llm_call_id)
 
     def _load_details(self, llm_call_id: str) -> None:
@@ -445,7 +509,17 @@ class App(tk.Tk):
         ttk.Button(tools, text="Open tasks/plan.json", command=self._open_plan_json).pack(side=LEFT, padx=(0, 6))
         ttk.Button(tools, text="Open logs/llm_runs.jsonl", command=self._open_llm_log_file).pack(side=LEFT, padx=(0, 6))
         ttk.Button(tools, text="LLM Explorer", command=self._open_llm_explorer).pack(side=LEFT, padx=(0, 6))
-        ttk.Button(tools, text="Reset DB (delete)", command=self._cmd_reset_db).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(tools, text="Export Deliverables", command=self._cmd_export_deliverables).pack(side=LEFT, padx=(0, 6))
+        tk.Button(
+            tools,
+            text="Reset DB (delete)",
+            command=self._cmd_reset_db,
+            bg="#b00020",
+            fg="white",
+            activebackground="#d32f2f",
+            activeforeground="white",
+            relief="raised",
+        ).pack(side=LEFT, padx=(0, 6))
         ttk.Button(tools, text="Clear output", command=self._clear_output).pack(side=LEFT, padx=(0, 6))
 
         self._status = ttk.Label(outer, text=f"cwd: {ROOT_DIR}", foreground="#444")
@@ -715,6 +789,14 @@ class App(tk.Tk):
         argv = self._base_argv() + ["reset-db"]
         if purge:
             argv += ["--purge-workspace", "--purge-tasks", "--purge-logs"]
+        self._append("meta", "\n$ " + " ".join(argv) + "\n")
+        self._run(RunRequest(argv=argv, cwd=ROOT_DIR))
+
+    def _cmd_export_deliverables(self) -> None:
+        argv = self._base_argv() + ["export"]
+        plan_id = self._plan_id_var.get().strip()
+        if plan_id:
+            argv += ["--plan-id", plan_id]
         self._append("meta", "\n$ " + " ".join(argv) + "\n")
         self._run(RunRequest(argv=argv, cwd=ROOT_DIR))
 

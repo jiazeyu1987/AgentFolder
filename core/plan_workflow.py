@@ -23,6 +23,109 @@ class PlanWorkflowError(RuntimeError):
     pass
 
 
+class PlanNotApprovedError(PlanWorkflowError):
+    def __init__(self, *, plan_id: Optional[str], max_attempts: int, last_review: Dict[str, Any]) -> None:
+        super().__init__("plan not approved")
+        self.plan_id = plan_id
+        self.max_attempts = int(max_attempts)
+        self.last_review = last_review
+
+
+def _summarize_plan_review(review: Dict[str, Any]) -> str:
+    score = int(review.get("total_score") or 0)
+    action = str(review.get("action_required") or "")
+    summary = str(review.get("summary") or "").strip()
+
+    # Prefer richer fields if provided by certain reviewer variants.
+    eval_obj = review.get("evaluation")
+    if isinstance(eval_obj, dict):
+        s2 = str(eval_obj.get("summary") or "").strip()
+        if s2:
+            summary = s2
+
+    dims: list[str] = []
+    dim_scores = review.get("dimension_scores")
+    if isinstance(dim_scores, list):
+        for d in dim_scores:
+            if not isinstance(d, dict):
+                continue
+            dim = str(d.get("dimension") or "").strip()
+            sc = d.get("score")
+            try:
+                sc_i = int(sc)
+            except Exception:
+                sc_i = None
+            if dim and sc_i is not None:
+                dims.append(f"{dim}:{sc_i}")
+    if not dims:
+        scores = review.get("scores")
+        if isinstance(scores, dict):
+            for k, v in list(scores.items())[:6]:
+                try:
+                    dims.append(f"{k}:{int(v)}")
+                except Exception:
+                    continue
+
+    sug_lines: list[str] = []
+    sugs = review.get("suggestions")
+    if isinstance(sugs, list):
+        for s in sugs[:5]:
+            if not isinstance(s, dict):
+                continue
+            pr = str(s.get("priority") or "").strip()
+            change = str(s.get("change") or "").strip()
+            if change:
+                sug_lines.append(f"- {pr or 'MED'}: {change}")
+
+    parts: list[str] = []
+    parts.append(f"Plan 审核未通过：score={score}（门槛>=90），action_required={action or 'MODIFY'}")
+    if summary:
+        parts.append(f"主要原因：{summary}")
+    if dims:
+        parts.append("维度分： " + ", ".join(dims))
+    if sug_lines:
+        parts.append("修改建议（前几条）：")
+        parts.extend(sug_lines)
+    parts.append("说明：这是“计划质量/可执行性”问题，不是数据结构解析错误。")
+    parts.append("查看完整输入输出：UI -> LLM Explorer，或 `agent_cli.py llm-calls --plan-id <PLAN_ID>`。")
+    return "\n".join(parts)
+
+
+def _review_invalid_reason(*, review_json: Dict[str, Any], expected_target: str) -> str:
+    """
+    Build a concrete, user-readable reason for why a review JSON is invalid.
+    """
+    sv = review_json.get("schema_version")
+    rt = review_json.get("review_target")
+    keys = sorted([k for k in review_json.keys() if isinstance(k, str)])
+    head = f"invalid review JSON: schema_version={sv!r}, review_target={rt!r}, keys={keys[:25]}"
+    ok, reason = validate_xiaojing_review(review_json, review_target=expected_target)
+    if ok:
+        return head
+    return head + f"; validator_error={reason}"
+
+
+def _build_review_retry_prompt(*, original_prompt: str, invalid_response: str, reason: str) -> str:
+    """
+    Ask the reviewer to re-emit a valid `xiaojing_review_v1` JSON object.
+    """
+    return (
+        "Your previous output could NOT be accepted by the automation system.\n"
+        f"Reason: {reason}\n"
+        "\n"
+        "Please output a single VALID JSON object only, matching schema `xiaojing_review_v1` exactly.\n"
+        "Do not use markdown fences. Do not include extra text.\n"
+        "\n"
+        "ORIGINAL_REVIEW_PROMPT_START\n"
+        f"{original_prompt}\n"
+        "ORIGINAL_REVIEW_PROMPT_END\n"
+        "\n"
+        "YOUR_INVALID_OUTPUT_START\n"
+        f"{invalid_response}\n"
+        "YOUR_INVALID_OUTPUT_END\n"
+    )
+
+
 @dataclass(frozen=True)
 class PlanWorkflowResult:
     plan_json: Dict[str, Any]
@@ -166,6 +269,9 @@ def generate_and_review_plan(
     constraints: Optional[Dict[str, Any]] = None,
     available_skills: Optional[List[str]] = None,
     max_plan_attempts: int = 3,
+    keep_trying: bool = False,
+    max_total_attempts: Optional[int] = None,
+    max_review_attempts_per_plan: int = 4,
     plan_output_path: Path = config.PLAN_PATH_DEFAULT,
 ) -> PlanWorkflowResult:
     constraints = constraints or {"deadline": None, "priority": "HIGH"}
@@ -178,14 +284,24 @@ def generate_and_review_plan(
     retry_notes = ""
 
     last_review: Dict[str, Any] = {}
-    for attempt in range(1, max_plan_attempts + 1):
+    if max_total_attempts is None:
+        max_total_attempts = int(max_plan_attempts)
+    max_total_attempts = max(1, int(max_total_attempts))
+
+    attempt = 0
+    while True:
+        attempt += 1
+        if attempt > max_total_attempts:
+            raise PlanNotApprovedError(plan_id=locals().get("plan_id"), max_attempts=max_total_attempts, last_review=last_review)
+
         prompt_top_task = user_top_task
         if retry_notes.strip():
             prompt_top_task = user_top_task + "\n\n[RETRY_NOTES]\n" + retry_notes.strip()
 
         plan_prompt = build_xiaobo_plan_prompt(prompts, top_task=prompt_top_task, constraints=constraints, skills=available_skills)
         plan_res = llm.call_json(plan_prompt)
-        record_llm_call(
+        # NOTE: plan_workflow doesn't track llm_calls budget, but we still record extra_calls in telemetry/logs via meta.
+        plan_gen_call_id = record_llm_call(
             conn,
             plan_id=None,
             task_id=None,
@@ -206,7 +322,7 @@ def generate_and_review_plan(
             validator_error=None,
             error_code=plan_res.error_code,
             error_message=plan_res.error,
-            meta={"attempt": attempt},
+            meta={"attempt": attempt, "extra_calls": int(getattr(plan_res, "extra_calls", 0)), "repair_used": bool(getattr(plan_res, "repair_used", False))},
         )
         _append_llm_run(
             config.LLM_RUNS_LOG_PATH,
@@ -228,13 +344,16 @@ def generate_and_review_plan(
             },
         )
         if plan_res.error or not plan_res.parsed_json:
+            retry_notes += "\nPlan generation failed (must return valid xiaobo_plan_v1 JSON). Error:\n" + str(plan_res.error or plan_res.error_code)
+            if keep_trying or attempt < max_plan_attempts:
+                continue
             raise PlanWorkflowError(f"plan generation failed: {plan_res.error}")
 
         outer = plan_res.parsed_json
         if outer.get("schema_version") != "xiaobo_plan_v1" or not isinstance(outer.get("plan_json"), dict):
             msg = "plan generation output must be JSON with schema_version=xiaobo_plan_v1 and plan_json object"
-            if attempt < max_plan_attempts:
-                retry_notes += "\n" + msg
+            retry_notes += "\n" + msg
+            if keep_trying or attempt < max_plan_attempts:
                 continue
             raise PlanWorkflowError(msg)
         plan_json = outer.get("plan_json")  # type: ignore[assignment]
@@ -245,6 +364,13 @@ def generate_and_review_plan(
         plan_id = plan.get("plan_id")
         if not isinstance(plan_id, str) or not plan_id:
             raise PlanWorkflowError("plan.plan_id missing after coercion")
+
+        # Back-fill PLAN_GEN telemetry row with resolved plan_id (so UI can show plan_title/plan_id).
+        if plan_gen_call_id and plan_gen_call_id != "UNKNOWN":
+            try:
+                conn.execute("UPDATE llm_calls SET plan_id=? WHERE llm_call_id=?", (plan_id, plan_gen_call_id))
+            except Exception:
+                pass
 
         # Ensure FK safety for any subsequent emit_event calls (PLAN_REVIEWED, ERROR, etc.)
         with transaction(conn):
@@ -266,8 +392,8 @@ def generate_and_review_plan(
                     event_type="ERROR",
                     payload={"error_code": "PLAN_INVALID", "message": str(exc), "context": {"validator_error": str(exc)}},
                 )
-            if attempt < max_plan_attempts:
-                retry_notes += "\nPlan JSON schema validation error (must fix):\n" + str(exc)
+            retry_notes += "\nPlan JSON schema validation error (must fix):\n" + str(exc)
+            if keep_trying or attempt < max_plan_attempts:
                 continue
             raise PlanWorkflowError(f"PLAN_INVALID: {exc}") from exc
         else:
@@ -290,93 +416,99 @@ def generate_and_review_plan(
                 pass
 
         review_prompt = build_xiaojing_plan_review_prompt(prompts, plan_id=plan_id, rubric_json=rubric, plan_json=plan_json)
-        review_res = llm.call_json(review_prompt)
-        record_llm_call(
-            conn,
-            plan_id=plan_id,
-            task_id=None,
-            agent="xiaojing",
-            scope="PLAN_REVIEW",
-            provider=review_res.provider,
-            prompt_text=review_prompt,
-            response_text=review_res.raw_response_text,
-            started_at_ts=review_res.started_at_ts,
-            finished_at_ts=review_res.finished_at_ts,
-            runtime_context_hash=stable_hash_text(review_prompt),
-            shared_prompt_version=prompts.shared.version,
-            shared_prompt_hash=prompts.shared.sha256,
-            agent_prompt_version=prompts.xiaojing.version,
-            agent_prompt_hash=prompts.xiaojing.sha256,
-            parsed_json=review_res.parsed_json,
-            normalized_json=None,
-            validator_error=None,
-            error_code=review_res.error_code,
-            error_message=review_res.error,
-            meta={"attempt": attempt, "scope": "PLAN_REVIEW"},
-        )
-        _append_llm_run(
-            config.LLM_RUNS_LOG_PATH,
-            {
-                "ts": utc_now_iso(),
-                "plan_id": plan_id,
-                "task_id": None,
-                "agent": "xiaojing",
-                "shared_prompt_version": prompts.shared.version,
-                "shared_prompt_hash": prompts.shared.sha256,
-                "agent_prompt_version": prompts.xiaojing.version,
-                "agent_prompt_hash": prompts.xiaojing.sha256,
-                "runtime_context_hash": stable_hash_text(review_prompt),
-                "final_prompt": review_prompt,
-                "response": review_res.parsed_json or review_res.raw_response_text,
-                "error": {"code": review_res.error_code, "message": review_res.error} if review_res.error else None,
-                "scope": "PLAN_REVIEW",
-                "attempt": attempt,
-            },
-        )
-        if review_res.error or not review_res.parsed_json:
-            if attempt < max_plan_attempts:
-                retry_notes += "\nPlan review failed (must return valid xiaojing_review_v1 JSON). Error:\n" + str(review_res.error or review_res.error_code)
-                continue
-            raise PlanWorkflowError(f"plan review failed: {review_res.error}")
+        review_prompt_to_use = review_prompt
+        review_json: Dict[str, Any] = {}
 
-        review_json = review_res.parsed_json
-        if isinstance(review_json, dict):
-            review_json = normalize_xiaojing_review(review_json, task_id=plan_id, review_target="PLAN")
-        last_review = review_json
-        if review_json.get("schema_version") != "xiaojing_review_v1":
-            if attempt < max_plan_attempts:
-                retry_notes += "\nPlan review schema_version mismatch (expected xiaojing_review_v1)."
+        # Review output can be unstable; retry reviewer (do NOT leak mismatch strings into xiaobo retry notes).
+        for review_attempt in range(1, max(1, int(max_review_attempts_per_plan)) + 1):
+            review_res = llm.call_json(review_prompt_to_use)
+            record_llm_call(
+                conn,
+                plan_id=plan_id,
+                task_id=None,
+                agent="xiaojing",
+                scope="PLAN_REVIEW",
+                provider=review_res.provider,
+                prompt_text=review_prompt_to_use,
+                response_text=review_res.raw_response_text,
+                started_at_ts=review_res.started_at_ts,
+                finished_at_ts=review_res.finished_at_ts,
+                runtime_context_hash=stable_hash_text(review_prompt_to_use),
+                shared_prompt_version=prompts.shared.version,
+                shared_prompt_hash=prompts.shared.sha256,
+                agent_prompt_version=prompts.xiaojing.version,
+                agent_prompt_hash=prompts.xiaojing.sha256,
+                parsed_json=review_res.parsed_json,
+                normalized_json=None,
+                validator_error=None,
+                error_code=review_res.error_code,
+                error_message=review_res.error,
+                meta={
+                    "attempt": attempt,
+                    "review_attempt": review_attempt,
+                    "scope": "PLAN_REVIEW",
+                    "extra_calls": int(getattr(review_res, "extra_calls", 0)),
+                    "repair_used": bool(getattr(review_res, "repair_used", False)),
+                },
+            )
+            _append_llm_run(
+                config.LLM_RUNS_LOG_PATH,
+                {
+                    "ts": utc_now_iso(),
+                    "plan_id": plan_id,
+                    "task_id": None,
+                    "agent": "xiaojing",
+                    "shared_prompt_version": prompts.shared.version,
+                    "shared_prompt_hash": prompts.shared.sha256,
+                    "agent_prompt_version": prompts.xiaojing.version,
+                    "agent_prompt_hash": prompts.xiaojing.sha256,
+                    "runtime_context_hash": stable_hash_text(review_prompt_to_use),
+                    "final_prompt": review_prompt_to_use,
+                    "response": review_res.parsed_json or review_res.raw_response_text,
+                    "error": {"code": review_res.error_code, "message": review_res.error} if review_res.error else None,
+                    "scope": "PLAN_REVIEW",
+                    "attempt": attempt,
+                    "review_attempt": review_attempt,
+                },
+            )
+
+            if review_res.error or not isinstance(review_res.parsed_json, dict):
+                reason = str(review_res.error or review_res.error_code or "review_unparseable")
+                review_prompt_to_use = _build_review_retry_prompt(original_prompt=review_prompt, invalid_response=review_res.raw_response_text, reason=reason)
                 continue
-            raise PlanWorkflowError("plan review schema_version mismatch (expected xiaojing_review_v1)")
-        if review_json.get("review_target") != "PLAN":
-            if attempt < max_plan_attempts:
-                retry_notes += "\nPlan review_target mismatch (expected PLAN)."
-                continue
-            raise PlanWorkflowError("plan review_target mismatch (expected PLAN)")
-        ok, reason = validate_xiaojing_review(review_json, review_target="PLAN")
-        if not ok:
-            if attempt < max_plan_attempts:
-                retry_notes += "\nPlan review contract invalid (must fix):\n" + reason
-                continue
-            raise PlanWorkflowError(f"plan review contract invalid: {reason}")
-        else:
-            # Update latest PLAN_REVIEW telemetry row with normalized_json and validator_error (best-effort).
-            try:
-                conn.execute(
-                    """
-                    UPDATE llm_calls
-                    SET normalized_json = ?, validator_error = NULL
-                    WHERE llm_call_id = (
-                      SELECT llm_call_id FROM llm_calls
-                      WHERE scope='PLAN_REVIEW' AND plan_id = ?
-                      ORDER BY created_at DESC
-                      LIMIT 1
+
+            review_json = normalize_xiaojing_review(review_res.parsed_json, task_id=plan_id, review_target="PLAN")
+            last_review = review_json
+            ok, reason = validate_xiaojing_review(review_json, review_target="PLAN")
+            if ok:
+                # Update latest PLAN_REVIEW telemetry row with normalized_json (best-effort).
+                try:
+                    conn.execute(
+                        """
+                        UPDATE llm_calls
+                        SET normalized_json = ?, validator_error = NULL
+                        WHERE llm_call_id = (
+                          SELECT llm_call_id FROM llm_calls
+                          WHERE scope='PLAN_REVIEW' AND plan_id = ?
+                          ORDER BY created_at DESC
+                          LIMIT 1
+                        )
+                        """,
+                        (json.dumps(review_json, ensure_ascii=False), plan_id),
                     )
-                    """,
-                    (json.dumps(review_json, ensure_ascii=False), plan_id),
-                )
-            except Exception:
-                pass
+                except Exception:
+                    pass
+                break
+
+            detailed = _review_invalid_reason(review_json=review_json, expected_target="PLAN")
+            review_prompt_to_use = _build_review_retry_prompt(original_prompt=review_prompt, invalid_response=review_res.raw_response_text, reason=detailed)
+
+        # Still invalid after reviewer retries => regenerate plan (do not pollute retry_notes).
+        ok2, _ = validate_xiaojing_review(review_json, review_target="PLAN") if isinstance(review_json, dict) else (False, "")
+        if not ok2:
+            if keep_trying or attempt < max_plan_attempts:
+                continue
+            raise PlanWorkflowError("plan review invalid after retries (see llm_calls/LLM Explorer for details)")
 
         total_score = int(review_json.get("total_score") or 0)
         action_required = str(review_json.get("action_required") or "")
@@ -411,5 +543,5 @@ def generate_and_review_plan(
         # Feed reviewer suggestions back into the next attempt (without polluting the user top task).
         suggestions = review_json.get("suggestions") or []
         retry_notes += "\nReviewer feedback (must address):\n" + json.dumps(suggestions, ensure_ascii=False, indent=2)
-
-    raise PlanWorkflowError(f"plan not approved after {max_plan_attempts} attempts; last_review={json.dumps(last_review, ensure_ascii=False)}")
+        if not keep_trying and attempt >= int(max_plan_attempts):
+            raise PlanNotApprovedError(plan_id=locals().get("plan_id"), max_attempts=max_plan_attempts, last_review=last_review)
