@@ -36,6 +36,7 @@ def _ensure_layout() -> None:
         config.ARTIFACTS_DIR,
         config.REVIEWS_DIR,
         config.REQUIRED_DOCS_DIR,
+        config.DELIVERABLES_DIR,
         config.LOGS_DIR,
         config.PROMPTS_AGENTS_DIR,
         config.ROOT_DIR / "rubric",

@@ -8,7 +8,8 @@
 - `plans`：计划元信息（`plan_id/title/root_task_id/created_at/...`）
 - `task_nodes`：任务节点（`task_id/plan_id/node_type/status/attempt_count/active_artifact_id/...`）
 - `task_edges`：依赖/分解关系（`DECOMPOSE/DEPENDS_ON/ALTERNATIVE`）
-- `input_requirements` + `input_evidence`：输入需求与绑定证据
+- `input_requirements` + `evidences`：输入需求与绑定证据
+- `input_files`：输入文件索引（用于“输入被删除”的检测）
 - `artifacts`：任务产物（`path/format/sha256/...`）
 - `reviews`：审核结果（评分/建议等）
 - `task_events`：事件流（`ERROR/STATUS_CHANGED/ARTIFACT_CREATED/...`）
@@ -26,4 +27,3 @@
   - `--purge-workspace`：清 `workspace/*`
   - `--purge-tasks`：清 `tasks/*`
   - `--purge-logs`：清 `logs/*`
-

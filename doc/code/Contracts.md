@@ -50,7 +50,7 @@
 - `requirements[]`：可选输入要求（若出现，必须是对象数组）
 
 兼容与自动修复（都在 normalize 做）：
-- 别名容器：`tasks/links/inputs` → `nodes/edges/requirements`
+- 别名容器（JSON key）：`tasks` / `links` / `inputs` → `nodes` / `edges` / `requirements`
 - 字段别名：`id/type/from/to/...` → 规范字段
 - 外部 planner 的 `START->...->END` 链会被重写为 Root 的 `DECOMPOSE`，以保证 Root 可聚合 DONE
 - 若缺少 Root 的 `DECOMPOSE` 边，会补最小集合（Root → 所有子任务）
@@ -58,4 +58,3 @@
 实现：
 - 归一化：`core/contracts.py::normalize_plan_json`
 - 严格校验：`core/models.py::validate_plan_dict`
-
