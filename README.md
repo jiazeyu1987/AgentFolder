@@ -9,7 +9,7 @@ This project implements a single-machine, serial multi-agent workflow:
 1) Generate an approved task plan:
 
 ```bash
-python agent_cli.py create-plan --top-task "将Fruit注册成国内的二类证"
+python agent_cli.py create-plan --top-task "创建一个2048的游戏"
 ```
 
 2) Run the main loop:
@@ -54,8 +54,33 @@ Show ERROR events and counters for a single task:
 python agent_cli.py errors --task-id <TASK_ID>
 ```
 
-`python agent_cli.py status` also shows `last_error_code/last_error_at` and `waiting_skill_count` per task for quick diagnosis.
+`python agent_cli.py status` also shows `last_error_code/last_error_message/last_error_at`, `last_validator_error`, and `waiting_skill_count` per task for quick diagnosis.
 For `BLOCKED(WAITING_INPUT)` tasks it also shows a `missing_requirements` summary like `product_spec(0/1)`.
+
+Show recent LLM calls from the DB (includes validator errors like schema mismatch):
+
+```bash
+python agent_cli.py llm-calls --limit 50
+python agent_cli.py llm-calls --task-id <TASK_ID> --limit 50
+```
+
+## Recovery: reset FAILED
+
+If tasks are stuck in `FAILED` after fixing prompts/config, reset them to `READY`:
+
+```bash
+python agent_cli.py reset-failed --plan-id <PLAN_ID>
+python agent_cli.py reset-failed --plan-id <PLAN_ID> --include-blocked
+python agent_cli.py reset-failed --plan-id <PLAN_ID> --include-blocked --reset-attempts
+```
+
+## Recovery: reset DB (delete all state)
+
+Delete the SQLite state DB (clears all history and plans):
+
+```bash
+python agent_cli.py reset-db
+```
 
 ## Dependencies
 

@@ -12,8 +12,9 @@ from core.db import apply_migrations, connect, transaction
 from core.events import emit_event
 from core.error_counters import increment_counter, reset_counter
 from core.errors import apply_error_outcome, map_error_to_outcome, maybe_reset_failed_to_ready, record_error
+from core.llm_calls import record_llm_call
 from core.llm_client import LLMClient
-from core.llm_contracts import validate_xiaobo_action, validate_xiaojing_review
+from core.contracts import normalize_xiaobo_action, normalize_xiaojing_review, validate_xiaobo_action, validate_xiaojing_review
 from core.matcher import detect_removed_input_files, scan_inputs_and_bind_evidence
 from core.plan_loader import load_plan_into_db_if_needed
 from core.prompts import build_xiaobo_prompt, build_xiaojing_review_prompt, load_prompts, register_prompt_versions
@@ -105,67 +106,6 @@ def _write_required_docs(task_id: str, required_docs: List[Dict[str, Any]]) -> P
             lines.append(f"  - suggested_path: {doc['suggested_path']}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
-
-
-def _normalize_xiaobo_action_json(obj: Dict[str, Any], *, task_id: str) -> Dict[str, Any]:
-    """
-    Best-effort normalization for xiaobo_action_v1 outputs.
-
-    The model sometimes omits required fields (`task_id`) or uses alternative keys for NEEDS_INPUT.
-    Normalize these cases so the workflow can proceed deterministically.
-    """
-    if not isinstance(obj, dict):
-        return obj
-
-    if not isinstance(obj.get("task_id"), str) or not obj.get("task_id"):
-        obj["task_id"] = task_id
-
-    result_type = obj.get("result_type")
-    if isinstance(result_type, str):
-        obj["result_type"] = result_type.strip().upper()
-
-    if obj.get("result_type") == "NEEDS_INPUT":
-        needs = obj.get("needs_input")
-        if not isinstance(needs, dict):
-            needs = {}
-            obj["needs_input"] = needs
-
-        required_docs = needs.get("required_docs")
-        if isinstance(required_docs, list) and required_docs:
-            return obj
-
-        # Accept common alternative shapes.
-        docs: List[Dict[str, Any]] = []
-        missing_inputs = obj.get("missing_inputs")
-        if isinstance(missing_inputs, list):
-            for item in missing_inputs:
-                if not isinstance(item, dict):
-                    continue
-                name = str(item.get("name") or "").strip()
-                desc = str(item.get("description") or item.get("reason") or "").strip()
-                accepted = item.get("accepted_types") or item.get("type")
-                accepted_types: List[str] = []
-                if isinstance(accepted, list) and all(isinstance(x, str) for x in accepted):
-                    accepted_types = list(accepted)
-                elif isinstance(accepted, str) and accepted:
-                    accepted_types = [accepted]
-                if name:
-                    docs.append({"name": name, "description": desc or name, "accepted_types": accepted_types})
-
-        required_context = ((needs.get("required_context") if isinstance(needs, dict) else None) or obj.get("required_context"))
-        if isinstance(required_context, list):
-            for item in required_context:
-                if isinstance(item, str) and item.strip():
-                    docs.append({"name": item.strip(), "description": item.strip(), "accepted_types": []})
-
-        # Fallback to a generic doc request if the model didn't provide structured info.
-        if not docs:
-            reason = str(needs.get("reason") or obj.get("justification") or "").strip()
-            docs = [{"name": "clarification", "description": reason or "Please provide missing inputs.", "accepted_types": []}]
-
-        needs["required_docs"] = docs
-
-    return obj
 
 
 def _list_task_input_files(conn, task_id: str) -> List[Dict[str, Any]]:
@@ -306,17 +246,46 @@ def xiaobo_round(*, conn, plan_id: str, prompts, llm: LLMClient, llm_calls: int,
             },
         )
 
+        normalized_obj: Optional[Dict[str, Any]] = None
+        validator_error: Optional[str] = None
+        if not res.error and res.parsed_json:
+            normalized_obj = normalize_xiaobo_action(res.parsed_json, task_id=task_id)
+            ok, reason = validate_xiaobo_action(normalized_obj)
+            if not ok:
+                validator_error = reason
+        record_llm_call(
+            conn,
+            plan_id=plan_id,
+            task_id=task_id,
+            agent="xiaobo",
+            scope="TASK_ACTION",
+            provider=res.provider,
+            prompt_text=prompt,
+            response_text=res.raw_response_text,
+            started_at_ts=res.started_at_ts,
+            finished_at_ts=res.finished_at_ts,
+            runtime_context_hash=stable_hash_text(prompt),
+            shared_prompt_version=prompts.shared.version,
+            shared_prompt_hash=prompts.shared.sha256,
+            agent_prompt_version=prompts.xiaobo.version,
+            agent_prompt_hash=prompts.xiaobo.sha256,
+            parsed_json=res.parsed_json,
+            normalized_json=normalized_obj,
+            validator_error=validator_error,
+            error_code=res.error_code,
+            error_message=res.error,
+        )
+
         if res.error or not res.parsed_json:
             _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code=res.error_code or "LLM_FAILED", message=res.error or "llm failed")
             if _attempt_exceeded(conn, task_id):
                 _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="MAX_ATTEMPTS_EXCEEDED", message="Max attempts exceeded")
             continue
 
-        obj = res.parsed_json
-        obj = _normalize_xiaobo_action_json(obj, task_id=task_id)
+        obj = normalized_obj or normalize_xiaobo_action(res.parsed_json, task_id=task_id)
         ok, reason = validate_xiaobo_action(obj)
         if not ok:
-            _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="LLM_UNPARSEABLE", message=reason)
+            _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="LLM_UNPARSEABLE", message=reason, context={"validator_error": reason})
             if _attempt_exceeded(conn, task_id):
                 _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="MAX_ATTEMPTS_EXCEEDED", message="Max attempts exceeded")
             continue
@@ -404,14 +373,44 @@ def xiaojing_round(
             },
         )
 
+        normalized_obj: Optional[Dict[str, Any]] = None
+        validator_error: Optional[str] = None
+        if not res.error and res.parsed_json:
+            normalized_obj = normalize_xiaojing_review(res.parsed_json, task_id=task_id, review_target="NODE")
+            ok, reason = validate_xiaojing_review(normalized_obj, review_target="NODE")
+            if not ok:
+                validator_error = reason
+        record_llm_call(
+            conn,
+            plan_id=plan_id,
+            task_id=task_id,
+            agent="xiaojing",
+            scope="TASK_REVIEW",
+            provider=res.provider,
+            prompt_text=prompt,
+            response_text=res.raw_response_text,
+            started_at_ts=res.started_at_ts,
+            finished_at_ts=res.finished_at_ts,
+            runtime_context_hash=stable_hash_text(prompt),
+            shared_prompt_version=prompts.shared.version,
+            shared_prompt_hash=prompts.shared.sha256,
+            agent_prompt_version=prompts.xiaojing.version,
+            agent_prompt_hash=prompts.xiaojing.sha256,
+            parsed_json=res.parsed_json,
+            normalized_json=normalized_obj,
+            validator_error=validator_error,
+            error_code=res.error_code,
+            error_message=res.error,
+        )
+
         if res.error or not res.parsed_json:
             _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code=res.error_code or "LLM_FAILED", message=res.error or "llm failed")
             continue
 
-        obj = res.parsed_json
+        obj = normalized_obj or normalize_xiaojing_review(res.parsed_json, task_id=task_id, review_target="NODE")
         ok, reason = validate_xiaojing_review(obj, review_target="NODE")
         if not ok:
-            _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="LLM_UNPARSEABLE", message=reason)
+            _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="LLM_UNPARSEABLE", message=reason, context={"validator_error": reason})
             continue
 
         write_review_json(config.REVIEWS_DIR, task_id=task_id, review=obj)
@@ -577,14 +576,45 @@ def xiaojing_check_round(
             },
         )
 
+        normalized_obj: Optional[Dict[str, Any]] = None
+        validator_error: Optional[str] = None
+        if not res.error and res.parsed_json:
+            normalized_obj = normalize_xiaojing_review(res.parsed_json, task_id=check_task_id, review_target="NODE")
+            ok, reason = validate_xiaojing_review(normalized_obj, review_target="NODE")
+            if not ok:
+                validator_error = reason
+        record_llm_call(
+            conn,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            agent="xiaojing",
+            scope="CHECK_NODE_REVIEW",
+            provider=res.provider,
+            prompt_text=prompt,
+            response_text=res.raw_response_text,
+            started_at_ts=res.started_at_ts,
+            finished_at_ts=res.finished_at_ts,
+            runtime_context_hash=stable_hash_text(prompt),
+            shared_prompt_version=prompts.shared.version,
+            shared_prompt_hash=prompts.shared.sha256,
+            agent_prompt_version=prompts.xiaojing.version,
+            agent_prompt_hash=prompts.xiaojing.sha256,
+            parsed_json=res.parsed_json,
+            normalized_json=normalized_obj,
+            validator_error=validator_error,
+            error_code=res.error_code,
+            error_message=res.error,
+            meta={"target_task_id": target_task_id},
+        )
+
         if res.error or not res.parsed_json:
             _handle_error(conn, plan_id=plan_id, task_id=check_task_id, error_code=res.error_code or "LLM_FAILED", message=res.error or "llm failed")
             continue
 
-        obj = res.parsed_json
+        obj = normalized_obj or normalize_xiaojing_review(res.parsed_json, task_id=check_task_id, review_target="NODE")
         ok, reason = validate_xiaojing_review(obj, review_target="NODE")
         if not ok:
-            _handle_error(conn, plan_id=plan_id, task_id=check_task_id, error_code="LLM_UNPARSEABLE", message=reason)
+            _handle_error(conn, plan_id=plan_id, task_id=check_task_id, error_code="LLM_UNPARSEABLE", message=reason, context={"validator_error": reason})
             continue
 
         write_review_json(config.REVIEWS_DIR, task_id=check_task_id, review=obj)
@@ -690,14 +720,45 @@ def xiaoxie_check_round(
             },
         )
 
+        normalized_obj: Optional[Dict[str, Any]] = None
+        validator_error: Optional[str] = None
+        if not res.error and res.parsed_json:
+            normalized_obj = normalize_xiaojing_review(res.parsed_json, task_id=check_task_id, review_target="NODE")
+            ok, reason = validate_xiaojing_review(normalized_obj, review_target="NODE")
+            if not ok:
+                validator_error = reason
+        record_llm_call(
+            conn,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            agent="xiaoxie",
+            scope="CHECK_NODE_REVIEW",
+            provider=res.provider,
+            prompt_text=prompt,
+            response_text=res.raw_response_text,
+            started_at_ts=res.started_at_ts,
+            finished_at_ts=res.finished_at_ts,
+            runtime_context_hash=stable_hash_text(prompt),
+            shared_prompt_version=prompts.shared.version,
+            shared_prompt_hash=prompts.shared.sha256,
+            agent_prompt_version=prompts.xiaoxie.version,
+            agent_prompt_hash=prompts.xiaoxie.sha256,
+            parsed_json=res.parsed_json,
+            normalized_json=normalized_obj,
+            validator_error=validator_error,
+            error_code=res.error_code,
+            error_message=res.error,
+            meta={"target_task_id": target_task_id},
+        )
+
         if res.error or not res.parsed_json:
             _handle_error(conn, plan_id=plan_id, task_id=check_task_id, error_code=res.error_code or "LLM_FAILED", message=res.error or "llm failed")
             continue
 
-        obj = res.parsed_json
+        obj = normalized_obj or normalize_xiaojing_review(res.parsed_json, task_id=check_task_id, review_target="NODE")
         ok, reason = validate_xiaojing_review(obj, review_target="NODE")
         if not ok:
-            _handle_error(conn, plan_id=plan_id, task_id=check_task_id, error_code="LLM_UNPARSEABLE", message=reason)
+            _handle_error(conn, plan_id=plan_id, task_id=check_task_id, error_code="LLM_UNPARSEABLE", message=reason, context={"validator_error": reason})
             continue
 
         write_review_json(config.REVIEWS_DIR, task_id=check_task_id, review=obj)

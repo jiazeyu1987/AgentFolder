@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,10 +10,14 @@ from typing import Any, Dict, List, Optional
 
 import config
 from core.db import apply_migrations, connect
+from core.doctor import run_doctor
+from core.events import emit_event
 from core.llm_client import LLMClient
 from core.plan_workflow import generate_and_review_plan
 from core.prompts import load_prompts, register_prompt_versions
-from core.util import stable_hash_text
+from core.repair import repair_missing_root_tasks
+from core.util import stable_hash_text, utc_now_iso
+from core.contract_audit import audit_llm_calls
 from skills.registry import load_registry
 
 
@@ -65,12 +70,26 @@ def cmd_status(db_path: Path, plan_id: Optional[str]) -> int:
             LIMIT 1
           ) AS last_error_code,
           (
+            SELECT json_extract(e.payload_json, '$.message')
+            FROM task_events e
+            WHERE e.plan_id = n.plan_id AND e.task_id = n.task_id AND e.event_type = 'ERROR'
+            ORDER BY e.created_at DESC
+            LIMIT 1
+          ) AS last_error_message,
+          (
             SELECT e.created_at
             FROM task_events e
             WHERE e.plan_id = n.plan_id AND e.task_id = n.task_id AND e.event_type = 'ERROR'
             ORDER BY e.created_at DESC
             LIMIT 1
           ) AS last_error_at,
+          (
+            SELECT c.validator_error
+            FROM llm_calls c
+            WHERE c.task_id = n.task_id
+            ORDER BY c.created_at DESC
+            LIMIT 1
+          ) AS last_validator_error,
           (
             SELECT c.count
             FROM task_error_counters c
@@ -101,6 +120,10 @@ def cmd_status(db_path: Path, plan_id: Optional[str]) -> int:
             if int(count) < int(req["min_count"]):
                 missing.append(f"{req['name']}({int(count)}/{int(req['min_count'])})")
         row["missing_requirements"] = ", ".join(missing[:8])
+        for k in ("last_error_message", "last_validator_error"):
+            v = row.get(k)
+            if isinstance(v, str) and len(v) > 80:
+                row[k] = v[:80] + "..."
 
     print(f"plan_id: {plan['plan_id']}")
     print(f"title:   {plan['title']}")
@@ -133,7 +156,9 @@ def cmd_status(db_path: Path, plan_id: Optional[str]) -> int:
             "attempt_count",
             "waiting_skill_count",
             "last_error_code",
+            "last_error_message",
             "last_error_at",
+            "last_validator_error",
             "priority",
             "owner_agent_id",
             "node_type",
@@ -257,6 +282,115 @@ def cmd_llm_log(path: Path, limit: int) -> int:
                 ensure_ascii=False,
             )
         )
+    return 0
+
+
+def cmd_llm_calls(db_path: Path, plan_id: Optional[str], task_id: Optional[str], limit: int) -> int:
+    conn = connect(db_path)
+    apply_migrations(conn, config.MIGRATIONS_DIR)
+
+    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_calls'").fetchone()
+    if not exists:
+        print("llm_calls table not found (run migrations / update repo).", file=sys.stderr)
+        return 2
+
+    params: List[Any] = []
+    where_parts: List[str] = []
+    if plan_id:
+        where_parts.append("plan_id = ?")
+        params.append(plan_id)
+    if task_id:
+        where_parts.append("task_id = ?")
+        params.append(task_id)
+    where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+    rows = conn.execute(
+        f"""
+        SELECT
+          created_at,
+          plan_id,
+          task_id,
+          agent,
+          scope,
+          provider,
+          error_code,
+          error_message,
+          validator_error
+        FROM llm_calls
+        {where}
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (*params, int(limit)),
+    ).fetchall()
+
+    for r in rows:
+        ve = r["validator_error"]
+        if isinstance(ve, str) and len(ve) > 240:
+            ve = ve[:240] + "..."
+        em = r["error_message"]
+        if isinstance(em, str) and len(em) > 240:
+            em = em[:240] + "..."
+        print(
+            json.dumps(
+                {
+                    "created_at": r["created_at"],
+                    "plan_id": r["plan_id"],
+                    "task_id": r["task_id"],
+                    "agent": r["agent"],
+                    "scope": r["scope"],
+                    "provider": r["provider"],
+                    "error_code": r["error_code"],
+                    "error_message": em,
+                    "validator_error": ve,
+                },
+                ensure_ascii=False,
+            )
+        )
+    return 0
+
+
+def cmd_doctor(db_path: Path, plan_id: Optional[str]) -> int:
+    conn = connect(db_path)
+    apply_migrations(conn, config.MIGRATIONS_DIR)
+
+    issues = run_doctor(conn, plan_id=plan_id)
+    if not issues:
+        print("OK")
+        return 0
+    for i in issues:
+        print(json.dumps({"code": i.code, "message": i.message}, ensure_ascii=False))
+    return 1
+
+
+def cmd_repair_db(db_path: Path, plan_id: Optional[str]) -> int:
+    conn = connect(db_path)
+    apply_migrations(conn, config.MIGRATIONS_DIR)
+    n_roots = repair_missing_root_tasks(conn, plan_id=plan_id)
+    from core.repair import repair_missing_decompose_edges
+
+    n_edges = repair_missing_decompose_edges(conn, plan_id=plan_id)
+    conn.commit()
+    print(json.dumps({"repaired_root_tasks": int(n_roots), "repaired_decompose_edges": int(n_edges)}, ensure_ascii=False))
+    return 0
+
+
+def cmd_contract_audit(db_path: Path, plan_id: Optional[str], limit: int) -> int:
+    conn = connect(db_path)
+    apply_migrations(conn, config.MIGRATIONS_DIR)
+    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_calls'").fetchone()
+    if not exists:
+        print("llm_calls table not found.", file=sys.stderr)
+        return 2
+
+    rows, key_freq = audit_llm_calls(conn, plan_id=plan_id, limit=limit)
+    for r in rows:
+        print(json.dumps({"scope": r.scope, "agent": r.agent, "total": r.total, "with_error_code": r.with_error_code, "with_validator_error": r.with_validator_error}, ensure_ascii=False))
+    if key_freq:
+        print("--- keys_by_scope ---")
+        for scope, freq in sorted(key_freq.items()):
+            top = sorted(freq.items(), key=lambda x: x[1], reverse=True)[:30]
+            print(json.dumps({"scope": scope, "top_keys": top}, ensure_ascii=False))
     return 0
 
 
@@ -402,6 +536,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_llm.add_argument("--path", type=Path, default=config.LLM_RUNS_LOG_PATH)
     p_llm.add_argument("--limit", type=int, default=20)
 
+    p_llm_calls = sub.add_parser("llm-calls", help="Show recent LLM calls from DB (includes validator errors).")
+    p_llm_calls.add_argument("--plan-id", type=str, default=None)
+    p_llm_calls.add_argument("--task-id", type=str, default=None)
+    p_llm_calls.add_argument("--limit", type=int, default=50)
+
+    p_doctor = sub.add_parser("doctor", help="Self-check DB schema + basic integrity.")
+    p_doctor.add_argument("--plan-id", type=str, default=None)
+
+    p_repair = sub.add_parser("repair-db", help="Repair common DB integrity issues (safe).")
+    p_repair.add_argument("--plan-id", type=str, default=None)
+
+    p_audit = sub.add_parser("contract-audit", help="Audit recent llm_calls for contract drift (scopes/keys/errors).")
+    p_audit.add_argument("--plan-id", type=str, default=None)
+    p_audit.add_argument("--limit", type=int, default=200)
+
     p_prompt = sub.add_parser("prompt", help="Manage shared/agent prompts (versioned)")
     p_prompt_sub = p_prompt.add_subparsers(dest="prompt_cmd", required=True)
     p_prompt_list = p_prompt_sub.add_parser("list", help="List prompt slots and versions")
@@ -411,6 +560,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_prompt_set.add_argument("slot", type=str, help="KIND:NAME:AGENT (agent can be '-')")
     p_prompt_set.add_argument("--text", type=str, default=None)
     p_prompt_set.add_argument("--file", type=Path, default=None)
+
+    p_reset = sub.add_parser("reset-failed", help="Reset FAILED tasks to READY for a plan (re-run after fixing prompts/config).")
+    p_reset.add_argument("--plan-id", type=str, default=None, help="Plan id (defaults to current plan in tasks/plan.json)")
+    p_reset.add_argument("--include-blocked", action="store_true", help="Also reset BLOCKED tasks to READY")
+    p_reset.add_argument("--reset-attempts", action="store_true", help="Also reset attempt_count to 0")
+
+    p_reset_db = sub.add_parser("reset-db", help="Delete ALL state.db data (removes the DB file).")
 
     args = parser.parse_args(argv)
 
@@ -453,6 +609,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_errors(args.db, args.plan_id, args.task_id, args.limit)
     if args.cmd == "llm-log":
         return cmd_llm_log(args.path, args.limit)
+    if args.cmd == "llm-calls":
+        return cmd_llm_calls(args.db, args.plan_id, args.task_id, args.limit)
+    if args.cmd == "doctor":
+        return cmd_doctor(args.db, args.plan_id)
+    if args.cmd == "repair-db":
+        return cmd_repair_db(args.db, args.plan_id)
+    if args.cmd == "contract-audit":
+        return cmd_contract_audit(args.db, args.plan_id, args.limit)
     if args.cmd == "prompt":
         if args.prompt_cmd == "list":
             return cmd_prompt_list(args.db)
@@ -461,6 +625,65 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.prompt_cmd == "set":
             return cmd_prompt_set(args.db, args.slot, text=args.text, file_path=args.file)
         return 2
+    if args.cmd == "reset-failed":
+        conn = connect(args.db)
+        apply_migrations(conn, config.MIGRATIONS_DIR)
+        plan_id = args.plan_id
+        if not plan_id:
+            # Best-effort: read from tasks/plan.json
+            try:
+                import json as _json
+
+                plan_id = _json.loads(config.PLAN_PATH_DEFAULT.read_text(encoding="utf-8"))["plan"]["plan_id"]
+            except Exception:
+                plan_id = None
+        if not plan_id:
+            print("Provide --plan-id or ensure tasks/plan.json exists", file=sys.stderr)
+            return 2
+        statuses = ["FAILED"]
+        if bool(getattr(args, "include_blocked", False)):
+            statuses.append("BLOCKED")
+        placeholders = ",".join(["?"] * len(statuses))
+        rows = conn.execute(
+            f"SELECT task_id, status FROM task_nodes WHERE plan_id=? AND active_branch=1 AND status IN ({placeholders})",
+            (plan_id, *statuses),
+        ).fetchall()
+        for r in rows:
+            if bool(getattr(args, "reset_attempts", False)):
+                conn.execute(
+                    "UPDATE task_nodes SET status='READY', blocked_reason=NULL, attempt_count=0, updated_at=? WHERE task_id=?",
+                    (utc_now_iso(), r["task_id"]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE task_nodes SET status='READY', blocked_reason=NULL, updated_at=? WHERE task_id=?",
+                    (utc_now_iso(), r["task_id"]),
+                )
+            emit_event(conn, plan_id=plan_id, task_id=r["task_id"], event_type="STATUS_CHANGED", payload={"status": "READY", "blocked_reason": None})
+        conn.commit()
+        print(f"reset_failed: {len(rows)}")
+        return 0
+    if args.cmd == "reset-db":
+        db_path = Path(args.db)
+        wal_path = Path(str(db_path) + "-wal")
+        shm_path = Path(str(db_path) + "-shm")
+
+        deleted: List[str] = []
+        for p in (wal_path, shm_path, db_path):
+            try:
+                if p.exists():
+                    os.remove(str(p))
+                    deleted.append(str(p))
+            except Exception as exc:  # noqa: BLE001
+                print(f"Failed to delete {p}: {type(exc).__name__}: {exc}", file=sys.stderr)
+                return 1
+
+        print("reset_db_deleted:")
+        for p in deleted:
+            print(f"- {p}")
+        if not deleted:
+            print("(nothing to delete)")
+        return 0
     return 2
 
 

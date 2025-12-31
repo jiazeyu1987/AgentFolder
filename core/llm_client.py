@@ -53,6 +53,64 @@ def _extract_json_object(text: str) -> str:
     return match.group(0)
 
 
+def _escape_control_chars_in_json_strings(json_text: str) -> str:
+    """
+    Repair invalid JSON caused by raw control characters inside string literals.
+
+    Some models emit multi-line code inside JSON strings with literal newlines/tabs.
+    JSON forbids control characters in strings; they must be escaped (\\n, \\t, ...).
+
+    This function walks the JSON text and, when inside a quoted string, replaces any
+    character with codepoint < 0x20 with an escaped representation.
+    """
+    out: list[str] = []
+    in_string = False
+    escape = False
+
+    for ch in json_text:
+        if not in_string:
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+            continue
+
+        # inside string
+        if escape:
+            out.append(ch)
+            escape = False
+            continue
+
+        if ch == "\\":
+            out.append(ch)
+            escape = True
+            continue
+
+        if ch == '"':
+            out.append(ch)
+            in_string = False
+            continue
+
+        code = ord(ch)
+        if code < 0x20:
+            if ch == "\n":
+                out.append("\\n")
+            elif ch == "\r":
+                out.append("\\r")
+            elif ch == "\t":
+                out.append("\\t")
+            elif ch == "\b":
+                out.append("\\b")
+            elif ch == "\f":
+                out.append("\\f")
+            else:
+                out.append(f"\\u{code:04x}")
+            continue
+
+        out.append(ch)
+
+    return "".join(out)
+
+
 def _looks_like_refusal(text: str) -> bool:
     t = (text or "").strip().lower()
     if not t:
@@ -119,7 +177,12 @@ class LLMClient:
 
         try:
             json_text = _extract_json_object(res.raw_response_text)
-            parsed = json.loads(json_text)
+            try:
+                parsed = json.loads(json_text)
+            except json.JSONDecodeError as exc:
+                # Common repair: escape raw control chars inside strings (e.g. multi-line code).
+                repaired = _escape_control_chars_in_json_strings(json_text)
+                parsed = json.loads(repaired)
             if not isinstance(parsed, dict):
                 raise ValueError("parsed JSON is not an object")
             return LLMCallResult(
