@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "thresholds": {
+    "approve_min_score": 90,
+    "modify_min_score": 70,
+    "max_modify_rounds": 3
+  },
+  "plan_review": {
+    "total_score": 100,
+    "dimensions": [
+      { "dimension": "Completeness", "max_score": 40, "description": "Covers all mandatory sub-goals and regulatory/business steps." },
+      { "dimension": "Dependency Soundness", "max_score": 25, "description": "Dependencies are correct, acyclic, not redundant." },
+      { "dimension": "Executability", "max_score": 20, "description": "ACTION nodes are concrete; required inputs are expressible as requirements." },
+      { "dimension": "Clarity", "max_score": 15, "description": "Node naming and goal statements are unambiguous." }
+    ],
+    "suggestion_requirements": ["problem", "dimension", "change", "steps", "acceptance_criteria"]
+  },
+  "node_review": {
+    "total_score": 100,
+    "dimensions": [
+      { "dimension": "Correctness", "max_score": 40, "description": "No obvious factual mistakes; consistent with evidence." },
+      { "dimension": "Coverage", "max_score": 30, "description": "Fully responds to the node objective; no important omissions." },
+      { "dimension": "Traceability", "max_score": 20, "description": "Explicitly references evidence sources and paths." },
+      { "dimension": "Actionability", "max_score": 10, "description": "Output is directly usable (submit/use) without rework." }
+    ],
+    "issue_requirements": ["problem", "evidence", "impact", "suggestion", "acceptance_criteria"]
+  }
+}

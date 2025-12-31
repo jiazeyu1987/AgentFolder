@@ -1,0 +1,26 @@
+{
+  "plan": {
+    "plan_id": "ffc54b0c-3f93-43c3-98d6-078c351ccbef",
+    "root_task_id": "cbbb2c50-687c-4f39-9f47-95ae778d00cc",
+    "created_at": "2025-12-30T15:10:04Z",
+    "owner_agent_id": "xiaobo",
+    "constraints": {
+      "deadline": null,
+      "priority": "HIGH"
+    },
+    "title": "????2048???"
+  },
+  "nodes": [
+    {
+      "task_id": "cbbb2c50-687c-4f39-9f47-95ae778d00cc",
+      "plan_id": "ffc54b0c-3f93-43c3-98d6-078c351ccbef",
+      "node_type": "GOAL",
+      "title": "Task 1",
+      "owner_agent_id": "xiaobo",
+      "priority": 0,
+      "tags": []
+    }
+  ],
+  "edges": [],
+  "requirements": []
+}

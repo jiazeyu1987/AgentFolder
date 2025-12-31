@@ -1,0 +1,2 @@
+"""Skills system (registry + implementations)."""
+

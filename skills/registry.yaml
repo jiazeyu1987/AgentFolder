@@ -1,0 +1,118 @@
+version: 1
+skills:
+  - name: file_fingerprint
+    description: Compute sha256 and basic metadata of files
+    implementation: skills.impl.file_fingerprint:run
+    inputs:
+      - kind: FILE
+        required: true
+        schema:
+          fields: [path, sha256]
+    outputs:
+      artifacts: []
+      evidences:
+        - kind: FILE_HASH
+          schema:
+            fields: [sha256, path, size_bytes]
+    params:
+      schema: {}
+    idempotency:
+      strategy: INPUT_HASHES
+      cache: true
+
+  - name: text_extract
+    description: Extract text from pdf/docx/md/txt
+    implementation: skills.impl.text_extract:run
+    inputs:
+      - kind: FILE
+        required: true
+        schema:
+          fields: [path, sha256]
+    outputs:
+      artifacts:
+        - name: extracted_text
+          format: txt
+          path_template: "workspace/artifacts/{task_id}/extracted_{input_sha256}.txt"
+      evidences: []
+    params:
+      schema:
+        type: object
+        properties:
+          max_chars:
+            type: integer
+            default: 200000
+    idempotency:
+      strategy: INPUT_HASHES_PLUS_PARAMS
+      cache: true
+
+  - name: template_render
+    description: Render a template with provided JSON data
+    implementation: skills.impl.template_render:run
+    inputs:
+      - kind: FILE
+        required: false
+        schema:
+          fields: [path, sha256]
+    outputs:
+      artifacts:
+        - name: rendered
+          format: md
+          path_template: "workspace/artifacts/{task_id}/rendered.md"
+      evidences: []
+    params:
+      schema:
+        type: object
+        properties:
+          template_path:
+            type: string
+          data_json:
+            type: object
+    idempotency:
+      strategy: INPUT_HASHES_PLUS_PARAMS
+      cache: true
+
+  - name: diff_artifact
+    description: Create a unified diff between two text artifacts
+    implementation: skills.impl.diff_artifact:run
+    inputs: []
+    outputs:
+      artifacts:
+        - name: diff_summary
+          format: md
+          path_template: "workspace/artifacts/{task_id}/diff_summary.md"
+      evidences: []
+    params:
+      schema:
+        type: object
+        properties:
+          old_path:
+            type: string
+          new_path:
+            type: string
+    idempotency:
+      strategy: INPUT_HASHES_PLUS_PARAMS
+      cache: false
+
+  - name: validator_basic
+    description: Minimal structure validation for an artifact file
+    implementation: skills.impl.validator_basic:run
+    inputs: []
+    outputs:
+      artifacts: []
+      evidences:
+        - kind: VALIDATION
+          schema:
+            fields: [passed, missing]
+    params:
+      schema:
+        type: object
+        properties:
+          artifact_path:
+            type: string
+          required_sections:
+            type: array
+            items:
+              type: string
+    idempotency:
+      strategy: INPUT_HASHES_PLUS_PARAMS
+      cache: false

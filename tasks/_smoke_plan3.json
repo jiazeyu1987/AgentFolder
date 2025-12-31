@@ -1,0 +1,28 @@
+{
+  "plan": {
+    "plan_id": "578871c7-7815-4218-95ab-ebfbcb5f5427",
+    "root_task_id": "68cd8e99-1988-4181-8323-05fca5fe9717",
+    "owner_agent_id": "xiaobo",
+    "created_at": "2025-01-01T00:00:00Z",
+    "constraints": {
+      "deadline": null,
+      "priority": "HIGH"
+    },
+    "title": "????2048???"
+  },
+  "nodes": [
+    {
+      "task_id": "68cd8e99-1988-4181-8323-05fca5fe9717",
+      "plan_id": "578871c7-7815-4218-95ab-ebfbcb5f5427",
+      "goal_statement": "Build 2048 game",
+      "rationale": "",
+      "owner_agent_id": "xiaobo",
+      "priority": 0,
+      "tags": [],
+      "node_type": "GOAL",
+      "title": "Build 2048 game"
+    }
+  ],
+  "edges": [],
+  "requirements": []
+}

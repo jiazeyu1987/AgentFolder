@@ -1,0 +1,51 @@
+{
+  "plan": {
+    "plan_id": "91b718f9-f712-4557-b053-84b60d12910d",
+    "root_task_id": "e6ebb072-08ff-4de1-952e-e09e148cba8a",
+    "owner_agent_id": "xiaobo",
+    "created_at": "2025-01-01T00:00:00Z",
+    "constraints": {
+      "deadline": null,
+      "priority": "HIGH"
+    },
+    "title": "t"
+  },
+  "nodes": [
+    {
+      "task_id": "e6ebb072-08ff-4de1-952e-e09e148cba8a",
+      "plan_id": "91b718f9-f712-4557-b053-84b60d12910d",
+      "node_type": "GOAL",
+      "title": "Root",
+      "owner_agent_id": "xiaobo",
+      "priority": 0,
+      "tags": []
+    },
+    {
+      "task_id": "6e95ed9b-e65d-4407-84e6-5df53754230c",
+      "plan_id": "91b718f9-f712-4557-b053-84b60d12910d",
+      "node_type": "ACTION",
+      "title": "AUTO: missing node 6e95ed9b",
+      "goal_statement": null,
+      "rationale": "Autocreated placeholder node for referential integrity.",
+      "owner_agent_id": "xiaobo",
+      "priority": 0,
+      "tags": [
+        "autofix",
+        "placeholder"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "457c6b6c-19a6-4e6d-a6aa-3cb37c888058",
+      "plan_id": "91b718f9-f712-4557-b053-84b60d12910d",
+      "from_task_id": "e6ebb072-08ff-4de1-952e-e09e148cba8a",
+      "to_task_id": "6e95ed9b-e65d-4407-84e6-5df53754230c",
+      "edge_type": "DECOMPOSE",
+      "metadata": {
+        "and_or": "AND"
+      }
+    }
+  ],
+  "requirements": []
+}
