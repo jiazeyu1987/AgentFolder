@@ -93,6 +93,15 @@ def _ensure_list_container(plan_json: Dict[str, Any], *, dst_key: str, src_keys:
     return plan_json[dst_key]
 
 
+def _clean_top_task_for_goal(top_task: str) -> str:
+    # Keep only the first non-empty line so retry feedback doesn't pollute the goal statement/title.
+    for line in (top_task or "").splitlines():
+        s = line.strip()
+        if s:
+            return s[:200]
+    return "Untitled Task"
+
+
 def normalize_xiaobo_action(obj: Dict[str, Any], *, task_id: str) -> Dict[str, Any]:
     """
     Normalize xiaobo outputs to `xiaobo_action_v1` shape.
@@ -547,7 +556,7 @@ def normalize_plan_json(plan_json: Dict[str, Any], *, top_task: str, utc_now_iso
 
     title = str(plan.get("title") or "").strip()
     if not title:
-        title = top_task.strip().splitlines()[0].strip()[:120] or "Untitled Plan"
+        title = _clean_top_task_for_goal(top_task)[:120] or "Untitled Plan"
     plan["title"] = title
 
     if not is_uuid(plan.get("plan_id")):
@@ -665,7 +674,7 @@ def normalize_plan_json(plan_json: Dict[str, Any], *, top_task: str, utc_now_iso
                 "plan_id": plan_id,
                 "node_type": "GOAL" if is_root else "ACTION",
                 "title": "Root Task" if is_root else f"AUTO: missing node {task_id[:8]}",
-                "goal_statement": top_task.strip() if is_root else None,
+                "goal_statement": _clean_top_task_for_goal(top_task) if is_root else None,
                 "rationale": "Autocreated placeholder node for referential integrity.",
                 "owner_agent_id": "xiaobo",
                 "priority": 0,
@@ -700,7 +709,7 @@ def normalize_plan_json(plan_json: Dict[str, Any], *, top_task: str, utc_now_iso
         if n.get("task_id") == root_task_id and n.get("node_type") == "GOAL":
             gs = n.get("goal_statement")
             if not isinstance(gs, str) or not gs.strip():
-                n["goal_statement"] = top_task.strip()
+                n["goal_statement"] = _clean_top_task_for_goal(top_task)
         owner_agent_id = n.get("owner_agent_id")
         if not isinstance(owner_agent_id, str) or owner_agent_id.strip() not in ALLOWED_AGENTS:
             n["owner_agent_id"] = "xiaobo"

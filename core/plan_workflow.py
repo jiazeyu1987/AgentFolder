@@ -172,9 +172,18 @@ def generate_and_review_plan(
     available_skills = available_skills or []
     rubric = _load_plan_rubric()
 
+    # IMPORTANT: keep user intent stable. Retry feedback should not be appended into the "top_task" that
+    # becomes plan title/root goal_statement, otherwise the plan can include embedded JSON feedback.
+    user_top_task = top_task
+    retry_notes = ""
+
     last_review: Dict[str, Any] = {}
     for attempt in range(1, max_plan_attempts + 1):
-        plan_prompt = build_xiaobo_plan_prompt(prompts, top_task=top_task, constraints=constraints, skills=available_skills)
+        prompt_top_task = user_top_task
+        if retry_notes.strip():
+            prompt_top_task = user_top_task + "\n\n[RETRY_NOTES]\n" + retry_notes.strip()
+
+        plan_prompt = build_xiaobo_plan_prompt(prompts, top_task=prompt_top_task, constraints=constraints, skills=available_skills)
         plan_res = llm.call_json(plan_prompt)
         record_llm_call(
             conn,
@@ -225,12 +234,13 @@ def generate_and_review_plan(
         if outer.get("schema_version") != "xiaobo_plan_v1" or not isinstance(outer.get("plan_json"), dict):
             msg = "plan generation output must be JSON with schema_version=xiaobo_plan_v1 and plan_json object"
             if attempt < max_plan_attempts:
-                top_task = top_task + "\n\n" + msg
+                retry_notes += "\n" + msg
                 continue
             raise PlanWorkflowError(msg)
         plan_json = outer.get("plan_json")  # type: ignore[assignment]
 
-        plan_json = normalize_plan_json(plan_json, top_task=top_task, utc_now_iso=utc_now_iso)
+        # Normalize with the original user top task, not the retry feedback.
+        plan_json = normalize_plan_json(plan_json, top_task=user_top_task, utc_now_iso=utc_now_iso)
         plan = plan_json.get("plan") or {}
         plan_id = plan.get("plan_id")
         if not isinstance(plan_id, str) or not plan_id:
@@ -257,7 +267,7 @@ def generate_and_review_plan(
                     payload={"error_code": "PLAN_INVALID", "message": str(exc), "context": {"validator_error": str(exc)}},
                 )
             if attempt < max_plan_attempts:
-                top_task = top_task + "\n\nPlan JSON schema validation error (must fix):\n" + str(exc)
+                retry_notes += "\nPlan JSON schema validation error (must fix):\n" + str(exc)
                 continue
             raise PlanWorkflowError(f"PLAN_INVALID: {exc}") from exc
         else:
@@ -325,7 +335,7 @@ def generate_and_review_plan(
         )
         if review_res.error or not review_res.parsed_json:
             if attempt < max_plan_attempts:
-                top_task = top_task + "\n\nPlan review failed (must return valid xiaojing_review_v1 JSON). Error:\n" + str(review_res.error or review_res.error_code)
+                retry_notes += "\nPlan review failed (must return valid xiaojing_review_v1 JSON). Error:\n" + str(review_res.error or review_res.error_code)
                 continue
             raise PlanWorkflowError(f"plan review failed: {review_res.error}")
 
@@ -335,18 +345,18 @@ def generate_and_review_plan(
         last_review = review_json
         if review_json.get("schema_version") != "xiaojing_review_v1":
             if attempt < max_plan_attempts:
-                top_task = top_task + "\n\nPlan review schema_version mismatch (expected xiaojing_review_v1)."
+                retry_notes += "\nPlan review schema_version mismatch (expected xiaojing_review_v1)."
                 continue
             raise PlanWorkflowError("plan review schema_version mismatch (expected xiaojing_review_v1)")
         if review_json.get("review_target") != "PLAN":
             if attempt < max_plan_attempts:
-                top_task = top_task + "\n\nPlan review_target mismatch (expected PLAN)."
+                retry_notes += "\nPlan review_target mismatch (expected PLAN)."
                 continue
             raise PlanWorkflowError("plan review_target mismatch (expected PLAN)")
         ok, reason = validate_xiaojing_review(review_json, review_target="PLAN")
         if not ok:
             if attempt < max_plan_attempts:
-                top_task = top_task + "\n\nPlan review contract invalid (must fix):\n" + reason
+                retry_notes += "\nPlan review contract invalid (must fix):\n" + reason
                 continue
             raise PlanWorkflowError(f"plan review contract invalid: {reason}")
         else:
@@ -398,8 +408,8 @@ def generate_and_review_plan(
         with transaction(conn):
             emit_event(conn, plan_id=plan_id, event_type="PLAN_REVIEWED", payload={"total_score": total_score, "action_required": action_required, "attempt": attempt})
 
-        # Feed reviewer suggestions back into the next attempt by appending them to the top_task.
+        # Feed reviewer suggestions back into the next attempt (without polluting the user top task).
         suggestions = review_json.get("suggestions") or []
-        top_task = top_task + "\n\nReviewer feedback (must address):\n" + json.dumps(suggestions, ensure_ascii=False, indent=2)
+        retry_notes += "\nReviewer feedback (must address):\n" + json.dumps(suggestions, ensure_ascii=False, indent=2)
 
     raise PlanWorkflowError(f"plan not approved after {max_plan_attempts} attempts; last_review={json.dumps(last_review, ensure_ascii=False)}")
