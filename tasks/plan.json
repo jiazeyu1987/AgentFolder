@@ -1,61 +1,71 @@
 {
-  "title": "Create a 2048 Game",
-  "description": "Develop a fully functional clone of the popular 2048 puzzle game. The game will feature a responsive web interface, score tracking, and touch/keyboard controls.",
+  "title": "2048 Game Implementation",
+  "description": "Create a fully functional 2048 game as a web-based artifact containing HTML, CSS, and JavaScript.",
   "nodes": [
     {
-      "id": "node_1",
-      "title": "Create HTML Structure",
-      "type": "file_write",
-      "status": "pending",
-      "config": {
-        "path": "game/2048/index.html",
-        "content": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n    <meta charset='UTF-8'>\n    <meta name='viewport' content='width=device-width, initial-scale=1.0'>\n    <title>2048 Game</title>\n    <link rel='stylesheet' href='style.css'>\n</head>\n<body>\n    <div class='container'>\n        <div class='header'>\n            <h1>2048</h1>\n            <div class='scores-container'>\n                <div class='score-box'>\n                    <span class='score-title'>SCORE</span>\n                    <span class='score-value' id='score'>0</span>\n                </div>\n                <div class='score-box'>\n                    <span class='score-title'>BEST</span>\n                    <span class='score-value' id='best-score'>0</span>\n                </div>\n            </div>\n        </div>\n        <div class='game-intro'>\n            <p>Join the numbers and get to the <strong>2048 tile!</strong></p>\n            <button id='new-game-btn'>New Game</button>\n        </div>\n        <div class='game-container'>\n            <div class='grid-container'>\n                <!-- Grid cells will be generated here by JS or pre-defined -->\n                <div class='grid-cell'></div><div class='grid-cell'></div><div class='grid-cell'></div><div class='grid-cell'></div>\n                <div class='grid-cell'></div><div class='grid-cell'></div><div class='grid-cell'></div><div class='grid-cell'></div>\n                <div class='grid-cell'></div><div class='grid-cell'></div><div class='grid-cell'></div><div class='grid-cell'></div>\n                <div class='grid-cell'></div><div class='grid-cell'></div><div class='grid-cell'></div><div class='grid-cell'></div>\n            </div>\n            <div class='tile-container' id='tile-container'>\n                <!-- Tiles will be injected here by JS -->\n            </div>\n            <div id='game-message'>Game Over!</div>\n        </div>\n        <p class='game-explanation'>\n            <strong class='important'>HOW TO PLAY:</strong> Use your <strong>arrow keys</strong> or <strong>swipe</strong> to move the tiles. Tiles with the same number merge into one when they touch. Add them up to reach <strong>2048!</strong>\n        </p>\n    </div>\n    <script src='script.js'></script>\n</body>\n</html>"
-      },
-      "task_id": "86b52df6-d134-48d8-9a5f-5b44ce096d3f",
+      "id": "n_01",
+      "type": "TASK",
+      "title": "Design Game Logic & UI Structure",
+      "description": "Define the core game mechanics (grid size, tile movement, merging logic, score calculation) and plan the UI layout (header, grid container, score display, game over modal).",
+      "task_id": "7f211ab3-1834-4aa0-9f4a-b1dabdd55e3c",
       "node_type": "ACTION",
-      "plan_id": "fc7ac905-0a79-44d8-b52c-8ba351344442",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
-      "id": "node_2",
-      "title": "Create CSS Styles",
-      "type": "file_write",
-      "status": "pending",
-      "config": {
-        "path": "game/2048/style.css",
-        "content": "/* Simplified CSS for MVP */\nbody {\n    font-family: 'Clear Sans', 'Helvetica Neue', Arial, sans-serif;\n    background-color: #faf8ef;\n    color: #776e65;\n    margin: 0;\n    padding: 0;\n    display: flex;\n    justify-content: center;\n    align-items: center;\n    min-height: 100vh;\n}\n.container {\n    width: 500px;\n    margin: 0 auto;\n}\n.header {\n    display: flex;\n    justify-content: space-between;\n    align-items: center;\n    margin-bottom: 20px;\n}\n.score-box {\n    background: #bbada0;\n    padding: 5px 15px;\n    border-radius: 3px;\n    color: white;\n    text-align: center;\n    margin-left: 5px;\n    min-width: 60px;\n}\n.score-title { font-size: 13px; text-transform: uppercase; color: #eee4da; display: block; }\n.score-value { font-size: 20px; font-weight: bold; display: block; }\n.game-container {\n    position: relative;\n    background: #bbada0;\n    padding: 15px;\n    border-radius: 6px;\n    width: 500px;\n    height: 500px;\n    box-sizing: border-box;\n    touch-action: none; /* Prevent scrolling on mobile while playing */\n}\n.grid-container {\n    display: grid;\n    grid-template-columns: repeat(4, 1fr);\n    grid-template-rows: repeat(4, 1fr);\n    gap: 15px;\n}\n.grid-cell {\n    background: rgba(238, 228, 218, 0.35);\n    border-radius: 3px;\n    width: 100%;\n    height: 100%;\n}\n.tile-container {\n    position: absolute;\n    top: 0;\n    left: 0;\n    right: 0;\n    bottom: 0;\n    padding: 15px; /* Match game-container padding */\n    pointer-events: none; /* Let clicks pass through to grid if needed */\n}\n.tile {\n    position: absolute;\n    width: 106.25px; /* (500 - 30padding - 45gap) / 4 */\n    height: 106.25px;\n    border-radius: 3px;\n    background: #eee4da;\n    color: #776e65;\n    font-weight: bold;\n    font-size: 55px;\n    display: flex;\n    justify-content: center;\n    align-items: center;\n    transition: transform 100ms ease-in-out;\n    z-index: 10;\n}\n/* Tile Positions (approximate based on 15px gap + 106.25px width) */\n.tile-position-0-0 { transform: translate(0px, 0px); }\n.tile-position-1-0 { transform: translate(121.25px, 0px); }\n.tile-position-2-0 { transform: translate(242.5px, 0px); }\n.tile-position-3-0 { transform: translate(363.75px, 0px); }\n.tile-position-0-1 { transform: translate(0px, 121.25px); }\n.tile-position-1-1 { transform: translate(121.25px, 121.25px); }\n.tile-position-2-1 { transform: translate(242.5px, 121.25px); }\n.tile-position-3-1 { transform: translate(363.75px, 121.25px); }\n.tile-position-0-2 { transform: translate(0px, 242.5px); }\n.tile-position-1-2 { transform: translate(121.25px, 242.5px); }\n.tile-position-2-2 { transform: translate(242.5px, 242.5px); }\n.tile-position-3-2 { transform: translate(363.75px, 242.5px); }\n.tile-position-0-3 { transform: translate(0px, 363.75px); }\n.tile-position-1-3 { transform: translate(121.25px, 363.75px); }\n.tile-position-2-3 { transform: translate(242.5px, 363.75px); }\n.tile-position-3-3 { transform: translate(363.75px, 363.75px); }\n\n/* Tile Values */\n.tile-2 { background: #eee4da; }\n.tile-4 { background: #ede0c8; }\n.tile-8 { background: #f2b179; color: #f9f6f2; }\n.tile-16 { background: #f59563; color: #f9f6f2; }\n.tile-32 { background: #f67c5f; color: #f9f6f2; }\n.tile-64 { background: #f65e3b; color: #f9f6f2; }\n.tile-128 { background: #edcf72; color: #f9f6f2; font-size: 45px; }\n.tile-256 { background: #edcc61; color: #f9f6f2; font-size: 45px; }\n.tile-512 { background: #edc850; color: #f9f6f2; font-size: 45px; }\n.tile-1024 { background: #edc53f; color: #f9f6f2; font-size: 35px; }\n.tile-2048 { background: #edc22e; color: #f9f6f2; font-size: 35px; }\n\n#game-message {\n    display: none;\n    position: absolute;\n    top: 0; left: 0; right: 0; bottom: 0;\n    background: rgba(238, 228, 218, 0.73);\n    z-index: 100;\n    flex-direction: column;\n    align-items: center;\n    justify-content: center;\n    text-align: center;\n    animation: fade-in 800ms ease 1200ms;\n    animation-fill-mode: both;\n    color: #776e65;\n    font-size: 60px;\n    font-weight: bold;\n}\n#game-message.game-won { background: rgba(237, 194, 46, 0.5); color: #f9f6f2; }\n#new-game-btn {\n    background: #8f7a66;\n    border-radius: 3px;\n    padding: 0 20px;\n    height: 40px;\n    line-height: 40px;\n    color: #f9f6f2;\n    font-weight: bold;\n    cursor: pointer;\n    border: none;\n    outline: none;\n}"
-      },
-      "task_id": "70cdb4f9-d236-4570-90a0-e4bbf0add101",
+      "id": "n_02",
+      "type": "TASK",
+      "title": "Implement Game Skeleton",
+      "description": "Create the HTML structure and CSS styling to render the 4x4 grid and tiles. Ensure responsive design and semantic HTML tags.",
+      "dependencies": [
+        "n_01"
+      ],
+      "task_id": "63310f8b-2368-44f6-a061-de99863ebed5",
       "node_type": "ACTION",
-      "plan_id": "fc7ac905-0a79-44d8-b52c-8ba351344442",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
-      "id": "node_3",
-      "title": "Implement Game Logic",
-      "type": "file_write",
-      "status": "pending",
-      "config": {
-        "path": "game/2048/script.js",
-        "content": "document.addEventListener('DOMContentLoaded', () => {\n    const gridsize = 4;\n    let grid = [];\n    let score = 0;\n    let bestScore = localStorage.getItem('2048-best') || 0;\n    const tileContainer = document.getElementById('tile-container');\n    const scoreEl = document.getElementById('score');\n    const bestScoreEl = document.getElementById('best-score');\n    const messageEl = document.getElementById('game-message');\n    const newGameBtn = document.getElementById('new-game-btn');\n\n    bestScoreEl.textContent = bestScore;\n\n    function initGame() {\n        grid = Array(gridsize).fill().map(() => Array(gridsize).fill(null));\n        score = 0;\n        updateScore(0);\n        tileContainer.innerHTML = '';\n        messageEl.style.display = 'none';\n        messageEl.classList.remove('game-won');\n        addRandomTile();\n        addRandomTile();\n        renderGrid();\n    }\n\n    function updateScore(add) {\n        score += add;\n        scoreEl.textContent = score;\n        if (score > bestScore) {\n            bestScore = score;\n            bestScoreEl.textContent = bestScore;\n            localStorage.setItem('2048-best', bestScore);\n        }\n    }\n\n    function addRandomTile() {\n        const emptyCells = [];\n        for (let r = 0; r < gridsize; r++) {\n            for (let c = 0; c < gridsize; c++) {\n                if (!grid[r][c]) emptyCells.push({r, c});\n            }\n        }\n        if (emptyCells.length > 0) {\n            const {r, c} = emptyCells[Math.floor(Math.random() * emptyCells.length)];\n            grid[r][c] = { value: Math.random() < 0.9 ? 2 : 4, id: Math.random().toString(36).substr(2, 9) };\n        }\n    }\n\n    function renderGrid() {\n        tileContainer.innerHTML = '';\n        for (let r = 0; r < gridsize; r++) {\n            for (let c = 0; c < gridsize; c++) {\n                if (grid[r][c]) {\n                    const tile = document.createElement('div');\n                    tile.classList.add('tile', `tile-${grid[r][c].value}`, `tile-position-${c}-${r}`);\n                    tile.textContent = grid[r][c].value;\n                    tileContainer.appendChild(tile);\n                }\n            }\n        }\n    }\n\n    function move(direction) {\n        if (messageEl.style.display === 'flex') return;\n\n        let rotated = grid;\n        // Rotate grid so we always process \"left\"\n        for (let i = 0; i < (direction === 'right' ? 2 : direction === 'up' ? 3 : direction === 'down' ? 1 : 0); i++) {\n            rotated = rotateLeft(rotated);\n        }\n        if (direction === 'right' || direction === 'down') { // Adjust rotations logic slightly for simplicity or stick to standard\n             // Actually simpler to just write specific logic or standard vector logic.\n             // Let's stick to a simpler \"slide\" function that operates on rows.\n        }\n        \n        // Simplified Approach: Just handle vector logic directly\n        let moved = false;\n        const vectors = {\n            'up': {x: 0, y: -1},\n            'right': {x: 1, y: 0},\n            'down': {x: 0, y: 1},\n            'left': {x: -1, y: 0}\n        };\n        const vector = vectors[direction];\n        let traversals = { x: [], y: [] };\n        for (let pos = 0; pos < gridsize; pos++) {\n            traversals.x.push(pos);\n            traversals.y.push(pos);\n        }\n        // Always traverse from the farthest cell in the direction of movement\n        if (vector.x === 1) traversals.x = traversals.x.reverse();\n        if (vector.y === 1) traversals.y = traversals.y.reverse();\n\n        let mergedTiles = []; // Prevent double merge in one move\n\n        traversals.y.forEach(y => {\n            traversals.x.forEach(x => {\n                const cell = grid[y][x];\n                if (cell) {\n                    let next = { x: x + vector.x, y: y + vector.y };\n                    let prev = { x: x, y: y };\n                    \n                    // Keep moving the tile as far as possible\n                    while (\n                        next.x >= 0 && next.x < gridsize &&\n                        next.y >= 0 && next.y < gridsize &&\n                        (!grid[next.y][next.x] || (grid[next.y][next.x].value === cell.value && !mergedTiles.includes(`${next.x},${next.y}`)))\n                    ) {\n                        prev = { x: next.x, y: next.y };\n                        next = { x: prev.x + vector.x, y: prev.y + vector.y };\n                    }\n\n                    if (prev.x !== x || prev.y !== y) {\n                        // Move occurred\n                        const targetCell = grid[prev.y][prev.x];\n                        if (targetCell && targetCell.value === cell.value) {\n                            // Merge\n                            const newValue = cell.value * 2;\n                            grid[prev.y][prev.x] = { value: newValue, id: Math.random().toString(36) };\n                            grid[y][x] = null;\n                            updateScore(newValue);\n                            mergedTiles.push(`${prev.x},${prev.y}`);\n                            if (newValue === 2048) gameWon();\n                        } else {\n                            // Just Shift\n                            grid[prev.y][prev.x] = cell;\n                            grid[y][x] = null;\n                        }\n                        moved = true;\n                    }\n                }\n            });\n        });\n\n        if (moved) {\n            addRandomTile();\n            renderGrid();\n            if (isGameOver()) {\n                messageEl.textContent = 'Game Over!';\n                messageEl.style.display = 'flex';\n            }\n        }\n    }\n\n    function rotateLeft(matrix) {\n        const N = matrix.length;\n        const res = Array(N).fill().map(() => Array(N).fill(null));\n        for (let r=0; r<N; r++) {\n            for (let c=0; c<N; c++) {\n                res[N-1-c][r] = matrix[r][c];\n            }\n        }\n        return res;\n    }\n\n    function isGameOver() {\n        for (let r = 0; r < gridsize; r++) {\n            for (let c = 0; c < gridsize; c++) {\n                if (!grid[r][c]) return false;\n                if (c < gridsize-1 && grid[r][c].value === grid[r][c+1].value) return false;\n                if (r < gridsize-1 && grid[r][c].value === grid[r+1][c].value) return false;\n            }\n        }\n        return true;\n    }\n\n    function gameWon() {\n        // messageEl.textContent = 'You Win!';\n        // messageEl.classList.add('game-won');\n        // messageEl.style.display = 'flex';\n        // Usually keep playing until game over in 2048\n    }\n\n    // Controls\n    document.addEventListener('keydown', (e) => {\n        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {\n            e.preventDefault();\n            const map = {'ArrowUp': 'up', 'ArrowDown': 'down', 'ArrowLeft': 'left', 'ArrowRight': 'right'};\n            move(map[e.key]);\n        }\n    });\n\n    newGameBtn.addEventListener('click', initGame);\n\n    // Touch Support\n    let touchStartX = 0;\n    let touchStartY = 0;\n    const gameContainer = document.querySelector('.game-container');\n    \n    gameContainer.addEventListener('touchstart', (e) => {\n        touchStartX = e.changedTouches[0].screenX;\n        touchStartY = e.changedTouches[0].screenY;\n    }, {passive: false});\n\n    gameContainer.addEventListener('touchend', (e) => {\n        e.preventDefault();\n        const touchEndX = e.changedTouches[0].screenX;\n        const touchEndY = e.changedTouches[0].screenY;\n        const dx = touchEndX - touchStartX;\n        const dy = touchEndY - touchStartY;\n        const absDx = Math.abs(dx);\n        const absDy = Math.abs(dy);\n\n        if (Math.max(absDx, absDy) > 30) { // Threshold\n            if (absDx > absDy) {\n                move(dx > 0 ? 'right' : 'left');\n            } else {\n                move(dy > 0 ? 'down' : 'up');\n            }\n        }\n    }, {passive: false});\n\n    initGame();\n});"
-      },
-      "task_id": "2283c202-fab0-4c17-bd2d-661c9311f235",
+      "id": "n_03",
+      "type": "TASK",
+      "title": "Develop Core JavaScript Logic",
+      "description": "Implement the JavaScript for the game: initialize grid, handle keyboard inputs, move tiles, merge values, spawn random tiles (2 or 4), update score, and detect game over/win states.",
+      "dependencies": [
+        "n_01"
+      ],
+      "task_id": "a356bf8a-521d-414c-bd53-45b41f5da17a",
       "node_type": "ACTION",
-      "plan_id": "fc7ac905-0a79-44d8-b52c-8ba351344442",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
-      "task_id": "a86de0d8-3e77-49ef-b07c-821043587d47",
-      "plan_id": "fc7ac905-0a79-44d8-b52c-8ba351344442",
+      "id": "n_04",
+      "type": "TASK",
+      "title": "Assemble & Polish",
+      "description": "Combine HTML, CSS, and JS into a single, standalone HTML artifact. Add animations for tile movements and merging, and ensure touch controls work for mobile.",
+      "dependencies": [
+        "n_02",
+        "n_03"
+      ],
+      "task_id": "f8ce514b-3296-4a02-ac3f-f8537e584a10",
+      "node_type": "ACTION",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
+      "owner_agent_id": "xiaobo",
+      "priority": 0,
+      "tags": []
+    },
+    {
+      "task_id": "a26305ff-24af-4ea5-addf-0394a2ce60cf",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
       "node_type": "GOAL",
       "title": "Root Task",
-      "goal_statement": "创建一个2048的游戏\n\nPlan review schema_version mismatch (expected xiaojing_review_v1).",
+      "goal_statement": "创建一个2048的游戏",
       "rationale": "Autocreated placeholder node for referential integrity.",
       "owner_agent_id": "xiaobo",
       "priority": 0,
@@ -67,32 +77,92 @@
   ],
   "edges": [
     {
-      "from": "node_1",
-      "to": "node_2",
-      "from_task_id": "86b52df6-d134-48d8-9a5f-5b44ce096d3f",
-      "to_task_id": "70cdb4f9-d236-4570-90a0-e4bbf0add101",
-      "edge_id": "1ab874ae-dedf-45a7-b9e5-07c5b65f94b4",
-      "plan_id": "fc7ac905-0a79-44d8-b52c-8ba351344442",
+      "from": "n_01",
+      "to": "n_02",
+      "from_task_id": "7f211ab3-1834-4aa0-9f4a-b1dabdd55e3c",
+      "to_task_id": "63310f8b-2368-44f6-a061-de99863ebed5",
+      "edge_id": "b5a87e94-ce30-42be-840a-f3ba43322171",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
       "edge_type": "DEPENDS_ON",
       "metadata": {}
     },
     {
-      "from": "node_2",
-      "to": "node_3",
-      "from_task_id": "70cdb4f9-d236-4570-90a0-e4bbf0add101",
-      "to_task_id": "2283c202-fab0-4c17-bd2d-661c9311f235",
-      "edge_id": "54f8a3a2-0ef5-4cb3-b4b9-95eecdb93e92",
-      "plan_id": "fc7ac905-0a79-44d8-b52c-8ba351344442",
+      "from": "n_01",
+      "to": "n_03",
+      "from_task_id": "7f211ab3-1834-4aa0-9f4a-b1dabdd55e3c",
+      "to_task_id": "a356bf8a-521d-414c-bd53-45b41f5da17a",
+      "edge_id": "7768217c-c036-4ace-b97d-ee75327d308e",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
       "edge_type": "DEPENDS_ON",
       "metadata": {}
+    },
+    {
+      "from": "n_02",
+      "to": "n_04",
+      "from_task_id": "63310f8b-2368-44f6-a061-de99863ebed5",
+      "to_task_id": "f8ce514b-3296-4a02-ac3f-f8537e584a10",
+      "edge_id": "c237d7c8-542e-4930-a4b4-a5bc961be6ac",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "from": "n_03",
+      "to": "n_04",
+      "from_task_id": "a356bf8a-521d-414c-bd53-45b41f5da17a",
+      "to_task_id": "f8ce514b-3296-4a02-ac3f-f8537e584a10",
+      "edge_id": "8530dade-bb97-4c47-b7a0-91d90be5b29e",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "edge_id": "9d84a570-d457-4f1e-8ef1-8b665e094a2b",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
+      "from_task_id": "a26305ff-24af-4ea5-addf-0394a2ce60cf",
+      "to_task_id": "7f211ab3-1834-4aa0-9f4a-b1dabdd55e3c",
+      "edge_type": "DECOMPOSE",
+      "metadata": {
+        "and_or": "AND"
+      }
+    },
+    {
+      "edge_id": "d7e4953f-8fb8-4eba-99d1-c3cca3b46811",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
+      "from_task_id": "a26305ff-24af-4ea5-addf-0394a2ce60cf",
+      "to_task_id": "63310f8b-2368-44f6-a061-de99863ebed5",
+      "edge_type": "DECOMPOSE",
+      "metadata": {
+        "and_or": "AND"
+      }
+    },
+    {
+      "edge_id": "3fa007d1-9a20-46ce-9c5c-bbb38ea1a89e",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
+      "from_task_id": "a26305ff-24af-4ea5-addf-0394a2ce60cf",
+      "to_task_id": "a356bf8a-521d-414c-bd53-45b41f5da17a",
+      "edge_type": "DECOMPOSE",
+      "metadata": {
+        "and_or": "AND"
+      }
+    },
+    {
+      "edge_id": "481f0f27-b0fe-4465-9acf-7aa08512d115",
+      "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
+      "from_task_id": "a26305ff-24af-4ea5-addf-0394a2ce60cf",
+      "to_task_id": "f8ce514b-3296-4a02-ac3f-f8537e584a10",
+      "edge_type": "DECOMPOSE",
+      "metadata": {
+        "and_or": "AND"
+      }
     }
   ],
   "requirements": [],
   "plan": {
     "title": "创建一个2048的游戏",
-    "plan_id": "fc7ac905-0a79-44d8-b52c-8ba351344442",
-    "root_task_id": "a86de0d8-3e77-49ef-b07c-821043587d47",
-    "created_at": "2025-12-31T05:46:56Z",
+    "plan_id": "9beb4c1c-9779-4db9-bffb-73456dbab9ac",
+    "root_task_id": "a26305ff-24af-4ea5-addf-0394a2ce60cf",
+    "created_at": "2025-12-31T06:08:27Z",
     "owner_agent_id": "xiaobo",
     "constraints": {
       "deadline": null,

@@ -103,7 +103,13 @@ def run_doctor(conn: sqlite3.Connection, *, plan_id: Optional[str] = None) -> Li
             if _table_exists(conn, "task_nodes") and _table_exists(conn, "task_edges"):
                 node_cnt = conn.execute("SELECT COUNT(1) FROM task_nodes WHERE plan_id=?", (plan_id,)).fetchone()[0]
                 edge_cnt = conn.execute("SELECT COUNT(1) FROM task_edges WHERE plan_id=?", (plan_id,)).fetchone()[0]
-                if int(node_cnt) > 1 and int(edge_cnt) == 0:
-                    issues.append(DoctorIssue(code="PLAN_MISSING_EDGES", message=f"plan has {int(node_cnt)} nodes but 0 edges (missing DECOMPOSE tree)"))
+                decompose_cnt = conn.execute("SELECT COUNT(1) FROM task_edges WHERE plan_id=? AND edge_type='DECOMPOSE'", (plan_id,)).fetchone()[0]
+                if int(node_cnt) > 1 and int(decompose_cnt) == 0:
+                    issues.append(
+                        DoctorIssue(
+                            code="PLAN_MISSING_DECOMPOSE",
+                            message=f"plan has {int(node_cnt)} nodes but 0 DECOMPOSE edges (root aggregation cannot complete); total_edges={int(edge_cnt)}",
+                        )
+                    )
 
     return issues

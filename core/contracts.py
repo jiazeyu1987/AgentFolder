@@ -798,5 +798,27 @@ def normalize_plan_json(plan_json: Dict[str, Any], *, top_task: str, utc_now_iso
                     "metadata": {"and_or": "AND"},
                 }
             )
+    # If edges exist but there is no DECOMPOSE from root, add minimal root->children DECOMPOSE edges.
+    # Many external planners encode only DEPENDS_ON chains (START->...->END) which prevents GOAL aggregation.
+    has_root_decompose = any(e.get("edge_type") == "DECOMPOSE" and e.get("from_task_id") == root_task_id for e in edges)
+    if (not has_root_decompose) and len(nodes) > 1:
+        existing_pairs = {(e.get("from_task_id"), e.get("to_task_id"), e.get("edge_type")) for e in edges}
+        for n in nodes:
+            tid = n.get("task_id")
+            if tid == root_task_id:
+                continue
+            key = (root_task_id, tid, "DECOMPOSE")
+            if key in existing_pairs:
+                continue
+            edges.append(
+                {
+                    "edge_id": new_uuid(),
+                    "plan_id": plan_id,
+                    "from_task_id": root_task_id,
+                    "to_task_id": tid,
+                    "edge_type": "DECOMPOSE",
+                    "metadata": {"and_or": "AND"},
+                }
+            )
 
     return plan_json

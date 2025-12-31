@@ -63,7 +63,7 @@ def repair_missing_root_tasks(conn: sqlite3.Connection, *, plan_id: Optional[str
 
 def repair_missing_decompose_edges(conn: sqlite3.Connection, *, plan_id: Optional[str] = None) -> int:
     """
-    If a plan has >1 node but 0 edges, create a minimal DECOMPOSE tree: root -> all other nodes.
+    If a plan has >1 node but has no DECOMPOSE edges, create a minimal DECOMPOSE tree: root -> all other nodes.
     Returns number of inserted edges.
     """
     params: list[object] = []
@@ -82,13 +82,19 @@ def repair_missing_decompose_edges(conn: sqlite3.Connection, *, plan_id: Optiona
         pid = p["plan_id"]
         root = p["root_task_id"]
         node_cnt = conn.execute("SELECT COUNT(1) FROM task_nodes WHERE plan_id=?", (pid,)).fetchone()[0]
-        edge_cnt = conn.execute("SELECT COUNT(1) FROM task_edges WHERE plan_id=?", (pid,)).fetchone()[0]
-        if int(node_cnt) <= 1 or int(edge_cnt) != 0:
+        decompose_cnt = conn.execute("SELECT COUNT(1) FROM task_edges WHERE plan_id=? AND edge_type='DECOMPOSE'", (pid,)).fetchone()[0]
+        if int(node_cnt) <= 1 or int(decompose_cnt) != 0:
             continue
 
         node_rows = conn.execute("SELECT task_id FROM task_nodes WHERE plan_id=? AND task_id != ?", (pid, root)).fetchall()
         now = utc_now_iso()
         for n in node_rows:
+            exists = conn.execute(
+                "SELECT 1 FROM task_edges WHERE plan_id=? AND from_task_id=? AND to_task_id=? AND edge_type='DECOMPOSE'",
+                (pid, root, n["task_id"]),
+            ).fetchone()
+            if exists:
+                continue
             conn.execute(
                 """
                 INSERT INTO task_edges(edge_id, plan_id, from_task_id, to_task_id, edge_type, metadata_json, created_at)

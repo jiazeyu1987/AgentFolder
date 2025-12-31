@@ -94,6 +94,19 @@ def _apply_modify_or_escalate(conn, *, plan_id: str, task_id: str, suggestions: 
     )
 
 
+def _retry_review_or_escalate(conn, *, plan_id: str, task_id: str, reason: str, reviewer: str) -> None:
+    """
+    Review LLM returned invalid contract. Unlike executor failures, we keep the task in READY_TO_CHECK
+    (so the reviewer can retry) until MAX_TASK_ATTEMPTS is exceeded.
+    """
+    record_error(conn, plan_id=plan_id, task_id=task_id, error_code="LLM_UNPARSEABLE", message=reason, context={"validator_error": reason, "reviewer": reviewer})
+    _inc_attempt(conn, task_id)
+    if _attempt_exceeded(conn, task_id):
+        _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="MAX_ATTEMPTS_EXCEEDED", message="Max review attempts exceeded")
+        return
+    _set_status(conn, plan_id=plan_id, task_id=task_id, status="READY_TO_CHECK")
+
+
 def _write_required_docs(task_id: str, required_docs: List[Dict[str, Any]]) -> Path:
     ensure_dir(config.REQUIRED_DOCS_DIR)
     path = config.REQUIRED_DOCS_DIR / f"{task_id}.md"
@@ -410,7 +423,7 @@ def xiaojing_round(
         obj = normalized_obj or normalize_xiaojing_review(res.parsed_json, task_id=task_id, review_target="NODE")
         ok, reason = validate_xiaojing_review(obj, review_target="NODE")
         if not ok:
-            _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="LLM_UNPARSEABLE", message=reason, context={"validator_error": reason})
+            _retry_review_or_escalate(conn, plan_id=plan_id, task_id=task_id, reason=reason, reviewer="xiaojing")
             continue
 
         write_review_json(config.REVIEWS_DIR, task_id=task_id, review=obj)
@@ -614,7 +627,7 @@ def xiaojing_check_round(
         obj = normalized_obj or normalize_xiaojing_review(res.parsed_json, task_id=check_task_id, review_target="NODE")
         ok, reason = validate_xiaojing_review(obj, review_target="NODE")
         if not ok:
-            _handle_error(conn, plan_id=plan_id, task_id=check_task_id, error_code="LLM_UNPARSEABLE", message=reason, context={"validator_error": reason})
+            _retry_review_or_escalate(conn, plan_id=plan_id, task_id=check_task_id, reason=reason, reviewer="xiaojing")
             continue
 
         write_review_json(config.REVIEWS_DIR, task_id=check_task_id, review=obj)
@@ -758,7 +771,7 @@ def xiaoxie_check_round(
         obj = normalized_obj or normalize_xiaojing_review(res.parsed_json, task_id=check_task_id, review_target="NODE")
         ok, reason = validate_xiaojing_review(obj, review_target="NODE")
         if not ok:
-            _handle_error(conn, plan_id=plan_id, task_id=check_task_id, error_code="LLM_UNPARSEABLE", message=reason, context={"validator_error": reason})
+            _retry_review_or_escalate(conn, plan_id=plan_id, task_id=check_task_id, reason=reason, reviewer="xiaoxie")
             continue
 
         write_review_json(config.REVIEWS_DIR, task_id=check_task_id, review=obj)
