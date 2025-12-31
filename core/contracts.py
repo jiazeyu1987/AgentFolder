@@ -103,6 +103,15 @@ def normalize_xiaobo_action(obj: Dict[str, Any], *, task_id: str) -> Dict[str, A
     if not isinstance(obj, dict):
         return obj
 
+    # Some models wrap the action payload under `action`/`result`/`data`.
+    # Try to unwrap if the top-level does not look like a xiaobo action.
+    if "result_type" not in obj:
+        for k in ("action", "result", "output", "data", "payload", "response"):
+            v = obj.get(k)
+            if isinstance(v, dict) and ("result_type" in v or "artifact" in v or "needs_input" in v or "error" in v):
+                obj = v
+                break
+
     _normalize_key_aliases(obj, aliases={"schema_version": ["schema", "version"], "task_id": ["id", "taskId"]})
 
     # schema_version: default + aliases
@@ -189,7 +198,7 @@ def validate_xiaobo_action(obj: Dict[str, Any]) -> Tuple[bool, str]:
     if err:
         return False, err
     if obj.get("schema_version") != "xiaobo_action_v1":
-        return False, "schema_version mismatch"
+        return False, f"schema_version mismatch (got {obj.get('schema_version')})"
     if not is_str(obj.get("task_id")):
         return False, "task_id must be string"
     result_type = obj.get("result_type")

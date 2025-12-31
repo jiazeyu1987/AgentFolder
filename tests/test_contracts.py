@@ -14,6 +14,14 @@ class ContractsTest(unittest.TestCase):
         ok, reason = validate_xiaobo_action(norm)
         self.assertTrue(ok, reason)
 
+    def test_normalize_xiaobo_action_unwraps_action_key(self) -> None:
+        from core.contracts import normalize_xiaobo_action, validate_xiaobo_action
+
+        raw = {"action": {"task_id": "t", "result_type": "NOOP"}}
+        norm = normalize_xiaobo_action(raw, task_id="t")
+        ok, reason = validate_xiaobo_action(norm)
+        self.assertTrue(ok, reason)
+
     def test_normalize_plan_accepts_id_from_to_aliases(self) -> None:
         raw = {
             "plan": {"id": "not-a-uuid", "name": "Test Plan", "root": "root"},

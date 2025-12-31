@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -19,6 +21,339 @@ AGENT_CLI = ROOT_DIR / "agent_cli.py"
 class RunRequest:
     argv: list[str]
     cwd: Path
+
+
+class LLMExplorer(tk.Toplevel):
+    def __init__(self, *, parent: tk.Tk, db_path: str) -> None:
+        super().__init__(parent)
+        self.title("LLM Explorer (llm_calls)")
+        self.geometry("1120x760")
+
+        self._db_path = db_path
+
+        self._plan_id_var = tk.StringVar(value="")
+        self._task_id_var = tk.StringVar(value="")
+        self._agent_var = tk.StringVar(value="")
+        self._scope_var = tk.StringVar(value="")
+        self._limit_var = tk.StringVar(value="200")
+        self._errors_only_var = tk.BooleanVar(value=False)
+
+        self._selected_llm_call_id: str | None = None
+
+        self._build_ui()
+        self._refresh()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _build_ui(self) -> None:
+        outer = ttk.Frame(self, padding=10)
+        outer.pack(fill=BOTH, expand=True)
+
+        filters = ttk.Frame(outer)
+        filters.pack(fill=X)
+
+        ttk.Label(filters, text="plan-id").pack(side=LEFT)
+        ttk.Entry(filters, textvariable=self._plan_id_var, width=38).pack(side=LEFT, padx=(6, 14))
+        ttk.Label(filters, text="task-id").pack(side=LEFT)
+        ttk.Entry(filters, textvariable=self._task_id_var, width=38).pack(side=LEFT, padx=(6, 14))
+        ttk.Label(filters, text="agent").pack(side=LEFT)
+        ttk.Entry(filters, textvariable=self._agent_var, width=10).pack(side=LEFT, padx=(6, 14))
+        ttk.Label(filters, text="scope").pack(side=LEFT)
+        ttk.Entry(filters, textvariable=self._scope_var, width=18).pack(side=LEFT, padx=(6, 14))
+        ttk.Label(filters, text="limit").pack(side=LEFT)
+        ttk.Entry(filters, textvariable=self._limit_var, width=6).pack(side=LEFT, padx=(6, 14))
+        ttk.Checkbutton(filters, text="errors only", variable=self._errors_only_var).pack(side=LEFT)
+        ttk.Button(filters, text="Refresh", command=self._refresh).pack(side=LEFT, padx=(14, 0))
+
+        paned = ttk.PanedWindow(outer, orient="vertical")
+        paned.pack(fill=BOTH, expand=True, pady=(10, 0))
+
+        top = ttk.Frame(paned)
+        bottom = ttk.Frame(paned)
+        paned.add(top, weight=1)
+        paned.add(bottom, weight=2)
+
+        self._tree = ttk.Treeview(
+            top,
+            columns=("created_at", "scope", "agent", "plan_title", "plan_id", "task_title", "task_id", "error_code", "validator_error"),
+            show="headings",
+            height=12,
+        )
+        for col, w in [
+            ("created_at", 160),
+            ("scope", 140),
+            ("agent", 80),
+            ("plan_title", 180),
+            ("plan_id", 240),
+            ("task_title", 220),
+            ("task_id", 240),
+            ("error_code", 120),
+            ("validator_error", 220),
+        ]:
+            self._tree.heading(col, text=col)
+            self._tree.column(col, width=w, stretch=(col in {"validator_error"}))
+        self._tree.pack(fill=BOTH, expand=True, side=LEFT)
+        self._tree.bind("<<TreeviewSelect>>", self._on_select)
+
+        yscroll = ttk.Scrollbar(top, orient="vertical", command=self._tree.yview)
+        self._tree.configure(yscroll=yscroll.set)
+        yscroll.pack(side=LEFT, fill="y")
+
+        details_top = ttk.Frame(bottom)
+        details_top.pack(fill=X)
+        ttk.Button(details_top, text="Copy prompt", command=self._copy_prompt).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(details_top, text="Copy response", command=self._copy_response).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(details_top, text="Save prompt...", command=self._save_prompt).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(details_top, text="Save response...", command=self._save_response).pack(side=LEFT, padx=(0, 6))
+
+        nb = ttk.Notebook(bottom)
+        nb.pack(fill=BOTH, expand=True, pady=(8, 0))
+
+        self._prompt_text = scrolledtext.ScrolledText(nb, wrap="word")
+        self._resp_text = scrolledtext.ScrolledText(nb, wrap="word")
+        self._parsed_text = scrolledtext.ScrolledText(nb, wrap="word")
+        self._norm_text = scrolledtext.ScrolledText(nb, wrap="word")
+        self._meta_text = scrolledtext.ScrolledText(nb, wrap="word")
+
+        nb.add(self._prompt_text, text="Prompt")
+        nb.add(self._resp_text, text="Raw Response")
+        nb.add(self._parsed_text, text="Parsed JSON")
+        nb.add(self._norm_text, text="Normalized JSON")
+        nb.add(self._meta_text, text="Meta/Errors")
+
+    def _refresh(self) -> None:
+        for iid in self._tree.get_children():
+            self._tree.delete(iid)
+
+        try:
+            limit = int(self._limit_var.get().strip() or "200")
+        except ValueError:
+            limit = 200
+
+        plan_id = self._plan_id_var.get().strip()
+        task_id = self._task_id_var.get().strip()
+        agent = self._agent_var.get().strip()
+        scope = self._scope_var.get().strip()
+        errors_only = bool(self._errors_only_var.get())
+
+        where: list[str] = []
+        params: list[object] = []
+        if plan_id:
+            where.append("c.plan_id = ?")
+            params.append(plan_id)
+        if task_id:
+            where.append("c.task_id = ?")
+            params.append(task_id)
+        if agent:
+            where.append("c.agent = ?")
+            params.append(agent)
+        if scope:
+            where.append("c.scope = ?")
+            params.append(scope)
+        if errors_only:
+            where.append("(c.error_code IS NOT NULL OR c.validator_error IS NOT NULL)")
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        try:
+            conn = self._connect()
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("DB error", str(exc))
+            return
+
+        try:
+            exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_calls'").fetchone()
+            if not exists:
+                messagebox.showerror("Not found", "llm_calls table not found. Run migrations / update repo.")
+                return
+
+            rows = conn.execute(
+                f"""
+                SELECT
+                  c.llm_call_id,
+                  c.created_at,
+                  c.scope,
+                  c.agent,
+                  c.plan_id,
+                  p.title AS plan_title,
+                  c.task_id,
+                  n.title AS task_title,
+                  c.error_code,
+                  c.validator_error
+                FROM llm_calls c
+                LEFT JOIN plans p ON p.plan_id = c.plan_id
+                LEFT JOIN task_nodes n ON n.task_id = c.task_id
+                {where_sql}
+                ORDER BY c.created_at DESC
+                LIMIT ?
+                """,
+                (*params, int(limit)),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        for r in rows:
+            ve = r["validator_error"]
+            if isinstance(ve, str) and len(ve) > 120:
+                ve = ve[:120] + "..."
+            self._tree.insert(
+                "",
+                "end",
+                iid=r["llm_call_id"],
+                values=(
+                    r["created_at"],
+                    r["scope"],
+                    r["agent"],
+                    r["plan_title"],
+                    r["plan_id"],
+                    r["task_title"],
+                    r["task_id"],
+                    r["error_code"],
+                    ve,
+                ),
+            )
+
+        # Clear detail panels on refresh.
+        self._selected_llm_call_id = None
+        for box in (self._prompt_text, self._resp_text, self._parsed_text, self._norm_text, self._meta_text):
+            box.delete("1.0", END)
+
+    def _on_select(self, _evt: object) -> None:
+        sel = self._tree.selection()
+        if not sel:
+            return
+        llm_call_id = sel[0]
+        self._selected_llm_call_id = llm_call_id
+        self._load_details(llm_call_id)
+
+    def _load_details(self, llm_call_id: str) -> None:
+        try:
+            conn = self._connect()
+            row = conn.execute(
+                """
+                SELECT
+                  llm_call_id, created_at, started_at_ts, finished_at_ts,
+                  plan_id, task_id, agent, scope, provider,
+                  error_code, error_message, validator_error,
+                  prompt_text, response_text, parsed_json, normalized_json, meta_json
+                FROM llm_calls
+                WHERE llm_call_id = ?
+                """,
+                (llm_call_id,),
+            ).fetchone()
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Query failed", str(exc))
+            return
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if not row:
+            return
+
+        plan_title = None
+        task_title = None
+        try:
+            conn2 = self._connect()
+            if row["plan_id"]:
+                r2 = conn2.execute("SELECT title FROM plans WHERE plan_id=?", (row["plan_id"],)).fetchone()
+                if r2:
+                    plan_title = r2["title"]
+            if row["task_id"]:
+                r3 = conn2.execute("SELECT title FROM task_nodes WHERE task_id=?", (row["task_id"],)).fetchone()
+                if r3:
+                    task_title = r3["title"]
+        except Exception:
+            plan_title = plan_title
+            task_title = task_title
+        finally:
+            try:
+                conn2.close()
+            except Exception:
+                pass
+
+        def set_box(box: scrolledtext.ScrolledText, text: str) -> None:
+            box.delete("1.0", END)
+            box.insert(END, text or "")
+            box.see("1.0")
+
+        prompt = row["prompt_text"] or ""
+        resp = row["response_text"] or ""
+        parsed = row["parsed_json"] or ""
+        norm = row["normalized_json"] or ""
+
+        meta = {
+            "llm_call_id": row["llm_call_id"],
+            "created_at": row["created_at"],
+            "started_at_ts": row["started_at_ts"],
+            "finished_at_ts": row["finished_at_ts"],
+            "plan_id": row["plan_id"],
+            "plan_title": plan_title,
+            "task_id": row["task_id"],
+            "task_title": task_title,
+            "agent": row["agent"],
+            "scope": row["scope"],
+            "provider": row["provider"],
+            "error_code": row["error_code"],
+            "error_message": row["error_message"],
+            "validator_error": row["validator_error"],
+        }
+        extra = row["meta_json"]
+        if extra:
+            try:
+                meta["meta_json"] = json.loads(extra)
+            except Exception:
+                meta["meta_json"] = extra
+
+        def pretty_json(text: str) -> str:
+            try:
+                obj = json.loads(text)
+            except Exception:
+                return text
+            try:
+                return json.dumps(obj, ensure_ascii=False, indent=2)
+            except Exception:
+                return text
+
+        set_box(self._prompt_text, prompt)
+        set_box(self._resp_text, resp)
+        set_box(self._parsed_text, pretty_json(parsed))
+        set_box(self._norm_text, pretty_json(norm))
+        set_box(self._meta_text, json.dumps(meta, ensure_ascii=False, indent=2))
+
+    def _copy_prompt(self) -> None:
+        text = self._prompt_text.get("1.0", END).strip()
+        if not text:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
+    def _copy_response(self) -> None:
+        text = self._resp_text.get("1.0", END).strip()
+        if not text:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
+    def _save_prompt(self) -> None:
+        text = self._prompt_text.get("1.0", END)
+        if not text.strip():
+            return
+        path = filedialog.asksaveasfilename(title="Save prompt", initialdir=str(ROOT_DIR), defaultextension=".txt")
+        if path:
+            Path(path).write_text(text, encoding="utf-8")
+
+    def _save_response(self) -> None:
+        text = self._resp_text.get("1.0", END)
+        if not text.strip():
+            return
+        path = filedialog.asksaveasfilename(title="Save response", initialdir=str(ROOT_DIR), defaultextension=".txt")
+        if path:
+            Path(path).write_text(text, encoding="utf-8")
 
 
 class App(tk.Tk):
@@ -109,6 +444,7 @@ class App(tk.Tk):
         ttk.Button(tools, text="Open workspace/required_docs", command=self._open_required_docs).pack(side=LEFT, padx=(0, 6))
         ttk.Button(tools, text="Open tasks/plan.json", command=self._open_plan_json).pack(side=LEFT, padx=(0, 6))
         ttk.Button(tools, text="Open logs/llm_runs.jsonl", command=self._open_llm_log_file).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(tools, text="LLM Explorer", command=self._open_llm_explorer).pack(side=LEFT, padx=(0, 6))
         ttk.Button(tools, text="Reset DB (delete)", command=self._cmd_reset_db).pack(side=LEFT, padx=(0, 6))
         ttk.Button(tools, text="Clear output", command=self._clear_output).pack(side=LEFT, padx=(0, 6))
 
@@ -181,6 +517,16 @@ class App(tk.Tk):
             messagebox.showinfo("Not found", f"{path} does not exist yet.")
             return
         os.startfile(str(path))  # type: ignore[attr-defined]
+
+    def _open_llm_explorer(self) -> None:
+        db_path = self._db_path_var.get().strip()
+        if not db_path:
+            messagebox.showwarning("Missing", "DB path is empty.")
+            return
+        if not Path(db_path).exists():
+            messagebox.showwarning("Not found", f"{db_path} does not exist.")
+            return
+        LLMExplorer(parent=self, db_path=db_path)
 
     def _run(self, req: RunRequest) -> None:
         if self._running:
@@ -365,7 +711,10 @@ class App(tk.Tk):
         ok = messagebox.askyesno("Confirm", f"Delete ALL DB data?\n\n{db_path}\n\nThis removes the DB file.")
         if not ok:
             return
+        purge = messagebox.askyesno("Also purge files?", "Also delete workspace/*, tasks/*, and logs/* contents?\n\nThis removes all generated artifacts, reviews, required_docs, inputs, plan.json, and llm logs.")
         argv = self._base_argv() + ["reset-db"]
+        if purge:
+            argv += ["--purge-workspace", "--purge-tasks", "--purge-logs"]
         self._append("meta", "\n$ " + " ".join(argv) + "\n")
         self._run(RunRequest(argv=argv, cwd=ROOT_DIR))
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -567,6 +568,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_reset.add_argument("--reset-attempts", action="store_true", help="Also reset attempt_count to 0")
 
     p_reset_db = sub.add_parser("reset-db", help="Delete ALL state.db data (removes the DB file).")
+    p_reset_db.add_argument("--purge-workspace", action="store_true", help="Also delete workspace/* contents (inputs/artifacts/reviews/required_docs).")
+    p_reset_db.add_argument("--purge-tasks", action="store_true", help="Also delete tasks/* contents (e.g. tasks/plan.json).")
+    p_reset_db.add_argument("--purge-logs", action="store_true", help="Also delete logs/* contents (e.g. logs/llm_runs.jsonl).")
 
     args = parser.parse_args(argv)
 
@@ -678,11 +682,45 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"Failed to delete {p}: {type(exc).__name__}: {exc}", file=sys.stderr)
                 return 1
 
-        print("reset_db_deleted:")
-        for p in deleted:
-            print(f"- {p}")
-        if not deleted:
-            print("(nothing to delete)")
+        def purge_dir_contents(dir_path: Path) -> None:
+            if not dir_path.exists() or not dir_path.is_dir():
+                return
+            for child in dir_path.iterdir():
+                try:
+                    if child.is_dir():
+                        shutil.rmtree(child, ignore_errors=True)
+                    else:
+                        try:
+                            child.unlink()
+                        except FileNotFoundError:
+                            pass
+                except Exception:
+                    pass
+
+        if bool(getattr(args, "purge_workspace", False)):
+            purge_dir_contents(config.WORKSPACE_DIR)
+            deleted.append(str(config.WORKSPACE_DIR / "*"))
+            for p in (config.INPUTS_DIR, config.ARTIFACTS_DIR, config.REVIEWS_DIR, config.REQUIRED_DOCS_DIR):
+                try:
+                    p.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+        if bool(getattr(args, "purge_tasks", False)):
+            purge_dir_contents(config.TASKS_DIR)
+            deleted.append(str(config.TASKS_DIR / "*"))
+            try:
+                config.TASKS_DIR.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        if bool(getattr(args, "purge_logs", False)):
+            purge_dir_contents(config.LOGS_DIR)
+            deleted.append(str(config.LOGS_DIR / "*"))
+            try:
+                config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+        print(json.dumps({"deleted": deleted}, ensure_ascii=False))
         return 0
     return 2
 
