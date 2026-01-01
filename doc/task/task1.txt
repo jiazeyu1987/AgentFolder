@@ -1,0 +1,27 @@
+我现在需要做一个增强的UI,用react
+左边是控制面板
+控制面板里有1.toptask 2.create plan 3.run 4.status 5.reset db 6.export 这6个按钮
+控制面板有:输入文件夹 输出文件夹 DB文件夹 三个文件夹的位置
+控制面板
+中间是任务图
+任务图里有当前的所有任务的所有节点,通过颜色或者形态来标识不同节点的不同状态,一个节点也就是一个任务
+点击任意一个节点可以显示当前节点的状态以及缺了什么文件,各个Agent的输入和输出
+任务图还可以显示当前正在执行的节点
+
+右边是调试面板,也就是现在的LLM Explorer
+
+补充说明
+前端只是看板，CLI 仍然是主驱动，前端关了 CLI 也照跑，并且要不卡/不拖慢电脑
+React UI 是“只做前端 + 调用本机 CLI（subprocess）”
+新增一个 agent_cli graph --json
+LLM Explorer 先不做
+输入/输出/DB 路径是“全局配置”（写入 runtime_config.json）,但是UI要显示并且支持复制
+要有“选择 plan”的入口
+reset db功能和agent_ui一致,需要二次确认
+只在 Windows 跑
+
+CLI 独立运行：agent_cli.py run 作为单独进程运行（甚至用 Windows Task Scheduler / Start-Process 后台跑）。前端不直接“跑循环”，只发一次“启动/停止/单步”命令即可。
+前端只读 DB + 日志：UI 通过一个本地轻量后端读取 state.db（以及 llm_runs.jsonl/llm_calls），用轮询刷新（1–2s 或更慢）。轮询只做少量 SQL 查询，不会明显占 CPU。
+不要轮询跑 CLI：不要每秒执行 status/llm-calls 子进程（subprocess 频繁启动会卡）。应该直接查 DB（同一个后端进程常驻连接）。
+“当前正在执行节点”怎么判定：用 DB 里的状态即可（例如 status='IN_PROGRESS'，或最近事件/llm_calls 的 scope + 时间戳推断）。这也是轻查询。
+前端关闭不影响 CLI：因为 CLI 是独立进程；后端（如果只是读 DB）也可关，不影响 CLI。需要时再开 UI 继续看。
