@@ -480,6 +480,101 @@ def doctor_plan(
                         )
                     )
 
+            # v2 consistency checks:
+            # - DONE ACTION must have approved_artifact_id and it must exist in artifacts.
+            # - DONE CHECK must have at least one review row with reviewed_artifact_id present.
+            # - Warn if duplicate reviews exist for the same (check_task_id, reviewed_artifact_id).
+            for r in action_rows:
+                tid = str(r["task_id"])
+                title = str(r["title"] or "")
+                status = str(r["status"] or "")
+                if status != "DONE":
+                    continue
+                try:
+                    approved = conn.execute("SELECT approved_artifact_id FROM task_nodes WHERE task_id = ?", (tid,)).fetchone()
+                except sqlite3.OperationalError:
+                    approved = None
+                approved_id = str((approved["approved_artifact_id"] if approved else "") or "").strip()
+                if not approved_id:
+                    findings.append(
+                        DoctorFinding(
+                            code="V2_ACTION_DONE_NO_APPROVED",
+                            message="DONE ACTION missing approved_artifact_id",
+                            hint="Re-run CHECK review to approve a candidate artifact, or set workflow_mode=v1.",
+                            task_id=tid,
+                            task_title=title,
+                            json_path="$.task_nodes[task_id=<id>].approved_artifact_id",
+                        )
+                    )
+                    continue
+                art = conn.execute("SELECT artifact_id FROM artifacts WHERE artifact_id = ?", (approved_id,)).fetchone()
+                if not art:
+                    findings.append(
+                        DoctorFinding(
+                            code="V2_ACTION_DONE_BAD_APPROVED",
+                            message=f"approved_artifact_id not found in artifacts: {approved_id}",
+                            hint="DB points to a missing artifact; regenerate and re-approve, or fix the pointer.",
+                            task_id=tid,
+                            task_title=title,
+                            json_path="$.task_nodes[task_id=<id>].approved_artifact_id",
+                        )
+                    )
+
+            for r in check_rows:
+                tid = str(r["task_id"])
+                title = str(r["title"] or "")
+                status = str(r["status"] or "")
+                if status != "DONE":
+                    continue
+                latest = conn.execute(
+                    "SELECT reviewed_artifact_id, verdict FROM reviews WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
+                    (tid,),
+                ).fetchone()
+                if not latest:
+                    findings.append(
+                        DoctorFinding(
+                            code="V2_CHECK_DONE_NO_REVIEW",
+                            message="DONE CHECK has no corresponding review record",
+                            hint="Re-run the CHECK review to create a review record, or set workflow_mode=v1.",
+                            task_id=tid,
+                            task_title=title,
+                            json_path="$.reviews[task_id=<check>]",
+                        )
+                    )
+                    continue
+                reviewed = str((latest["reviewed_artifact_id"] or "") if "reviewed_artifact_id" in latest.keys() else "").strip()
+                if not reviewed:
+                    findings.append(
+                        DoctorFinding(
+                            code="V2_CHECK_DONE_BAD_REVIEW",
+                            message="Latest review for DONE CHECK is missing reviewed_artifact_id",
+                            hint="Review traceability fields are missing; run migrations and re-run review.",
+                            task_id=tid,
+                            task_title=title,
+                            json_path="$.reviews[task_id=<check>].reviewed_artifact_id",
+                        )
+                    )
+                    continue
+                dup = conn.execute(
+                    """
+                    SELECT COUNT(1) AS cnt
+                    FROM reviews
+                    WHERE task_id = ? AND reviewed_artifact_id = ?
+                    """,
+                    (tid, reviewed),
+                ).fetchone()
+                if dup and int(dup["cnt"]) > 1:
+                    findings.append(
+                        DoctorFinding(
+                            code="V2_REVIEW_DUPLICATE",
+                            message=f"Duplicate reviews detected for same CHECK+artifact (count={int(dup['cnt'])})",
+                            hint="Prefer the latest review and consider cleaning old duplicates; enable idempotency_key enforcement.",
+                            task_id=tid,
+                            task_title=title,
+                            json_path="$.reviews[task_id=<check>]",
+                        )
+                    )
+
     ok = len(findings) == 0
     return ok, findings
 

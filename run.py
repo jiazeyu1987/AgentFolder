@@ -22,8 +22,10 @@ from core.readiness import recompute_readiness_for_plan
 from core.reviews import insert_review, write_review_json
 from core.scheduler import pick_xiaobo_tasks, pick_xiaojing_tasks
 from core.scheduler import pick_xiaojing_check_nodes
+from core.scheduler import pick_v2_check_tasks
 from core.util import ensure_dir, safe_read_text, stable_hash_text, utc_now_iso
 from core.workflow_mode import WorkflowModeGuardError, ensure_mode_supported_for_action
+from core.v2_review_gate import ReviewContractMismatch, run_check_once as run_v2_check_once
 from skills.registry import load_registry, run_skill
 
 
@@ -445,6 +447,124 @@ def xiaojing_round(
             _set_status(conn, plan_id=plan_id, task_id=task_id, status="DONE")
         else:
             _apply_modify_or_escalate(conn, plan_id=plan_id, task_id=task_id, suggestions=obj.get("suggestions") or [])
+
+    return llm_calls
+
+
+def v2_check_round(
+    *,
+    conn,
+    plan_id: str,
+    prompts,
+    llm: LLMClient,
+    llm_calls: int,
+    rubric_json: Dict[str, Any],
+) -> int:
+    """
+    v2 minimal gate: execute CHECK nodes bound via task_nodes.review_target_task_id.
+    This replaces legacy reviewer flows (xiaojing_round/xiaojing_check_round/xiaoxie_check_round) in v2 mode.
+    """
+    checks = pick_v2_check_tasks(conn, plan_id=plan_id, limit=10)
+    for chk in checks:
+        check_task_id = chk["check_task_id"]
+        target_task_id = chk["target_task_id"]
+        check_owner = str(chk["check_owner"] or "xiaojing")
+
+        def reviewer_fn(ctx: Dict[str, Any]) -> Dict[str, Any]:
+            nonlocal llm_calls
+
+            reviewed_artifact_id = str(ctx.get("reviewed_artifact_id") or "")
+            artifact_path = None
+            if reviewed_artifact_id:
+                row = conn.execute("SELECT path FROM artifacts WHERE artifact_id = ?", (reviewed_artifact_id,)).fetchone()
+                if row and row["path"]:
+                    artifact_path = Path(str(row["path"]))
+            if not artifact_path:
+                artifact_path = load_active_artifact_path(conn, target_task_id)
+            if not artifact_path or not artifact_path.exists():
+                raise RuntimeError("artifact missing for review")
+            artifact_text = safe_read_text(artifact_path, max_chars=200_000)
+
+            from core.prompts import build_xiaojing_check_prompt
+
+            prompt = build_xiaojing_check_prompt(
+                prompts,
+                conn=conn,
+                plan_id=plan_id,
+                check_task_id=check_task_id,
+                rubric_json=rubric_json,
+                target_task_id=target_task_id,
+                target_artifacts=[{"task_id": target_task_id, "path": str(artifact_path), "content": artifact_text}],
+                reviewer=check_owner,
+            )
+            res = llm.call_json(prompt)
+            llm_calls += 1 + int(getattr(res, "extra_calls", 0))
+
+            _append_jsonl(
+                config.LLM_RUNS_LOG_PATH,
+                {
+                    "ts": utc_now_iso(),
+                    "plan_id": plan_id,
+                    "task_id": check_task_id,
+                    "agent": check_owner,
+                    "shared_prompt_version": prompts.shared.version,
+                    "shared_prompt_hash": prompts.shared.sha256,
+                    "agent_prompt_version": prompts.xiaojing.version,
+                    "agent_prompt_hash": prompts.xiaojing.sha256,
+                    "runtime_context_hash": stable_hash_text(prompt),
+                    "final_prompt": prompt,
+                    "response": res.parsed_json or res.raw_response_text,
+                    "error": {"code": res.error_code, "message": res.error} if res.error else None,
+                },
+            )
+
+            normalized_obj: Optional[Dict[str, Any]] = None
+            validator_error: Optional[str] = None
+            if not res.error and res.parsed_json:
+                normalized, err = normalize_and_validate("TASK_CHECK", res.parsed_json, {"task_id": check_task_id})
+                if isinstance(normalized, dict):
+                    normalized_obj = normalized
+                if err:
+                    validator_error = format_contract_error_short(err)
+            record_llm_call(
+                conn,
+                plan_id=plan_id,
+                task_id=check_task_id,
+                agent=check_owner,
+                scope="V2_CHECK_REVIEW",
+                provider=res.provider,
+                prompt_text=prompt,
+                response_text=res.raw_response_text,
+                started_at_ts=res.started_at_ts,
+                finished_at_ts=res.finished_at_ts,
+                runtime_context_hash=stable_hash_text(prompt),
+                shared_prompt_version=prompts.shared.version,
+                shared_prompt_hash=prompts.shared.sha256,
+                agent_prompt_version=prompts.xiaojing.version,
+                agent_prompt_hash=prompts.xiaojing.sha256,
+                parsed_json=res.parsed_json,
+                normalized_json=normalized_obj,
+                validator_error=validator_error,
+                error_code=res.error_code,
+                error_message=res.error,
+                meta={"target_task_id": target_task_id, "reviewed_artifact_id": ctx.get("reviewed_artifact_id")},
+            )
+
+            if res.error or not res.parsed_json:
+                raise RuntimeError(res.error or "llm failed")
+
+            obj = normalized_obj or res.parsed_json
+            obj, err = normalize_and_validate("TASK_CHECK", obj, {"task_id": check_task_id})
+            if err:
+                raise ReviewContractMismatch(format_contract_error_short(err), hint="LLM returned invalid review JSON; retry or inspect prompts/Contracts.md.")
+
+            score = int(obj.get("total_score") or 0)
+            verdict = "APPROVED" if score >= 90 else "REJECTED"
+            out = dict(obj)
+            out["verdict"] = verdict
+            return out
+
+        run_v2_check_once(conn, plan_id=plan_id, check_task_id=check_task_id, reviewer_fn=reviewer_fn)
 
     return llm_calls
 
@@ -933,11 +1053,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     apply_migrations(conn, config.MIGRATIONS_DIR)
 
     plan_id = load_plan_into_db_if_needed(conn, args.plan)
+    from core.runtime_config import get_runtime_config
+
+    cfg = get_runtime_config()
     if not bool(getattr(args, "skip_doctor", False)):
         from core.doctor import format_findings_human, run_doctor
-        from core.runtime_config import get_runtime_config
 
-        cfg = get_runtime_config()
         findings = run_doctor(conn, plan_id=plan_id, workflow_mode=cfg.workflow_mode)
         if findings:
             print("doctor failed (preflight):")
@@ -967,9 +1088,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             maybe_reset_failed_to_ready(conn, plan_id=plan_id)
             recompute_readiness_for_plan(conn, plan_id=plan_id)
             llm_calls = xiaobo_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, skills_registry=skills_registry)
-            llm_calls = xiaojing_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
-            llm_calls = xiaojing_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
-            llm_calls = xiaoxie_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+            if cfg.workflow_mode == "v2":
+                llm_calls = v2_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+            else:
+                llm_calls = xiaojing_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+                llm_calls = xiaojing_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+                llm_calls = xiaoxie_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
 
         if llm_calls > config.MAX_LLM_CALLS:
             record_error(conn, plan_id=plan_id, task_id=None, error_code="MAX_LLM_CALLS_EXCEEDED", message="Max LLM calls exceeded")

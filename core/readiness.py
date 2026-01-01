@@ -194,6 +194,37 @@ def recompute_readiness_for_plan(conn: sqlite3.Connection, *, plan_id: str) -> i
     _apply_alternative_selection(conn, plan_id=plan_id)
     _propagate_inactive(conn, plan_id=plan_id)
 
+    # v2: reviewer CHECK nodes are bound to ACTION via task_nodes.review_target_task_id. When the target ACTION is
+    # READY_TO_CHECK, its CHECK should be READY (even if it had previously completed) so it can run again.
+    try:
+        from core.workflow_mode import get_workflow_mode
+
+        if get_workflow_mode() == "v2":
+            v2_rows = conn.execute(
+                """
+                SELECT
+                  c.task_id AS check_task_id,
+                  c.status AS check_status,
+                  c.blocked_reason AS check_blocked_reason
+                FROM task_nodes a
+                JOIN task_nodes c ON c.review_target_task_id = a.task_id
+                WHERE a.plan_id = ?
+                  AND a.active_branch = 1
+                  AND a.node_type = 'ACTION'
+                  AND a.status = 'READY_TO_CHECK'
+                  AND c.active_branch = 1
+                  AND c.node_type = 'CHECK'
+                """,
+                (plan_id,),
+            ).fetchall()
+            for r in v2_rows:
+                # Do not override explicit blocks (e.g., WAITING_EXTERNAL).
+                if r["check_status"] in {"PENDING", "DONE"} and (r["check_blocked_reason"] is None or r["check_status"] == "DONE"):
+                    _set_status(conn, plan_id=plan_id, task_id=r["check_task_id"], status="READY", blocked_reason=None)
+    except Exception:
+        # Never fail readiness recompute for optional v2 hooks.
+        pass
+
     # Plan-review CHECK nodes (tags include ["review","plan"]) reflect whether the plan has been approved.
     plan_review_check_rows = conn.execute(
         """
@@ -256,13 +287,15 @@ def recompute_readiness_for_plan(conn: sqlite3.Connection, *, plan_id: str) -> i
 
     changed = 0
     rows = conn.execute(
-        "SELECT task_id, status, blocked_reason FROM task_nodes WHERE plan_id = ? AND active_branch = 1",
+        "SELECT task_id, status, blocked_reason, node_type, review_target_task_id FROM task_nodes WHERE plan_id = ? AND active_branch = 1",
         (plan_id,),
     ).fetchall()
     for row in rows:
         task_id = row["task_id"]
         status = row["status"]
         blocked_reason = row["blocked_reason"]
+        node_type = row["node_type"]
+        review_target_task_id = row["review_target_task_id"]
 
         if status in {"DONE", "ABANDONED", "IN_PROGRESS", "READY_TO_CHECK"}:
             continue
@@ -270,6 +303,19 @@ def recompute_readiness_for_plan(conn: sqlite3.Connection, *, plan_id: str) -> i
             continue
         if status == "TO_BE_MODIFY":
             continue
+
+        # v2: CHECK nodes bound via review_target_task_id should not be gated by DEPENDS_ON; the bound ACTION gate is
+        # evaluated by the v2 scheduler instead. Keep them READY unless explicitly blocked.
+        try:
+            from core.workflow_mode import get_workflow_mode
+
+            if get_workflow_mode() == "v2" and node_type == "CHECK" and isinstance(review_target_task_id, str) and review_target_task_id.strip():
+                if status != "READY" and blocked_reason is None:
+                    _set_status(conn, plan_id=plan_id, task_id=task_id, status="READY", blocked_reason=None)
+                    changed += 1
+                continue
+        except Exception:
+            pass
 
         deps_ok = _deps_satisfied(conn, plan_id, task_id)
         req_ok, missing = _requirements_satisfied(conn, task_id)

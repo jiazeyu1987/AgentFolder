@@ -26,6 +26,7 @@ def insert_review(
     task_id: str,
     reviewer_agent_id: str,
     review: Dict[str, Any],
+    idempotency_key: str | None = None,
     check_task_id: str | None = None,
     review_target_task_id: str | None = None,
     reviewed_artifact_id: str | None = None,
@@ -40,9 +41,10 @@ def insert_review(
             """
             INSERT INTO reviews(
               review_id, task_id, reviewer_agent_id, total_score, breakdown_json, suggestions_json, summary, action_required, created_at,
-              check_task_id, review_target_task_id, reviewed_artifact_id, verdict, acceptance_results_json
+              check_task_id, review_target_task_id, reviewed_artifact_id, verdict, acceptance_results_json,
+              idempotency_key
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 review_id,
@@ -59,8 +61,19 @@ def insert_review(
                 reviewed_artifact_id,
                 (verdict or "").strip().upper() if isinstance(verdict, str) else verdict,
                 json.dumps(acceptance_results or [], ensure_ascii=False) if acceptance_results is not None else None,
+                idempotency_key,
             ),
         )
+    except sqlite3.IntegrityError:
+        # Idempotency key already exists: return the existing review_id.
+        if idempotency_key:
+            row = conn.execute(
+                "SELECT review_id FROM reviews WHERE idempotency_key = ? ORDER BY created_at DESC LIMIT 1",
+                (idempotency_key,),
+            ).fetchone()
+            if row and row["review_id"]:
+                return str(row["review_id"])
+        raise
     except sqlite3.OperationalError:
         # Legacy schema fallback (older DB).
         conn.execute(

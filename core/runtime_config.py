@@ -29,6 +29,7 @@ class RuntimeConfig:
     export_include_candidates: bool
     max_artifact_versions_per_task: int
     max_review_versions_per_check: int
+    max_check_attempts_v2: int
 
 
 _CACHE: Optional[RuntimeConfig] = None
@@ -51,6 +52,7 @@ def _load_json(path: Path) -> Dict[str, Any]:
             "export_include_candidates": False,
             "max_artifact_versions_per_task": 50,
             "max_review_versions_per_check": 50,
+            "max_check_attempts_v2": 3,
         }
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -58,7 +60,8 @@ def _load_json(path: Path) -> Dict[str, Any]:
         raise RuntimeConfigError(f"Invalid JSON in {path}: {exc}") from exc
 
 
-def load_runtime_config(path: Path = config.RUNTIME_CONFIG_PATH) -> RuntimeConfig:
+def load_runtime_config(path: Optional[Path] = None) -> RuntimeConfig:
+    path = path or config.RUNTIME_CONFIG_PATH
     data = _load_json(path)
     llm = data.get("llm") or {}
     if not isinstance(llm, dict):
@@ -95,6 +98,10 @@ def load_runtime_config(path: Path = config.RUNTIME_CONFIG_PATH) -> RuntimeConfi
     if max_review_versions_per_check <= 0:
         raise RuntimeConfigError("max_review_versions_per_check must be > 0")
 
+    max_check_attempts_v2 = int(data.get("max_check_attempts_v2") or 3)
+    if max_check_attempts_v2 <= 0:
+        raise RuntimeConfigError("max_check_attempts_v2 must be > 0")
+
     return RuntimeConfig(
         llm=LLMRuntimeConfig(
             provider=provider,
@@ -108,11 +115,12 @@ def load_runtime_config(path: Path = config.RUNTIME_CONFIG_PATH) -> RuntimeConfi
         export_include_candidates=export_include_candidates,
         max_artifact_versions_per_task=max_artifact_versions_per_task,
         max_review_versions_per_check=max_review_versions_per_check,
+        max_check_attempts_v2=max_check_attempts_v2,
     )
 
 
-def get_runtime_config(path: Path = config.RUNTIME_CONFIG_PATH) -> RuntimeConfig:
+def get_runtime_config(path: Optional[Path] = None) -> RuntimeConfig:
     global _CACHE
     if _CACHE is None:
-        _CACHE = load_runtime_config(path)
+        _CACHE = load_runtime_config(path or config.RUNTIME_CONFIG_PATH)
     return _CACHE
