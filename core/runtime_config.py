@@ -22,6 +22,7 @@ class LLMRuntimeConfig:
 @dataclass(frozen=True)
 class RuntimeConfig:
     llm: LLMRuntimeConfig
+    workflow_mode: str  # "v1" | "v2"
 
 
 _CACHE: Optional[RuntimeConfig] = None
@@ -30,7 +31,7 @@ _CACHE: Optional[RuntimeConfig] = None
 def _load_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         # Default config if file is missing.
-        return {"llm": {"provider": "llm_demo", "claude_code_bin": "claude_code", "timeout_s": 300}}
+        return {"llm": {"provider": "llm_demo", "claude_code_bin": "claude_code", "timeout_s": 300}, "workflow_mode": "v1"}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
@@ -49,12 +50,18 @@ def load_runtime_config(path: Path = config.RUNTIME_CONFIG_PATH) -> RuntimeConfi
     timeout_s = int(llm.get("timeout_s") or 300)
     if timeout_s <= 0:
         raise RuntimeConfigError("llm.timeout_s must be > 0")
+
+    workflow_mode = str(data.get("workflow_mode") or "v1").strip().lower()
+    if workflow_mode not in {"v1", "v2"}:
+        raise RuntimeConfigError("workflow_mode must be v1|v2")
+
     return RuntimeConfig(
         llm=LLMRuntimeConfig(
             provider=provider,
             claude_code_bin=claude_code_bin,
             timeout_s=timeout_s,
-        )
+        ),
+        workflow_mode=workflow_mode,
     )
 
 

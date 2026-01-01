@@ -14,7 +14,7 @@ from core.error_counters import increment_counter, reset_counter
 from core.errors import apply_error_outcome, map_error_to_outcome, maybe_reset_failed_to_ready, record_error
 from core.llm_calls import record_llm_call
 from core.llm_client import LLMClient
-from core.contracts import normalize_xiaobo_action, normalize_xiaojing_review, validate_xiaobo_action, validate_xiaojing_review
+from core.contracts_v2 import format_contract_error_short, normalize_and_validate
 from core.matcher import detect_removed_input_files_all, scan_inputs_and_bind_evidence_all
 from core.plan_loader import load_plan_into_db_if_needed
 from core.prompts import build_xiaobo_prompt, build_xiaojing_review_prompt, load_prompts, register_prompt_versions
@@ -23,6 +23,7 @@ from core.reviews import insert_review, write_review_json
 from core.scheduler import pick_xiaobo_tasks, pick_xiaojing_tasks
 from core.scheduler import pick_xiaojing_check_nodes
 from core.util import ensure_dir, safe_read_text, stable_hash_text, utc_now_iso
+from core.workflow_mode import WorkflowModeGuardError, ensure_mode_supported_for_action
 from skills.registry import load_registry, run_skill
 
 
@@ -269,10 +270,11 @@ def xiaobo_round(*, conn, plan_id: str, prompts, llm: LLMClient, llm_calls: int,
         normalized_obj: Optional[Dict[str, Any]] = None
         validator_error: Optional[str] = None
         if not res.error and res.parsed_json:
-            normalized_obj = normalize_xiaobo_action(res.parsed_json, task_id=task_id)
-            ok, reason = validate_xiaobo_action(normalized_obj)
-            if not ok:
-                validator_error = reason
+            normalized, err = normalize_and_validate("TASK_ACTION", res.parsed_json, {"task_id": task_id})
+            if isinstance(normalized, dict):
+                normalized_obj = normalized
+            if err:
+                validator_error = format_contract_error_short(err)
         record_llm_call(
             conn,
             plan_id=plan_id,
@@ -302,10 +304,11 @@ def xiaobo_round(*, conn, plan_id: str, prompts, llm: LLMClient, llm_calls: int,
                 _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="MAX_ATTEMPTS_EXCEEDED", message="Max attempts exceeded")
             continue
 
-        obj = normalized_obj or normalize_xiaobo_action(res.parsed_json, task_id=task_id)
-        ok, reason = validate_xiaobo_action(obj)
-        if not ok:
-            _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="LLM_UNPARSEABLE", message=reason, context={"validator_error": reason})
+        obj = normalized_obj or res.parsed_json
+        obj, err = normalize_and_validate("TASK_ACTION", obj, {"task_id": task_id})
+        if err:
+            reason = format_contract_error_short(err)
+            _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="LLM_UNPARSEABLE", message=reason, context={"validator_error": reason, "validator_error_obj": err})
             if _attempt_exceeded(conn, task_id):
                 _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="MAX_ATTEMPTS_EXCEEDED", message="Max attempts exceeded")
             continue
@@ -396,10 +399,11 @@ def xiaojing_round(
         normalized_obj: Optional[Dict[str, Any]] = None
         validator_error: Optional[str] = None
         if not res.error and res.parsed_json:
-            normalized_obj = normalize_xiaojing_review(res.parsed_json, task_id=task_id, review_target="NODE")
-            ok, reason = validate_xiaojing_review(normalized_obj, review_target="NODE")
-            if not ok:
-                validator_error = reason
+            normalized, err = normalize_and_validate("TASK_CHECK", res.parsed_json, {"task_id": task_id})
+            if isinstance(normalized, dict):
+                normalized_obj = normalized
+            if err:
+                validator_error = format_contract_error_short(err)
         record_llm_call(
             conn,
             plan_id=plan_id,
@@ -427,10 +431,10 @@ def xiaojing_round(
             _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code=res.error_code or "LLM_FAILED", message=res.error or "llm failed")
             continue
 
-        obj = normalized_obj or normalize_xiaojing_review(res.parsed_json, task_id=task_id, review_target="NODE")
-        ok, reason = validate_xiaojing_review(obj, review_target="NODE")
-        if not ok:
-            _retry_review_or_escalate(conn, plan_id=plan_id, task_id=task_id, reason=reason, reviewer="xiaojing")
+        obj = normalized_obj or res.parsed_json
+        obj, err = normalize_and_validate("TASK_CHECK", obj, {"task_id": task_id})
+        if err:
+            _retry_review_or_escalate(conn, plan_id=plan_id, task_id=task_id, reason=format_contract_error_short(err), reviewer="xiaojing")
             continue
 
         write_review_json(config.REVIEWS_DIR, task_id=task_id, review=obj)
@@ -599,10 +603,11 @@ def xiaojing_check_round(
         normalized_obj: Optional[Dict[str, Any]] = None
         validator_error: Optional[str] = None
         if not res.error and res.parsed_json:
-            normalized_obj = normalize_xiaojing_review(res.parsed_json, task_id=check_task_id, review_target="NODE")
-            ok, reason = validate_xiaojing_review(normalized_obj, review_target="NODE")
-            if not ok:
-                validator_error = reason
+            normalized, err = normalize_and_validate("TASK_CHECK", res.parsed_json, {"task_id": check_task_id})
+            if isinstance(normalized, dict):
+                normalized_obj = normalized
+            if err:
+                validator_error = format_contract_error_short(err)
         record_llm_call(
             conn,
             plan_id=plan_id,
@@ -631,10 +636,10 @@ def xiaojing_check_round(
             _handle_error(conn, plan_id=plan_id, task_id=check_task_id, error_code=res.error_code or "LLM_FAILED", message=res.error or "llm failed")
             continue
 
-        obj = normalized_obj or normalize_xiaojing_review(res.parsed_json, task_id=check_task_id, review_target="NODE")
-        ok, reason = validate_xiaojing_review(obj, review_target="NODE")
-        if not ok:
-            _retry_review_or_escalate(conn, plan_id=plan_id, task_id=check_task_id, reason=reason, reviewer="xiaojing")
+        obj = normalized_obj or res.parsed_json
+        obj, err = normalize_and_validate("TASK_CHECK", obj, {"task_id": check_task_id})
+        if err:
+            _retry_review_or_escalate(conn, plan_id=plan_id, task_id=check_task_id, reason=format_contract_error_short(err), reviewer="xiaojing")
             continue
 
         write_review_json(config.REVIEWS_DIR, task_id=check_task_id, review=obj)
@@ -743,10 +748,11 @@ def xiaoxie_check_round(
         normalized_obj: Optional[Dict[str, Any]] = None
         validator_error: Optional[str] = None
         if not res.error and res.parsed_json:
-            normalized_obj = normalize_xiaojing_review(res.parsed_json, task_id=check_task_id, review_target="NODE")
-            ok, reason = validate_xiaojing_review(normalized_obj, review_target="NODE")
-            if not ok:
-                validator_error = reason
+            normalized, err = normalize_and_validate("TASK_CHECK", res.parsed_json, {"task_id": check_task_id})
+            if isinstance(normalized, dict):
+                normalized_obj = normalized
+            if err:
+                validator_error = format_contract_error_short(err)
         record_llm_call(
             conn,
             plan_id=plan_id,
@@ -775,10 +781,10 @@ def xiaoxie_check_round(
             _handle_error(conn, plan_id=plan_id, task_id=check_task_id, error_code=res.error_code or "LLM_FAILED", message=res.error or "llm failed")
             continue
 
-        obj = normalized_obj or normalize_xiaojing_review(res.parsed_json, task_id=check_task_id, review_target="NODE")
-        ok, reason = validate_xiaojing_review(obj, review_target="NODE")
-        if not ok:
-            _retry_review_or_escalate(conn, plan_id=plan_id, task_id=check_task_id, reason=reason, reviewer="xiaoxie")
+        obj = normalized_obj or res.parsed_json
+        obj, err = normalize_and_validate("TASK_CHECK", obj, {"task_id": check_task_id})
+        if err:
+            _retry_review_or_escalate(conn, plan_id=plan_id, task_id=check_task_id, reason=format_contract_error_short(err), reviewer="xiaoxie")
             continue
 
         write_review_json(config.REVIEWS_DIR, task_id=check_task_id, review=obj)
@@ -916,6 +922,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     _ensure_layout()
+    try:
+        ensure_mode_supported_for_action(action="run")
+    except WorkflowModeGuardError as exc:
+        print(f"workflow mode error: {exc}")
+        return 2
+
     conn = connect(args.db)
     apply_migrations(conn, config.MIGRATIONS_DIR)
 

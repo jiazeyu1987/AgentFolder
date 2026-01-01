@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import config
-from core.contracts import normalize_plan_json, normalize_xiaojing_review, validate_xiaojing_review
+from core.contracts_v2 import format_contract_error_short, normalize_and_validate
 from core.db import transaction
 from core.events import emit_event
 from core.llm_calls import record_llm_call
 from core.llm_client import LLMClient
-from core.models import PlanValidationError, validate_plan_dict
+from core.models import validate_plan_dict
 from core.plan_loader import upsert_plan
 from core.prompts import PromptBundle, build_xiaobo_plan_prompt, build_xiaojing_plan_review_prompt
 from core.reviews import insert_review, write_review_json
@@ -99,10 +99,11 @@ def _review_invalid_reason(*, review_json: Dict[str, Any], expected_target: str)
     rt = review_json.get("review_target")
     keys = sorted([k for k in review_json.keys() if isinstance(k, str)])
     head = f"invalid review JSON: schema_version={sv!r}, review_target={rt!r}, keys={keys[:25]}"
-    ok, reason = validate_xiaojing_review(review_json, review_target=expected_target)
-    if ok:
+    contract = "PLAN_REVIEW" if expected_target == "PLAN" else "TASK_CHECK"
+    _, err = normalize_and_validate(contract, review_json, {"task_id": review_json.get("task_id")})
+    if not err:
         return head
-    return head + f"; validator_error={reason}"
+    return head + f"; validator_error={format_contract_error_short(err)}"
 
 
 def _build_review_retry_prompt(*, original_prompt: str, invalid_response: str, reason: str) -> str:
@@ -358,8 +359,21 @@ def generate_and_review_plan(
             raise PlanWorkflowError(msg)
         plan_json = outer.get("plan_json")  # type: ignore[assignment]
 
-        # Normalize with the original user top task, not the retry feedback.
-        plan_json = normalize_plan_json(plan_json, top_task=user_top_task, utc_now_iso=utc_now_iso)
+        # Normalize+validate with the original user top task, not the retry feedback.
+        plan_json, plan_err = normalize_and_validate("PLAN_GEN", plan_json, {"top_task": user_top_task, "utc_now_iso": utc_now_iso})
+        if plan_err:
+            msg = format_contract_error_short(plan_err)
+            with transaction(conn):
+                emit_event(
+                    conn,
+                    plan_id=str(plan_id or "UNKNOWN"),
+                    event_type="ERROR",
+                    payload={"error_code": "PLAN_INVALID", "message": msg, "context": {"validator_error": msg, "validator_error_obj": plan_err}},
+                )
+            retry_notes += "\nPlan JSON schema validation error (must fix):\n" + msg
+            if keep_trying or attempt < max_plan_attempts:
+                continue
+            raise PlanWorkflowError(f"PLAN_INVALID: {msg}")
         plan = plan_json.get("plan") or {}
         plan_id = plan.get("plan_id")
         if not isinstance(plan_id, str) or not plan_id:
@@ -382,38 +396,23 @@ def generate_and_review_plan(
                 root_task_id=str(plan.get("root_task_id") or plan_id),
                 constraints=constraints,
             )
+        # Update latest PLAN_GEN telemetry row with normalized_json (best-effort).
         try:
-            validate_plan_dict(plan_json)
-        except PlanValidationError as exc:
-            with transaction(conn):
-                emit_event(
-                    conn,
-                    plan_id=plan_id,
-                    event_type="ERROR",
-                    payload={"error_code": "PLAN_INVALID", "message": str(exc), "context": {"validator_error": str(exc)}},
+            conn.execute(
+                """
+                UPDATE llm_calls
+                SET normalized_json = ?, validator_error = NULL
+                WHERE llm_call_id = (
+                  SELECT llm_call_id FROM llm_calls
+                  WHERE scope='PLAN_GEN'
+                  ORDER BY created_at DESC
+                  LIMIT 1
                 )
-            retry_notes += "\nPlan JSON schema validation error (must fix):\n" + str(exc)
-            if keep_trying or attempt < max_plan_attempts:
-                continue
-            raise PlanWorkflowError(f"PLAN_INVALID: {exc}") from exc
-        else:
-            # Update latest PLAN_GEN telemetry row with normalized_json (best-effort).
-            try:
-                conn.execute(
-                    """
-                    UPDATE llm_calls
-                    SET normalized_json = ?
-                    WHERE llm_call_id = (
-                      SELECT llm_call_id FROM llm_calls
-                      WHERE scope='PLAN_GEN'
-                      ORDER BY created_at DESC
-                      LIMIT 1
-                    )
-                    """,
-                    (json.dumps(plan_json, ensure_ascii=False),),
-                )
-            except Exception:
-                pass
+                """,
+                (json.dumps(plan_json, ensure_ascii=False),),
+            )
+        except Exception:
+            pass
 
         review_prompt = build_xiaojing_plan_review_prompt(prompts, plan_id=plan_id, rubric_json=rubric, plan_json=plan_json)
         review_prompt_to_use = review_prompt
@@ -477,10 +476,11 @@ def generate_and_review_plan(
                 review_prompt_to_use = _build_review_retry_prompt(original_prompt=review_prompt, invalid_response=review_res.raw_response_text, reason=reason)
                 continue
 
-            review_json = normalize_xiaojing_review(review_res.parsed_json, task_id=plan_id, review_target="PLAN")
+            review_json, review_err = normalize_and_validate("PLAN_REVIEW", review_res.parsed_json, {"plan_id": plan_id, "task_id": plan_id})
+            if not isinstance(review_json, dict):
+                review_json = {}
             last_review = review_json
-            ok, reason = validate_xiaojing_review(review_json, review_target="PLAN")
-            if ok:
+            if not review_err:
                 # Update latest PLAN_REVIEW telemetry row with normalized_json (best-effort).
                 try:
                     conn.execute(
@@ -504,8 +504,8 @@ def generate_and_review_plan(
             review_prompt_to_use = _build_review_retry_prompt(original_prompt=review_prompt, invalid_response=review_res.raw_response_text, reason=detailed)
 
         # Still invalid after reviewer retries => regenerate plan (do not pollute retry_notes).
-        ok2, _ = validate_xiaojing_review(review_json, review_target="PLAN") if isinstance(review_json, dict) else (False, "")
-        if not ok2:
+        _, final_review_err = normalize_and_validate("PLAN_REVIEW", review_json, {"plan_id": plan_id, "task_id": plan_id})
+        if final_review_err:
             if keep_trying or attempt < max_plan_attempts:
                 continue
             raise PlanWorkflowError("plan review invalid after retries (see llm_calls/LLM Explorer for details)")

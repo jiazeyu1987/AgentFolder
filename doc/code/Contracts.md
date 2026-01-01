@@ -1,6 +1,46 @@
 ﻿# Contracts
 
-本仓库把关键输入/输出收敛为 3 个契约（单一事实来源：`core/contracts.py`）。
+本仓库把关键输入/输出收敛为契约（单一事实来源：`core/contracts_v2.py`，并复用 `core/contracts.py` 的归一化/兼容逻辑）。
+
+## P0.2 Contract Summary（machine-readable）
+<!-- CONTRACT_SUMMARY_JSON_START -->
+{
+  "TASK_ACTION": {
+    "schema_version": "xiaobo_action_v1",
+    "required_keys": ["schema_version", "task_id", "result_type"],
+    "enums": {
+      "result_type": ["ARTIFACT", "NEEDS_INPUT", "NOOP", "ERROR"],
+      "artifact.format": ["md", "txt", "json", "html", "css", "js"]
+    }
+  },
+  "PLAN_REVIEW": {
+    "schema_version": "xiaojing_review_v1",
+    "required_keys": ["schema_version", "task_id", "review_target", "total_score", "action_required", "summary", "breakdown", "suggestions"],
+    "enums": {
+      "review_target": ["PLAN"],
+      "action_required": ["APPROVE", "MODIFY", "REQUEST_EXTERNAL_INPUT"],
+      "suggestions[*].priority": ["HIGH", "MED", "LOW"]
+    }
+  },
+  "TASK_CHECK": {
+    "schema_version": "xiaojing_review_v1",
+    "required_keys": ["schema_version", "task_id", "review_target", "total_score", "action_required", "summary", "breakdown", "suggestions"],
+    "enums": {
+      "review_target": ["NODE"],
+      "action_required": ["APPROVE", "MODIFY", "REQUEST_EXTERNAL_INPUT"],
+      "suggestions[*].priority": ["HIGH", "MED", "LOW"]
+    }
+  },
+  "PLAN_GEN": {
+    "schema_version": "plan_json_v1",
+    "required_keys": ["plan", "nodes", "edges"],
+    "enums": {
+      "nodes[*].node_type": ["GOAL", "ACTION", "CHECK"],
+      "edges[*].edge_type": ["DECOMPOSE", "DEPENDS_ON", "ALTERNATIVE"]
+    }
+  }
+}
+<!-- CONTRACT_SUMMARY_JSON_END -->
 
 ## 1) `xiaobo_action_v1`（执行器输出，scope=`TASK_ACTION`）
 用途：驱动工作流推进（产出 artifact / 需要输入 / 无事可做 / 报错）。

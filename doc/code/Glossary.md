@@ -12,10 +12,24 @@
 - `PENDING`：依赖未满足 / 还没轮到
 - `READY`：可以执行
 - `BLOCKED`：缺输入或需要外部介入（常见 `WAITING_INPUT`）
-- `READY_TO_CHECK`：等待 reviewer 审核
+- `READY_TO_CHECK`：等待 reviewer 审核（仅 ACTION 使用）
 - `TO_BE_MODIFY`：需要修改后再跑
 - `DONE`：完成
 - `FAILED`：超过最大尝试等硬失败
+
+## 状态字典（P0.1 冻结，可被测试读取）
+
+约束（强制）：
+- `READY_TO_CHECK` 只允许 `ACTION` 使用；`CHECK/GOAL` 不允许使用该状态。
+
+机器可读（测试会读取并与代码常量对齐）：
+<!-- STATUS_RULES_JSON_START -->
+{
+  "GOAL": ["PENDING", "READY", "IN_PROGRESS", "BLOCKED", "DONE", "FAILED", "ABANDONED"],
+  "ACTION": ["PENDING", "READY", "IN_PROGRESS", "BLOCKED", "READY_TO_CHECK", "TO_BE_MODIFY", "DONE", "FAILED", "ABANDONED"],
+  "CHECK": ["PENDING", "READY", "IN_PROGRESS", "BLOCKED", "DONE", "FAILED", "ABANDONED"]
+}
+<!-- STATUS_RULES_JSON_END -->
 
 ## 为什么 LLM Explorer 里会看到多个 `plan_id`
 - 一个计划可能多次 `create-plan` 尝试，每次尝试都会产生新的候选 `plan_id`（PLAN_GEN/PLAN_REVIEW 也会记录遥测）。
@@ -23,4 +37,3 @@
 
 ## reviewer 的 `task_id` 为啥像 plan_id
 - `xiaojing_review_v1` 结构要求有 `task_id` 字段；当审核对象是 `PLAN` 时，系统把 `task_id` 填成 `plan_id` 以保持统一字段名。
-

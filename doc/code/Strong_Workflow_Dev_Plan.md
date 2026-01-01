@@ -6,6 +6,102 @@
 
 ---
 
+## 开工前准备（必须先完成，否则后续必返工）
+
+**P0.1 状态集合冻结（写入文档 + 代码常量）**
+- 明确并写死 v2 中 ACTION/CHECK/GOAL 各自允许的状态集合与迁移路径：
+  - 约束：`READY_TO_CHECK` 只允许 ACTION 使用；CHECK 只用 `READY`（或等价“可运行状态”）
+  - 必须在 `doc/code/Glossary.md` 给出“状态字典 + 含义 + 允许的 node_type”
+
+**P0.2 Schema/Contract 的“唯一真相”**
+- 把 v2 的关键结构（deliverable_spec、acceptance_criteria、review 记录字段）落成：
+  - 文档：`doc/code/Strong_Workflow_Spec_v2.md`（已经有）
+  - 代码：单一模块集中定义（避免散落多处导致 mismatch）
+- 对 contract mismatch 的错误输出格式要先定：至少包含 schema、字段/JSONPath、期望枚举、示例修复
+
+**P0.3 DB 迁移演练与回滚**
+- 在落代码前先写清楚并验证：
+  - 新库从 0 初始化 OK
+  - 旧库升级 OK（按里程碑 0 的兼容策略 A/B/C）
+  - 回滚策略：`workflow_mode=v2` 出问题可切回 `v1`，且不会破坏旧数据路径
+
+**P0.4 样例集输入可复现（S/M/L）**
+- 把 S/M/L 的必要输入固定化（文件路径 + 最小内容），避免每次回归靠手工补：
+  - 建议放到 `workspace/baseline_inputs/fixtures/<case>/...` 或提供一个生成脚本
+  - 每个 case 都要有“预期终态”描述（DONE / REQUEST_EXTERNAL_INPUT 等）
+
+**P0.5 doctor 作为硬挡板**
+- 规定一个“进入 run 之前必须通过”的检查点：
+  - v2 plan 缺字段/绑定错误（ACTION↔CHECK 1:1、review_target_task_id 缺失等）必须在 create-plan 结束就被 doctor 拦下并给出可读提示
+
+**P0.6 接口边界清单（防止“改一处炸一片”）**
+- 在动代码前先写一页“受影响接口清单”（可放在 `doc/code/Architecture.md` 或单独文件）：
+  - CLI：`create-plan / run / status / export / graph`
+  - DB：涉及的表/新增列/索引
+  - Workspace：`artifacts/`、`reviews/`、`deliverables/<plan_id>/bundle/`、`required_docs/`、`baseline_inputs/`
+  - LLM contracts：PLAN_GEN / PLAN_REVIEW / ACTION / CHECK
+- 每个接口给出：输入（参数/依赖文件）、输出（文件/DB 变更）、失败模式（error_code）三行描述即可
+
+**P0.7 错误码与用户文案规范（先定再写逻辑）**
+- 统一 error_code 与用户提示模板，至少覆盖：
+  - `UNPARSEABLE_JSON`（带 JSONPath/定位）
+  - `SCHEMA_MISMATCH`（带 schema_version + 字段缺失/枚举错误）
+  - `INPUT_MISSING`（缺什么文件、写到哪里）
+  - `WAITING_REVIEW`（等哪个 CHECK）
+  - `WAITING_UPSTREAM_APPROVAL`（缺哪个上游 approved_artifact）
+  - `MAX_ATTEMPTS_EXCEEDED` / `REQUEST_EXTERNAL_INPUT`
+- 目标：CLI/status 输出不再抛 traceback 给用户；必须用“短句+可操作下一步”
+
+**P0.8 最小自动化测试集（不求全，但要能跑）**
+- 至少具备 4 类最小用例（能在本机一键跑）：
+  - DB 迁移：新库初始化 + 旧库升级
+  - 状态机：ACTION→READY_TO_CHECK→CHECK→DONE/TO_BE_MODIFY 闭环
+  - export：只导出 approved、manifest 可追溯
+  - 竞态：v1 被评审通过但 active 已到 v2，不误标 DONE
+
+**P0.9 数据增长与清理策略（先定义上限与保留规则）**
+- 先把 artifacts/reviews 的增长控制写清楚（并写进配置项）：
+  - 每 task 保留最近 N 个候选版本（但永远保留所有 APPROVED 版本及其 review）
+  - 清理触发条件与命令入口（按 plan_id/按 task_id）
+  - 清理不会破坏 export bundle 的可追溯性（manifest 仍能反查来源）
+
+**P0.10 角色职责与数据写权限（防污染/防越权）**
+- 明确每个 agent 的职责与“允许写哪些字段/文件”（建议落到文档 + 代码守卫）：
+  - executor（xiaobo）：只负责 ACTION 交付物产出（写 artifacts），不得修改 top_task/plan 语义字段，不得把 review JSON 混入 prompt 字段
+  - reviewer（xiaojing）：只负责 CHECK 评审（写 reviews + APPROVED/REJECTED 文件），不得改写 plan.nodes 的核心字段（除非走“建议/patch”通道）
+  - feasibility（新增）：只负责估算与拆分建议（3A），不直接改写 plan（3B 才允许）
+- 失败与缺输入时：
+  - 必须由系统生成 `required_docs/<task_id>.md`（或等价路径），而不是让 LLM 自由发挥写入随机目录
+
+**P0.11 Workspace 目录与命名规范最终版（先定稿再写代码）**
+- 把以下路径/命名规则定稿为“唯一真相”，所有 CLI/后端/UI 都按此实现：
+  - artifacts：`workspace/artifacts/<task_id>/<artifact_id>/...`
+  - reviews：`workspace/reviews/<check_task_id>/<review_id>/{APPROVED.md|REJECTED.md}`
+  - deliverables：`workspace/deliverables/<plan_id>/bundle/<task_slug>_<task_id8>/...` + `manifest.json`
+- 额外必须定稿：
+  - `task_slug` 生成规则（允许字符集、长度截断）
+  - 入口文件约定（如有）：例如 web app 默认 `index.html`
+  - 多文件交付物如何在 manifest 标注“入口文件/主产物”
+
+**P0.12 性能预算与轮询策略（保证 CLI 独立跑且不卡）**
+- 明确 UI/后端的性能约束（写成硬规则）：
+  - UI 不允许高频 subprocess 调用 CLI（禁止每秒 `status/llm-calls`）
+  - UI 只读 DB/文件系统；轮询间隔与查询上限固定（例如 1–2s 但只查增量、limit/分页、字段截断）
+  - DB 查询必须走索引（对 llm_calls/reviews/artifacts 等表提前规划索引）
+  - 大文本（prompt/output）必须截断与按需加载（点开节点才拉全文）
+
+P0 验收（可验证）：
+- `doc/code/Glossary.md` 中有完整状态字典，且能回答“哪个 node_type 可以用哪个状态”。
+- v2 contract mismatch 的错误信息能定位到字段级（不是笼统 mismatch）。
+- 样例集 S/M/L 的输入文件在固定路径可找到（或一键生成），任意机器可复现。
+- doctor 能对“缺字段/缺绑定”的 plan 给出可读报错，并阻止进入 run。
+ - 接口边界清单能让你回答：“改动会影响哪些命令/表/目录/contract”。
+- 任意失败都能落到 error_code + 可操作提示（而不是 traceback）。
+- 最小测试集可一键跑通（即便功能未全实现，也要能稳定跑到预期失败点）。
+ - agent 权限边界清晰：review 不会污染 top_task；executor 不会写 review 结构。
+ - 目录/命名规范定稿后，任意产物都能按规则“一眼定位”。
+ - 开着 UI 运行时 CPU/IO 可控，关闭 UI 不影响 CLI 继续跑。
+
 ## 里程碑 0：冻结范围、配置与兼容策略（1–2 天）
 
 **0.1 配置项落地**

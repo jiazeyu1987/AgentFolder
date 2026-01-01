@@ -6,6 +6,12 @@ llm_communication.py 功能测试文件
 无需环境检查，专注于功能验证
 """
 
+import pytest
+
+# NOTE: This file is a manual/functional test suite that may call external LLMs.
+# It is not suitable for automated CI/pytest runs (no fixtures, may require credentials/network).
+pytest.skip("Skip manual functional tests during automated pytest runs", allow_module_level=True)
+
 import os
 import sys
 import logging
