@@ -17,6 +17,7 @@
 - `doc/code/Deliverables.md`：交付物导出与清单格式
 - `doc/code/Glossary.md`：plan_id / task_id / status 等术语解释
 - `doc/code/React_Dashboard_Spec.md`：React 增强看板 UI（Windows）设计文档
+- `doc/code/Strong_Workflow_Spec_v2.md`：强约束工作流 v2（交付物/验收/评审留痕/递归拆分）
 
 参考（规范原文）：
 - `doc/plan/RunPY_MVP_Skeleton_Spec.md`
