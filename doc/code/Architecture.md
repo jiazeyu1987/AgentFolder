@@ -25,6 +25,7 @@
 - `tasks/`：计划文件（默认 `tasks/plan.json`）。
 - `workspace/`：运行输入/输出
   - `workspace/inputs/`：用户输入
+  - `workspace/baseline_inputs/`：基础资料库（优先于 inputs 自动匹配）
   - `workspace/artifacts/`：任务产物（按 task_id）
   - `workspace/reviews/`：审核输出
   - `workspace/required_docs/`：缺输入提示（按 task_id）
@@ -35,4 +36,3 @@
 - 所有“字段别名/包装层/枚举差异/START-END 链”只允许在 `core/contracts.py` 做兼容与修复。
 - DB schema 只允许通过 `state/migrations` 演进；不要运行时隐式改表。
 - 任何“不可解析/不合约”的输出必须在 UI/CLI 中能看到原因与原文（Prompt/Raw Response）。
-

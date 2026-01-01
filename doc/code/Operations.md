@@ -17,7 +17,16 @@
 ## 常见问题与处理
 ### 1) `BLOCKED (WAITING_INPUT)`
 现象：`status` 提示 required_docs 文件路径  
-处理：打开 `workspace/required_docs/<task_id>.md`，按 suggested_path 放入输入文件后，再跑一次 `run`。
+处理：
+- 系统会先自动从 `workspace/baseline_inputs/` 查找匹配资料
+- 若仍缺：打开 `workspace/required_docs/<task_id>.md`，按 suggested_path 放入 `workspace/inputs/` 后，再跑一次 `run`
+
+### 1.1) `baseline_inputs` 太大（变慢/误匹配）
+现象：`run` 一轮很慢，或出现 `EVIDENCE_CONFLICT`/误用旧资料  
+建议：
+- 只把“通用、稳定、会复用”的资料放进 `baseline_inputs`
+- 项目专属资料放进 `workspace/inputs/<requirement_name>/`
+- 文件名带版本或 `FINAL`（例如 `spec_FINAL_2025-12-31.md`）
 
 ### 2) Root 一直 `READY`
 原因：通常是缺 `DECOMPOSE` 或依赖关系异常，导致 Root 无法聚合 DONE。  
@@ -29,4 +38,3 @@
 ### 4) 重置（重新开始）
 - 只把失败任务置回 READY：`agent_cli.py reset-failed --plan-id <PLAN_ID> --include-blocked --reset-attempts`
 - 清空 DB（可选清文件）：`agent_cli.py reset-db --purge-workspace --purge-tasks --purge-logs`
-

@@ -10,6 +10,7 @@ STATE_DIR = ROOT_DIR / "state"
 MIGRATIONS_DIR = STATE_DIR / "migrations"
 WORKSPACE_DIR = ROOT_DIR / "workspace"
 INPUTS_DIR = WORKSPACE_DIR / "inputs"
+BASELINE_INPUTS_DIR = WORKSPACE_DIR / "baseline_inputs"
 ARTIFACTS_DIR = WORKSPACE_DIR / "artifacts"
 REVIEWS_DIR = WORKSPACE_DIR / "reviews"
 REQUIRED_DOCS_DIR = WORKSPACE_DIR / "required_docs"
@@ -33,6 +34,11 @@ POLL_INTERVAL_SECONDS = 3
 
 SKILL_TIMEOUT_SECONDS = 120
 MAX_SKILL_RETRIES = 3
+
+# Baseline inputs scanning safety limits (to avoid slow scans on huge folders).
+# These are soft caps: scanning will skip extra files beyond the cap for baseline_inputs.
+BASELINE_SCAN_MAX_FILES = 5000
+BASELINE_SCAN_MAX_TOTAL_BYTES = 500 * 1024 * 1024  # 500MB
 
 # Error recovery policy (MVP default: do not auto-retry FAILED tasks).
 FAILED_AUTO_RESET_READY = False

@@ -15,7 +15,7 @@ from core.errors import apply_error_outcome, map_error_to_outcome, maybe_reset_f
 from core.llm_calls import record_llm_call
 from core.llm_client import LLMClient
 from core.contracts import normalize_xiaobo_action, normalize_xiaojing_review, validate_xiaobo_action, validate_xiaojing_review
-from core.matcher import detect_removed_input_files, scan_inputs_and_bind_evidence
+from core.matcher import detect_removed_input_files_all, scan_inputs_and_bind_evidence_all
 from core.plan_loader import load_plan_into_db_if_needed
 from core.prompts import build_xiaobo_prompt, build_xiaojing_review_prompt, load_prompts, register_prompt_versions
 from core.readiness import recompute_readiness_for_plan
@@ -33,6 +33,7 @@ def _ensure_layout() -> None:
         config.MIGRATIONS_DIR,
         config.WORKSPACE_DIR,
         config.INPUTS_DIR,
+        config.BASELINE_INPUTS_DIR,
         config.ARTIFACTS_DIR,
         config.REVIEWS_DIR,
         config.REQUIRED_DOCS_DIR,
@@ -111,7 +112,12 @@ def _retry_review_or_escalate(conn, *, plan_id: str, task_id: str, reason: str, 
 def _write_required_docs(task_id: str, required_docs: List[Dict[str, Any]]) -> Path:
     ensure_dir(config.REQUIRED_DOCS_DIR)
     path = config.REQUIRED_DOCS_DIR / f"{task_id}.md"
-    lines = [f"# Required Docs for {task_id}", ""]
+    lines = [
+        f"# Required Docs for {task_id}",
+        "",
+        f"> NOTE: System will auto-search `{config.BASELINE_INPUTS_DIR.as_posix()}/` first. If not found, place files under `{config.INPUTS_DIR.as_posix()}/` as suggested below.",
+        "",
+    ]
     for doc in required_docs:
         lines.append(f"- {doc.get('name','')}: {doc.get('description','')}")
         if doc.get("accepted_types"):
@@ -932,8 +938,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             break
 
         with transaction(conn):
-            scan_inputs_and_bind_evidence(conn, plan_id=plan_id, inputs_dir=config.INPUTS_DIR)
-            detect_removed_input_files(conn, plan_id=plan_id, inputs_dir=config.INPUTS_DIR)
+            scan_inputs_and_bind_evidence_all(conn, plan_id=plan_id, inputs_dirs=[config.INPUTS_DIR, config.BASELINE_INPUTS_DIR])
+            detect_removed_input_files_all(conn, plan_id=plan_id, inputs_dirs=[config.INPUTS_DIR, config.BASELINE_INPUTS_DIR])
             maybe_reset_failed_to_ready(conn, plan_id=plan_id)
             recompute_readiness_for_plan(conn, plan_id=plan_id)
             llm_calls = xiaobo_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, skills_registry=skills_registry)

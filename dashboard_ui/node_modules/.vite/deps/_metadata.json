@@ -1,0 +1,61 @@
+{
+  "hash": "5df96fc5",
+  "configHash": "2969e651",
+  "lockfileHash": "d859b8ed",
+  "browserHash": "888e4159",
+  "optimized": {
+    "react": {
+      "src": "../../react/index.js",
+      "file": "react.js",
+      "fileHash": "ad4156f8",
+      "needsInterop": true
+    },
+    "react-dom": {
+      "src": "../../react-dom/index.js",
+      "file": "react-dom.js",
+      "fileHash": "ca247383",
+      "needsInterop": true
+    },
+    "react/jsx-dev-runtime": {
+      "src": "../../react/jsx-dev-runtime.js",
+      "file": "react_jsx-dev-runtime.js",
+      "fileHash": "750b13ea",
+      "needsInterop": true
+    },
+    "react/jsx-runtime": {
+      "src": "../../react/jsx-runtime.js",
+      "file": "react_jsx-runtime.js",
+      "fileHash": "938f5e52",
+      "needsInterop": true
+    },
+    "dagre": {
+      "src": "../../dagre/index.js",
+      "file": "dagre.js",
+      "fileHash": "ec4011cc",
+      "needsInterop": true
+    },
+    "react-dom/client": {
+      "src": "../../react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "730c6bf9",
+      "needsInterop": true
+    },
+    "reactflow": {
+      "src": "../../reactflow/dist/esm/index.mjs",
+      "file": "reactflow.js",
+      "fileHash": "58615e57",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "chunk-JHSVYIJ7": {
+      "file": "chunk-JHSVYIJ7.js"
+    },
+    "chunk-A5RA4VRI": {
+      "file": "chunk-A5RA4VRI.js"
+    },
+    "chunk-7D4SUZUM": {
+      "file": "chunk-7D4SUZUM.js"
+    }
+  }
+}

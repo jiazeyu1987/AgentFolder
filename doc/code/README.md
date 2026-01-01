@@ -16,6 +16,7 @@
 - `doc/code/Operations.md`：常用命令与排障手册
 - `doc/code/Deliverables.md`：交付物导出与清单格式
 - `doc/code/Glossary.md`：plan_id / task_id / status 等术语解释
+- `doc/code/React_Dashboard_Spec.md`：React 增强看板 UI（Windows）设计文档
 
 参考（规范原文）：
 - `doc/plan/RunPY_MVP_Skeleton_Spec.md`

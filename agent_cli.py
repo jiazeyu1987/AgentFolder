@@ -20,6 +20,7 @@ from core.repair import repair_missing_root_tasks
 from core.util import stable_hash_text, utc_now_iso
 from core.contract_audit import audit_llm_calls
 from core.deliverables import export_deliverables
+from core.graph import build_plan_graph
 from skills.registry import load_registry
 
 
@@ -282,7 +283,8 @@ def cmd_status(db_path: Path, plan_id: Optional[str], *, verbose: bool = False) 
             else:
                 # If the file doesn't exist yet, fall back to DB counts already shown.
                 if br == "WAITING_INPUT" and missing:
-                    print("  - 提示：先创建上述 required_docs 文件里写的 suggested_path 对应文件后，再运行 `run`。")
+                    print(f"  - 系统会先自动从 `{config.BASELINE_INPUTS_DIR}` 查找；如果没有命中，再按 required_docs 里的 suggested_path 放到 `{config.INPUTS_DIR}`。")
+                    print("  - 提示：补齐后再运行 `run`。")
                 elif br == "WAITING_EXTERNAL":
                     print("  - 提示：需要外部决策/资料，查看 `errors --task-id ...` 或 UI 的 LLM Explorer。")
         print("")
@@ -745,6 +747,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_export.add_argument("--out-dir", type=Path, default=None)
     p_export.add_argument("--include-reviews", action="store_true")
 
+    p_graph = sub.add_parser("graph", help="Output a plan task graph as JSON (for UI).")
+    p_graph.add_argument("--plan-id", type=str, default=None)
+    p_graph.add_argument("--json", action="store_true", help="Output JSON to stdout (default).")
+
     p_prompt = sub.add_parser("prompt", help="Manage shared/agent prompts (versioned)")
     p_prompt_sub = p_prompt.add_subparsers(dest="prompt_cmd", required=True)
     p_prompt_list = p_prompt_sub.add_parser("list", help="List prompt slots and versions")
@@ -829,6 +835,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_contract_audit(args.db, args.plan_id, args.limit)
     if args.cmd == "export":
         return cmd_export(args.db, args.plan_id, args.out_dir, bool(getattr(args, "include_reviews", False)))
+    if args.cmd == "graph":
+        conn = connect(args.db)
+        apply_migrations(conn, config.MIGRATIONS_DIR)
+        try:
+            res = build_plan_graph(conn, plan_id=args.plan_id)
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(json.dumps(res.graph, ensure_ascii=False, indent=2))
+        return 0
     if args.cmd == "prompt":
         if args.prompt_cmd == "list":
             return cmd_prompt_list(args.db)
