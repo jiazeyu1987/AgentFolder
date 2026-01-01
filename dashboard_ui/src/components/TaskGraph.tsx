@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import ReactFlow, { Background, Controls, Edge, MarkerType, MiniMap, Node } from "reactflow";
+import ReactFlow, { Background, Controls, Edge, Handle, MarkerType, MiniMap, Node, Position } from "reactflow";
 import type { GraphEdge, GraphNode } from "../types";
 import { layoutDagre } from "../graphLayout";
 
@@ -46,7 +46,9 @@ function edgeColor(t: string) {
 function TaskNode(props: { id: string; data: { label: string; status: string; color: string; isRunning: boolean } }) {
   const { data } = props;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 200 }}>
+      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
       <div style={{ fontWeight: 700, fontSize: 12, lineHeight: "14px" }}>{data.label}</div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
         <span className="pill" style={{ background: data.color }}>
