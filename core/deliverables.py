@@ -74,12 +74,12 @@ def export_deliverables(
           a.sha256 AS artifact_sha256,
           a.created_at AS artifact_created_at
         FROM task_nodes n
-        LEFT JOIN artifacts a ON a.artifact_id = n.active_artifact_id
+        LEFT JOIN artifacts a ON a.artifact_id = COALESCE(n.approved_artifact_id, n.active_artifact_id)
         WHERE n.plan_id = ?
           AND n.active_branch = 1
           AND n.node_type = 'ACTION'
           AND n.status = 'DONE'
-          AND n.active_artifact_id IS NOT NULL
+          AND COALESCE(n.approved_artifact_id, n.active_artifact_id) IS NOT NULL
         ORDER BY a.created_at ASC
         """,
         (plan_id,),
@@ -140,4 +140,3 @@ def export_deliverables(
 
     (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return ExportResult(plan_id=plan_id, out_dir=out_dir, files_copied=files_copied)
-

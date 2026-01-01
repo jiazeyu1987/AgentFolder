@@ -7,6 +7,13 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 
 import config
 from core.status_rules import StatusRuleError, validate_status_for_node_type
+from core.v2_models import (
+    V2ModelError,
+    parse_acceptance_criteria_json,
+    parse_deliverable_spec_json,
+    validate_acceptance_criteria,
+    validate_deliverable_spec,
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +54,13 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
 def _latest_migration_filename(migrations_dir: Path) -> str:
     files = sorted(p.name for p in migrations_dir.iterdir() if p.is_file() and p.suffix.lower() == ".sql")
     return files[-1] if files else ""
+
+
+def _row_get(row: sqlite3.Row, key: str) -> object:
+    try:
+        return row[key]
+    except Exception:
+        return None
 
 
 def doctor_db(conn: sqlite3.Connection, *, migrations_dir: Path = config.MIGRATIONS_DIR) -> Tuple[bool, List[DoctorFinding]]:
@@ -228,7 +242,21 @@ def doctor_plan(
         )
 
     # Status validity (P0.1)
-    rows = conn.execute("SELECT task_id, title, node_type, status FROM task_nodes WHERE plan_id=?", (pid,)).fetchall()
+    # Include v2 fields if present; fallback to minimal columns for older DBs.
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+              task_id, title, node_type, status,
+              estimated_person_days, deliverable_spec_json, acceptance_criteria_json,
+              review_target_task_id, review_output_spec_json
+            FROM task_nodes
+            WHERE plan_id=?
+            """,
+            (pid,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = conn.execute("SELECT task_id, title, node_type, status FROM task_nodes WHERE plan_id=?", (pid,)).fetchall()
     for r in rows:
         node_type = str(r["node_type"] or "")
         status = str(r["status"] or "")
@@ -276,7 +304,181 @@ def doctor_plan(
                     json_path="$.runtime_config.workflow_mode",
                 )
             )
-        # Additional v2 constraints (1:1 CHECK binding, etc.) will be enforced after v2 schema exists.
+        else:
+            # v2 minimal requirements (P1.1/P1.2/P1.3).
+            action_rows = [r for r in rows if str(r["node_type"] or "") == "ACTION"]
+            check_rows = [r for r in rows if str(r["node_type"] or "") == "CHECK"]
+
+            # Validate ACTION required fields.
+            for r in action_rows:
+                tid = str(r["task_id"])
+                title = str(r["title"] or "")
+                epd = _row_get(r, "estimated_person_days")
+                if epd is None:
+                    findings.append(
+                        DoctorFinding(
+                            code="V2_ACTION_MISSING_FIELD",
+                            message="ACTION missing estimated_person_days",
+                            hint="Re-run create-plan (v2) so each ACTION includes an estimated person-days value (or set workflow_mode=v1).",
+                            task_id=tid,
+                            task_title=title,
+                            json_path="$.task_nodes[task_id=<id>].estimated_person_days",
+                        )
+                    )
+                else:
+                    try:
+                        if float(epd) <= 0:
+                            raise ValueError("must be > 0")
+                    except Exception:
+                        findings.append(
+                            DoctorFinding(
+                                code="V2_ACTION_BAD_FIELD",
+                                message=f"estimated_person_days invalid: {epd!r}",
+                                hint="estimated_person_days must be a positive number (or set workflow_mode=v1).",
+                                task_id=tid,
+                                task_title=title,
+                                json_path="$.task_nodes[task_id=<id>].estimated_person_days",
+                            )
+                        )
+
+                ds_text = _row_get(r, "deliverable_spec_json")
+                if ds_text is None or not str(ds_text).strip():
+                    findings.append(
+                        DoctorFinding(
+                            code="V2_ACTION_MISSING_FIELD",
+                            message="ACTION missing deliverable_spec_json",
+                            hint="Re-run create-plan (v2) so each ACTION declares deliverable_spec (or set workflow_mode=v1).",
+                            task_id=tid,
+                            task_title=title,
+                            json_path="$.task_nodes[task_id=<id>].deliverable_spec_json",
+                        )
+                    )
+                else:
+                    try:
+                        ds = parse_deliverable_spec_json(str(ds_text))
+                        ok2, reason2, path2 = validate_deliverable_spec(ds)
+                        if not ok2:
+                            findings.append(
+                                DoctorFinding(
+                                    code="V2_ACTION_BAD_FIELD",
+                                    message=f"deliverable_spec invalid: {reason2}",
+                                    hint="deliverable_spec must include format/filename/single_file/bundle_mode/description (or set workflow_mode=v1).",
+                                    task_id=tid,
+                                    task_title=title,
+                                    json_path=f"$.task_nodes[task_id=<id>].deliverable_spec_json{path2[1:] if path2.startswith('$') else ''}",
+                                )
+                            )
+                    except V2ModelError as exc:
+                        findings.append(
+                            DoctorFinding(
+                                code="V2_ACTION_BAD_FIELD",
+                                message=f"deliverable_spec_json parse failed: {exc}",
+                                hint="deliverable_spec_json must be valid JSON object (or set workflow_mode=v1).",
+                                task_id=tid,
+                                task_title=title,
+                                json_path="$.task_nodes[task_id=<id>].deliverable_spec_json",
+                            )
+                        )
+
+                ac_text = _row_get(r, "acceptance_criteria_json")
+                if ac_text is None or not str(ac_text).strip():
+                    findings.append(
+                        DoctorFinding(
+                            code="V2_ACTION_MISSING_FIELD",
+                            message="ACTION missing acceptance_criteria_json",
+                            hint="Re-run create-plan (v2) so each ACTION includes acceptance_criteria list (or set workflow_mode=v1).",
+                            task_id=tid,
+                            task_title=title,
+                            json_path="$.task_nodes[task_id=<id>].acceptance_criteria_json",
+                        )
+                    )
+                else:
+                    try:
+                        ac = parse_acceptance_criteria_json(str(ac_text))
+                        ok2, reason2, path2 = validate_acceptance_criteria(ac)
+                        if not ok2:
+                            findings.append(
+                                DoctorFinding(
+                                    code="V2_ACTION_BAD_FIELD",
+                                    message=f"acceptance_criteria invalid: {reason2}",
+                                    hint="acceptance_criteria must be a non-empty array of objects with id/type/statement/check_method/severity (or set workflow_mode=v1).",
+                                    task_id=tid,
+                                    task_title=title,
+                                    json_path=f"$.task_nodes[task_id=<id>].acceptance_criteria_json{path2[1:] if path2.startswith('$') else ''}",
+                                )
+                            )
+                    except V2ModelError as exc:
+                        findings.append(
+                            DoctorFinding(
+                                code="V2_ACTION_BAD_FIELD",
+                                message=f"acceptance_criteria_json parse failed: {exc}",
+                                hint="acceptance_criteria_json must be valid JSON array (or set workflow_mode=v1).",
+                                task_id=tid,
+                                task_title=title,
+                                json_path="$.task_nodes[task_id=<id>].acceptance_criteria_json",
+                            )
+                        )
+
+            # Validate CHECK binding (review_target_task_id).
+            action_ids = {str(r["task_id"]) for r in action_rows}
+            target_counts: dict[str, int] = {}
+            for r in check_rows:
+                tid = str(r["task_id"])
+                title = str(r["title"] or "")
+                target = _row_get(r, "review_target_task_id")
+                target_s = str(target or "").strip()
+                if not target_s:
+                    findings.append(
+                        DoctorFinding(
+                            code="V2_CHECK_MISSING_FIELD",
+                            message="CHECK missing review_target_task_id",
+                            hint="Re-run create-plan (v2) so each CHECK is bound to exactly one ACTION (or set workflow_mode=v1).",
+                            task_id=tid,
+                            task_title=title,
+                            json_path="$.task_nodes[task_id=<id>].review_target_task_id",
+                        )
+                    )
+                    continue
+                if target_s not in action_ids:
+                    findings.append(
+                        DoctorFinding(
+                            code="V2_CHECK_BAD_TARGET",
+                            message=f"CHECK review_target_task_id not found among ACTION nodes: {target_s}",
+                            hint="Regenerate the plan or fix review_target_task_id to reference an ACTION task_id (or set workflow_mode=v1).",
+                            task_id=tid,
+                            task_title=title,
+                            json_path="$.task_nodes[task_id=<id>].review_target_task_id",
+                        )
+                    )
+                target_counts[target_s] = target_counts.get(target_s, 0) + 1
+
+            # Enforce 1:1 (each ACTION exactly one CHECK).
+            for aid in action_ids:
+                cnt = int(target_counts.get(aid, 0))
+                if cnt == 0:
+                    ar = next((r for r in action_rows if str(r["task_id"]) == aid), None)
+                    findings.append(
+                        DoctorFinding(
+                            code="V2_ACTION_MISSING_CHECK",
+                            message="ACTION has no CHECK bound via review_target_task_id",
+                            hint="Re-run create-plan (v2) to auto-generate a 1:1 CHECK for each ACTION (or set workflow_mode=v1).",
+                            task_id=aid,
+                            task_title=str(ar["title"] or "") if ar is not None else None,
+                            json_path="$.task_nodes[task_id=<id>]",
+                        )
+                    )
+                elif cnt > 1:
+                    ar = next((r for r in action_rows if str(r["task_id"]) == aid), None)
+                    findings.append(
+                        DoctorFinding(
+                            code="V2_ACTION_MULTI_CHECK",
+                            message=f"ACTION is bound by multiple CHECK nodes: {cnt}",
+                            hint="Ensure exactly one CHECK points to each ACTION via review_target_task_id (or set workflow_mode=v1).",
+                            task_id=aid,
+                            task_title=str(ar["title"] or "") if ar is not None else None,
+                            json_path="$.task_nodes[task_id=<id>]",
+                        )
+                    )
 
     ok = len(findings) == 0
     return ok, findings
@@ -310,4 +512,3 @@ def format_findings_human(findings: Sequence[DoctorFinding]) -> str:
         if f.json_path:
             lines.append(f"  json_path: {f.json_path}")
     return "\n".join(lines)
-

@@ -19,25 +19,66 @@ def write_review_json(base_dir: Path, *, task_id: str, review: Dict[str, Any]) -
     return path
 
 
-def insert_review(conn: sqlite3.Connection, *, plan_id: str, task_id: str, reviewer_agent_id: str, review: Dict[str, Any]) -> str:
+def insert_review(
+    conn: sqlite3.Connection,
+    *,
+    plan_id: str,
+    task_id: str,
+    reviewer_agent_id: str,
+    review: Dict[str, Any],
+    check_task_id: str | None = None,
+    review_target_task_id: str | None = None,
+    reviewed_artifact_id: str | None = None,
+    verdict: str | None = None,
+    acceptance_results: Any | None = None,
+) -> str:
     review_id = str(uuid.uuid4())
-    conn.execute(
-        """
-        INSERT INTO reviews(review_id, task_id, reviewer_agent_id, total_score, breakdown_json, suggestions_json, summary, action_required, created_at)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            review_id,
-            task_id,
-            reviewer_agent_id,
-            int(review.get("total_score") or 0),
-            json.dumps(review.get("breakdown") or [], ensure_ascii=False),
-            json.dumps(review.get("suggestions") or [], ensure_ascii=False),
-            review.get("summary") or "",
-            review.get("action_required") or "MODIFY",
-            utc_now_iso(),
-        ),
-    )
+    now = utc_now_iso()
+    try:
+        # v2 schema (P1.2) columns.
+        conn.execute(
+            """
+            INSERT INTO reviews(
+              review_id, task_id, reviewer_agent_id, total_score, breakdown_json, suggestions_json, summary, action_required, created_at,
+              check_task_id, review_target_task_id, reviewed_artifact_id, verdict, acceptance_results_json
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                review_id,
+                task_id,
+                reviewer_agent_id,
+                int(review.get("total_score") or 0),
+                json.dumps(review.get("breakdown") or [], ensure_ascii=False),
+                json.dumps(review.get("suggestions") or [], ensure_ascii=False),
+                review.get("summary") or "",
+                review.get("action_required") or "MODIFY",
+                now,
+                check_task_id,
+                review_target_task_id,
+                reviewed_artifact_id,
+                (verdict or "").strip().upper() if isinstance(verdict, str) else verdict,
+                json.dumps(acceptance_results or [], ensure_ascii=False) if acceptance_results is not None else None,
+            ),
+        )
+    except sqlite3.OperationalError:
+        # Legacy schema fallback (older DB).
+        conn.execute(
+            """
+            INSERT INTO reviews(review_id, task_id, reviewer_agent_id, total_score, breakdown_json, suggestions_json, summary, action_required, created_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                review_id,
+                task_id,
+                reviewer_agent_id,
+                int(review.get("total_score") or 0),
+                json.dumps(review.get("breakdown") or [], ensure_ascii=False),
+                json.dumps(review.get("suggestions") or [], ensure_ascii=False),
+                review.get("summary") or "",
+                review.get("action_required") or "MODIFY",
+                now,
+            ),
+        )
     emit_event(conn, plan_id=plan_id, task_id=task_id, event_type="REVIEW_WRITTEN", payload={"review_id": review_id, "total_score": int(review.get("total_score") or 0)})
     return review_id
-

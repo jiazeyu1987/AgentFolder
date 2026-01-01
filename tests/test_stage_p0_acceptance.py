@@ -105,9 +105,7 @@ class P0StageAcceptanceTest(unittest.TestCase):
 
                 ok, findings = doctor_plan(conn, plan_id="p1", workflow_mode="v2")
                 self.assertFalse(ok)
-                v2_findings = [f for f in findings if f.code == "V2_NOT_READY"]
-                self.assertTrue(v2_findings, [x.to_dict() for x in findings])
-                self.assertIn("workflow_mode=v1", (v2_findings[0].hint or ""))
+                self.assertTrue(any("workflow_mode=v1" in (f.hint or "") for f in findings), [x.to_dict() for x in findings])
             finally:
                 conn.close()
 
