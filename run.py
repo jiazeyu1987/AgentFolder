@@ -919,6 +919,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--plan", type=Path, default=config.PLAN_PATH_DEFAULT, help="Path to tasks/plan.json")
     parser.add_argument("--db", type=Path, default=config.DB_PATH_DEFAULT, help="Path to state/state.db")
     parser.add_argument("--max-iterations", type=int, default=10_000, help="Safety limit")
+    parser.add_argument("--skip-doctor", action="store_true", help="Skip preflight doctor checks (debug only)")
     args = parser.parse_args(argv)
 
     _ensure_layout()
@@ -932,6 +933,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     apply_migrations(conn, config.MIGRATIONS_DIR)
 
     plan_id = load_plan_into_db_if_needed(conn, args.plan)
+    if not bool(getattr(args, "skip_doctor", False)):
+        from core.doctor import format_findings_human, run_doctor
+        from core.runtime_config import get_runtime_config
+
+        cfg = get_runtime_config()
+        findings = run_doctor(conn, plan_id=plan_id, workflow_mode=cfg.workflow_mode)
+        if findings:
+            print("doctor failed (preflight):")
+            print(format_findings_human(findings))
+            print("hint: fix the above issues, or re-run with --skip-doctor for debugging.")
+            return 2
     prompts = register_prompt_versions(conn, load_prompts(config.PROMPTS_SHARED_PATH, config.PROMPTS_AGENTS_DIR))
     rubric_all = json.loads(config.REVIEW_RUBRIC_PATH.read_text(encoding="utf-8"))
     rubric = rubric_all.get("node_review") or rubric_all

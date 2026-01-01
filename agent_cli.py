@@ -11,7 +11,8 @@ from typing import Any, Dict, List, Optional
 
 import config
 from core.db import apply_migrations, connect
-from core.doctor import run_doctor
+from core.doctor import format_findings_human, run_doctor
+from core.runtime_config import get_runtime_config
 from core.events import emit_event
 from core.llm_client import LLMClient
 from core.plan_workflow import PlanNotApprovedError, PlanWorkflowError, _summarize_plan_review, generate_and_review_plan
@@ -519,17 +520,18 @@ def cmd_llm_calls(db_path: Path, plan_id: Optional[str], task_id: Optional[str],
     return 0
 
 
-def cmd_doctor(db_path: Path, plan_id: Optional[str]) -> int:
+def cmd_doctor(db_path: Path, plan_id: Optional[str], *, as_json: bool) -> int:
     conn = connect(db_path)
     apply_migrations(conn, config.MIGRATIONS_DIR)
 
-    issues = run_doctor(conn, plan_id=plan_id)
-    if not issues:
-        print("OK")
-        return 0
-    for i in issues:
-        print(json.dumps({"code": i.code, "message": i.message}, ensure_ascii=False))
-    return 1
+    cfg = get_runtime_config()
+    findings = run_doctor(conn, plan_id=plan_id, workflow_mode=cfg.workflow_mode)
+    ok = len(findings) == 0
+    if as_json:
+        print(json.dumps({"ok": ok, "workflow_mode": cfg.workflow_mode, "findings": [f.to_dict() for f in findings]}, ensure_ascii=False))
+        return 0 if ok else 1
+    print(format_findings_human(findings))
+    return 0 if ok else 1
 
 
 def cmd_repair_db(db_path: Path, plan_id: Optional[str]) -> int:
@@ -699,6 +701,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_run = sub.add_parser("run", help="Run the main loop (same as run.py)")
     p_run.add_argument("--plan", type=Path, default=config.PLAN_PATH_DEFAULT)
     p_run.add_argument("--max-iterations", type=int, default=10_000)
+    p_run.add_argument("--skip-doctor", action="store_true", help="Skip preflight doctor checks (debug only)")
 
     p_create = sub.add_parser("create-plan", help="Generate tasks/plan.json from a top task and approve it (xiaojing>=90).")
     p_create.add_argument("--top-task", type=str, default=None, help="Top task text")
@@ -734,6 +737,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     p_doctor = sub.add_parser("doctor", help="Self-check DB schema + basic integrity.")
     p_doctor.add_argument("--plan-id", type=str, default=None)
+    p_doctor.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
     p_repair = sub.add_parser("repair-db", help="Repair common DB integrity issues (safe).")
     p_repair.add_argument("--plan-id", type=str, default=None)
@@ -776,7 +780,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.cmd == "run":
         import run as run_mod
 
-        return run_mod.main(["--plan", str(args.plan), "--db", str(args.db), "--max-iterations", str(args.max_iterations)])
+        argv2 = ["--plan", str(args.plan), "--db", str(args.db), "--max-iterations", str(args.max_iterations)]
+        if bool(getattr(args, "skip_doctor", False)):
+            argv2.append("--skip-doctor")
+        return run_mod.main(argv2)
     if args.cmd == "create-plan":
         if bool(args.top_task) == bool(args.top_task_file):
             print("Provide exactly one of --top-task or --top-task-file", file=sys.stderr)
@@ -828,7 +835,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.cmd == "llm-calls":
         return cmd_llm_calls(args.db, args.plan_id, args.task_id, args.limit)
     if args.cmd == "doctor":
-        return cmd_doctor(args.db, args.plan_id)
+        return cmd_doctor(args.db, args.plan_id, as_json=bool(getattr(args, "json", False)))
     if args.cmd == "repair-db":
         return cmd_repair_db(args.db, args.plan_id)
     if args.cmd == "contract-audit":

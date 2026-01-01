@@ -1,0 +1,12 @@
+{
+  "case_id": "M_doudizhu",
+  "top_task": "创建一个斗地主的游戏",
+  "expected_outcome": "DONE",
+  "notes": "Medium multi-file web deliverable. Intended to exercise manifest export + multi-file artifact handling.",
+  "recommended_commands": [
+    "python agent_cli.py create-plan --top-task \"创建一个斗地主的游戏\"",
+    "python agent_cli.py run --max-iterations 500",
+    "python agent_cli.py export"
+  ]
+}
+

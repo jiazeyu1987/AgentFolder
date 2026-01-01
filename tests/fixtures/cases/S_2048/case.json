@@ -1,0 +1,12 @@
+{
+  "case_id": "S_2048",
+  "top_task": "创建一个2048的游戏",
+  "expected_outcome": "DONE",
+  "notes": "Small single-file web deliverable. Intended to reach DONE with minimal external input when the system is healthy.",
+  "recommended_commands": [
+    "python agent_cli.py create-plan --top-task \"创建一个2048的游戏\"",
+    "python agent_cli.py run --max-iterations 200",
+    "python agent_cli.py export"
+  ]
+}
+

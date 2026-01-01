@@ -1,0 +1,12 @@
+{
+  "ui": {
+    "offline_only": true,
+    "entry_file": "index.html"
+  },
+  "game": {
+    "players": 3,
+    "human_players": 1,
+    "ai_players": 2
+  }
+}
+

@@ -1,0 +1,11 @@
+{
+  "case_id": "L_3d_shooter",
+  "top_task": "创建一个3D射击游戏",
+  "expected_outcome": "REQUEST_EXTERNAL_INPUT",
+  "notes": "Large task. Intended to trigger feasibility/decomposition limits or request external input if constraints are missing.",
+  "recommended_commands": [
+    "python agent_cli.py create-plan --top-task \"创建一个3D射击游戏\" --max-attempts 3",
+    "python agent_cli.py status"
+  ]
+}
+
