@@ -40,39 +40,103 @@ def upsert_plan(conn: sqlite3.Connection, plan_dict: Dict[str, Any]) -> str:
     now = utc_now_iso()
     for node in plan_dict["nodes"]:
         tags = as_list_of_str(node.get("tags"))
-        conn.execute(
-            """
-            INSERT INTO task_nodes(
-              task_id, plan_id, node_type, title, goal_statement, rationale, owner_agent_id, tags_json,
-              priority, status, blocked_reason, attempt_count, confidence, active_branch,
-              active_artifact_id, created_at, updated_at
+        # v2 columns are optional; best-effort insert if they exist.
+        epd = node.get("estimated_person_days")
+        deliverable = node.get("deliverable_spec_json") or node.get("deliverable_spec")
+        acceptance = node.get("acceptance_criteria_json") or node.get("acceptance_criteria")
+        review_target = node.get("review_target_task_id")
+        review_output = node.get("review_output_spec_json") or node.get("review_output_spec")
+
+        def _norm_json(v: Any) -> str | None:
+            if v is None:
+                return None
+            if isinstance(v, str):
+                s = v.strip()
+                return s if s else None
+            if isinstance(v, (dict, list)):
+                return canonical_json(v)
+            return canonical_json(str(v))
+
+        try:
+            conn.execute(
+                """
+                INSERT INTO task_nodes(
+                  task_id, plan_id, node_type, title, goal_statement, rationale, owner_agent_id, tags_json,
+                  priority, status, blocked_reason, attempt_count, confidence, active_branch,
+                  active_artifact_id, created_at, updated_at,
+                  estimated_person_days, deliverable_spec_json, acceptance_criteria_json,
+                  review_target_task_id, review_output_spec_json
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, 0, 0.5, 1, NULL, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                  plan_id=excluded.plan_id,
+                  node_type=excluded.node_type,
+                  title=excluded.title,
+                  goal_statement=excluded.goal_statement,
+                  rationale=excluded.rationale,
+                  owner_agent_id=excluded.owner_agent_id,
+                  tags_json=excluded.tags_json,
+                  priority=excluded.priority,
+                  estimated_person_days=COALESCE(excluded.estimated_person_days, task_nodes.estimated_person_days),
+                  deliverable_spec_json=COALESCE(excluded.deliverable_spec_json, task_nodes.deliverable_spec_json),
+                  acceptance_criteria_json=COALESCE(excluded.acceptance_criteria_json, task_nodes.acceptance_criteria_json),
+                  review_target_task_id=COALESCE(excluded.review_target_task_id, task_nodes.review_target_task_id),
+                  review_output_spec_json=COALESCE(excluded.review_output_spec_json, task_nodes.review_output_spec_json),
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    node["task_id"],
+                    node["plan_id"],
+                    node["node_type"],
+                    node["title"],
+                    node.get("goal_statement"),
+                    node.get("rationale"),
+                    node["owner_agent_id"],
+                    canonical_json(tags),
+                    int(node.get("priority") or 0),
+                    now,
+                    now,
+                    epd,
+                    _norm_json(deliverable),
+                    _norm_json(acceptance),
+                    str(review_target) if isinstance(review_target, str) and review_target.strip() else None,
+                    _norm_json(review_output),
+                ),
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, 0, 0.5, 1, NULL, ?, ?)
-            ON CONFLICT(task_id) DO UPDATE SET
-              plan_id=excluded.plan_id,
-              node_type=excluded.node_type,
-              title=excluded.title,
-              goal_statement=excluded.goal_statement,
-              rationale=excluded.rationale,
-              owner_agent_id=excluded.owner_agent_id,
-              tags_json=excluded.tags_json,
-              priority=excluded.priority,
-              updated_at=excluded.updated_at
-            """,
-            (
-                node["task_id"],
-                node["plan_id"],
-                node["node_type"],
-                node["title"],
-                node.get("goal_statement"),
-                node.get("rationale"),
-                node["owner_agent_id"],
-                canonical_json(tags),
-                int(node.get("priority") or 0),
-                now,
-                now,
-            ),
-        )
+        except sqlite3.OperationalError:
+            conn.execute(
+                """
+                INSERT INTO task_nodes(
+                  task_id, plan_id, node_type, title, goal_statement, rationale, owner_agent_id, tags_json,
+                  priority, status, blocked_reason, attempt_count, confidence, active_branch,
+                  active_artifact_id, created_at, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, 0, 0.5, 1, NULL, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                  plan_id=excluded.plan_id,
+                  node_type=excluded.node_type,
+                  title=excluded.title,
+                  goal_statement=excluded.goal_statement,
+                  rationale=excluded.rationale,
+                  owner_agent_id=excluded.owner_agent_id,
+                  tags_json=excluded.tags_json,
+                  priority=excluded.priority,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    node["task_id"],
+                    node["plan_id"],
+                    node["node_type"],
+                    node["title"],
+                    node.get("goal_statement"),
+                    node.get("rationale"),
+                    node["owner_agent_id"],
+                    canonical_json(tags),
+                    int(node.get("priority") or 0),
+                    now,
+                    now,
+                ),
+            )
 
     for edge in plan_dict["edges"]:
         conn.execute(

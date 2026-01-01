@@ -18,10 +18,14 @@ from core.llm_client import LLMClient
 from core.plan_workflow import PlanNotApprovedError, PlanWorkflowError, _summarize_plan_review, generate_and_review_plan
 from core.prompts import load_prompts, register_prompt_versions
 from core.repair import repair_missing_root_tasks
-from core.util import stable_hash_text, utc_now_iso
+from core.util import ensure_dir, stable_hash_text, utc_now_iso
 from core.contract_audit import audit_llm_calls
 from core.deliverables import export_deliverables
 from core.graph import build_plan_graph
+from core.reporting import generate_plan_report, render_plan_report_md
+from core.rewriter_v2 import apply_rewrite, propose_rewrite, render_patch_plan_md
+from core.feasibility_v2 import feasibility_check
+from core.v2_converge import converge_v2_plan
 from skills.registry import load_registry
 
 
@@ -37,7 +41,7 @@ def _print_table(rows: List[Dict[str, Any]], *, columns: List[str]) -> None:
         print("  ".join(str(r.get(c, "")).ljust(widths[c]) for c in columns))
 
 
-def cmd_status(db_path: Path, plan_id: Optional[str], *, verbose: bool = False) -> int:
+def cmd_status(db_path: Path, plan_id: Optional[str], *, verbose: bool = False, brief: bool = False) -> int:
     conn = connect(db_path)
     apply_migrations(conn, config.MIGRATIONS_DIR)
 
@@ -171,6 +175,49 @@ def cmd_status(db_path: Path, plan_id: Optional[str], *, verbose: bool = False) 
                 "tags_json",
             ],
         )
+        return 0
+
+    if brief:
+        cfg = get_runtime_config()
+        report = generate_plan_report(conn, str(plan_id), workflow_mode=cfg.workflow_mode)
+        nodes = report.get("nodes") or {}
+        inputs_needed = report.get("inputs_needed") or []
+        recent_errors = report.get("recent_errors") or []
+        print(f"plan: {report['plan']['title']}")
+        print(f"plan_id: {report['plan']['plan_id']}")
+        print(f"workflow_mode: {report['plan']['workflow_mode']}")
+        print("")
+        print(f"is_done: {bool((report.get('summary') or {}).get('is_done'))}")
+        print(f"blocked_waiting_input: {bool((report.get('summary') or {}).get('is_blocked_waiting_input'))}")
+        print("")
+        for k in ("waiting_review", "blocked", "failed"):
+            items = nodes.get(k) or []
+            if not items:
+                continue
+            print(f"{k.upper()}:")
+            for it in items[:12]:
+                br = str(it.get("blocked_reason") or "")
+                br_part = f" blocked_reason={br}" if br else ""
+                reason = str(it.get("reason") or "")
+                reason_part = f" reason={reason}" if reason else ""
+                print(f"- {it.get('task_title','')} [{it.get('node_type','')}] status={it.get('status','')}{br_part}{reason_part}")
+            print("")
+        if inputs_needed:
+            print("INPUTS_NEEDED:")
+            for it in inputs_needed[:8]:
+                print(f"- {it.get('task_title','')}")
+                print(f"  - required_docs_path: {it.get('required_docs_path','')}")
+            print("")
+        if recent_errors:
+            print("RECENT_ERRORS:")
+            for e in recent_errors[:6]:
+                hint = str(e.get("hint") or "").strip()
+                h = f" hint={hint}" if hint else ""
+                print(f"- {e.get('task_title','')}: {e.get('error_code','')} {e.get('message','')}{h}".strip())
+            print("")
+        print("NEXT_STEPS:")
+        for s in (report.get("next_steps") or [])[:8]:
+            print(f"- {s.get('cmd','')}")
         return 0
 
     # Concise mode (default): focus on why we are blocked/failed and what to do next.
@@ -693,6 +740,128 @@ def cmd_prompt_set(db_path: Path, slot: str, *, text: Optional[str], file_path: 
     return 0
 
 
+def cmd_report(db_path: Path, plan_id: Optional[str], *, as_json: bool = False, out_path: Optional[Path] = None) -> int:
+    conn = connect(db_path)
+    apply_migrations(conn, config.MIGRATIONS_DIR)
+
+    if plan_id is None:
+        row = conn.execute("SELECT plan_id FROM plans ORDER BY created_at DESC LIMIT 1").fetchone()
+        if not row:
+            print("No plan found in DB.")
+            return 1
+        plan_id = str(row["plan_id"])
+
+    cfg = get_runtime_config()
+    report = generate_plan_report(conn, str(plan_id), workflow_mode=cfg.workflow_mode)
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    md = render_plan_report_md(report)
+    if out_path is None:
+        ensure_dir(config.WORKSPACE_DIR / "reports" / str(plan_id))
+        ts = utc_now_iso().replace(":", "").replace("-", "")
+        out_path = config.WORKSPACE_DIR / "reports" / str(plan_id) / f"report_{ts}.md"
+    else:
+        ensure_dir(out_path.parent)
+    out_path.write_text(md, encoding="utf-8")
+    print(md.rstrip())
+    print("")
+    print(f"report_saved_to: {out_path}")
+    return 0
+
+
+def cmd_rewrite(
+    db_path: Path,
+    plan_id: Optional[str],
+    *,
+    apply: bool = False,
+    as_json: bool = False,
+    max_depth: Optional[int] = None,
+    threshold_person_days: Optional[float] = None,
+) -> int:
+    conn = connect(db_path)
+    apply_migrations(conn, config.MIGRATIONS_DIR)
+
+    if plan_id is None:
+        row = conn.execute("SELECT plan_id FROM plans ORDER BY created_at DESC LIMIT 1").fetchone()
+        if not row:
+            print("No plan found in DB.")
+            return 1
+        plan_id = str(row["plan_id"])
+
+    cfg = get_runtime_config()
+    threshold = float(threshold_person_days) if threshold_person_days is not None else float(cfg.one_shot_threshold_person_days)
+    depth = int(max_depth) if max_depth is not None else int(cfg.max_decomposition_depth)
+    patch_plan = propose_rewrite(conn, str(plan_id), workflow_mode=cfg.workflow_mode, one_shot_threshold_person_days=threshold, max_depth=depth)
+
+    if as_json and not apply:
+        print(json.dumps(patch_plan, ensure_ascii=False, indent=2))
+        return 0
+
+    if apply:
+        res = apply_rewrite(conn, patch_plan, dry_run=False)
+        md = render_patch_plan_md(res.patch_plan)
+        print(md.rstrip())
+        if res.snapshot_path:
+            print("")
+            print(f"snapshot_saved_to: {res.snapshot_path}")
+        return 0
+
+    # dry-run human output
+    md = render_patch_plan_md(patch_plan)
+    print(md.rstrip())
+    print("")
+    print("hint: re-run with `agent_cli.py rewrite --apply` to apply (writes snapshot + DB changes).")
+    return 0
+
+
+def cmd_feasibility_check(
+    db_path: Path,
+    plan_id: Optional[str],
+    *,
+    as_json: bool = False,
+    threshold_person_days: Optional[float] = None,
+    max_depth: Optional[int] = None,
+) -> int:
+    conn = connect(db_path)
+    apply_migrations(conn, config.MIGRATIONS_DIR)
+    if plan_id is None:
+        row = conn.execute("SELECT plan_id FROM plans ORDER BY created_at DESC LIMIT 1").fetchone()
+        if not row:
+            print("No plan found in DB.")
+            return 1
+        plan_id = str(row["plan_id"])
+    cfg = get_runtime_config()
+    threshold = float(threshold_person_days) if threshold_person_days is not None else float(cfg.one_shot_threshold_person_days)
+    depth = int(max_depth) if max_depth is not None else int(cfg.max_decomposition_depth)
+    res = feasibility_check(conn, plan_id=str(plan_id), threshold_person_days=threshold, max_depth=depth)
+    if as_json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    print(f"plan: {(res.get('plan') or {}).get('title','')}")
+    print(f"plan_id: {(res.get('plan') or {}).get('plan_id','')}")
+    print(f"threshold_person_days: {res.get('threshold_person_days')}")
+    print(f"leaf_action_count: {res.get('leaf_action_count')}")
+    print("")
+    over = res.get("over_threshold") or []
+    missing = res.get("missing_estimate") or []
+    if not over and not missing:
+        print("OK: all leaf ACTION nodes are within threshold and have estimates.")
+        return 0
+    if over:
+        print("Over-threshold leaf ACTION nodes:")
+        for it in over[:20]:
+            print(f"- {it.get('task_title','')}: {it.get('estimated_person_days')}d ({it.get('reason','')}) can_split={it.get('can_split')}")
+        print("")
+    if missing:
+        print("Leaf ACTION nodes missing estimates:")
+        for it in missing[:20]:
+            print(f"- {it.get('task_title','')}: reason={it.get('reason','')}")
+        print("")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="agent_cli", description="CLI helpers for the workflow agent.")
     parser.add_argument("--db", type=Path, default=config.DB_PATH_DEFAULT)
@@ -716,6 +885,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_status = sub.add_parser("status", help="Show plan/task status from state.db")
     p_status.add_argument("--plan-id", type=str, default=None)
     p_status.add_argument("--verbose", action="store_true", help="Show full table output")
+    p_status.add_argument("--brief", action="store_true", help="Only show blockers + next steps (no tables)")
+
+    p_report = sub.add_parser("report", help="Generate a readable plan report (Markdown/JSON).")
+    p_report.add_argument("--plan-id", type=str, default=None)
+    p_report.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    p_report.add_argument("--out", type=Path, default=None, help="Write markdown report to this path (default workspace/reports/<plan_id>/...)")
+
+    p_rewrite = sub.add_parser("rewrite", help="Propose/apply safe structural rewrites for v2 plans (dry-run by default).")
+    p_rewrite.add_argument("--plan-id", type=str, default=None)
+    p_rewrite.add_argument("--apply", action="store_true", help="Apply proposed patches (writes snapshot + DB changes)")
+    p_rewrite.add_argument("--json", action="store_true", help="Output machine-readable JSON (dry-run only)")
+    p_rewrite.add_argument("--max-depth", type=int, default=None, help="Override max decomposition depth for split decisions")
+    p_rewrite.add_argument("--threshold-person-days", type=float, default=None, help="Override one-shot threshold person-days")
+
+    p_feas = sub.add_parser("feasibility-check", help="Check whether leaf ACTION nodes are <= threshold (v2 feasibility).")
+    p_feas.add_argument("--plan-id", type=str, default=None)
+    p_feas.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    p_feas.add_argument("--threshold-person-days", type=float, default=None)
+    p_feas.add_argument("--max-depth", type=int, default=None)
 
     p_events = sub.add_parser("events", help="Show recent task events (JSON)")
     p_events.add_argument("--plan-id", type=str, default=None)
@@ -810,8 +998,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                 max_total_attempts=getattr(args, "max_total_attempts", None),
                 plan_output_path=args.out,
             )
+            plan_id = str(res.plan_json["plan"]["plan_id"])
+            cfg = get_runtime_config()
+            if cfg.workflow_mode == "v2":
+                # Converge structural v2 constraints (no real LLM): rewrite until doctor+feasibility OK, or request external input.
+                conv = converge_v2_plan(
+                    conn,
+                    plan_id=plan_id,
+                    max_rounds=max(1, int(args.max_attempts)),
+                    threshold_person_days=float(cfg.one_shot_threshold_person_days),
+                    max_depth=int(cfg.max_decomposition_depth),
+                )
+                if conv.status != "OK":
+                    print(f"create-plan requires external input (v2): plan_id={plan_id}")
+                    if conv.required_docs_path:
+                        print(f"required_docs: {conv.required_docs_path}")
+                    return 1
             print(f"Approved plan written to: {res.plan_path}")
-            print(f"plan_id: {res.plan_json['plan']['plan_id']}")
+            print(f"plan_id: {plan_id}")
             print(f"score:   {res.review_json.get('total_score')}")
             return 0
         except PlanNotApprovedError as exc:
@@ -825,7 +1029,26 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("建议：打开 UI 的 LLM Explorer 查看 PLAN_GEN/PLAN_REVIEW 的输入输出，或运行 `agent_cli.py llm-calls --limit 50`。", file=sys.stderr)
             return 1
     if args.cmd == "status":
-        return cmd_status(args.db, args.plan_id, verbose=bool(getattr(args, "verbose", False)))
+        return cmd_status(args.db, args.plan_id, verbose=bool(getattr(args, "verbose", False)), brief=bool(getattr(args, "brief", False)))
+    if args.cmd == "report":
+        return cmd_report(args.db, args.plan_id, as_json=bool(getattr(args, "json", False)), out_path=getattr(args, "out", None))
+    if args.cmd == "rewrite":
+        return cmd_rewrite(
+            args.db,
+            args.plan_id,
+            apply=bool(getattr(args, "apply", False)),
+            as_json=bool(getattr(args, "json", False)),
+            max_depth=getattr(args, "max_depth", None),
+            threshold_person_days=getattr(args, "threshold_person_days", None),
+        )
+    if args.cmd == "feasibility-check":
+        return cmd_feasibility_check(
+            args.db,
+            args.plan_id,
+            as_json=bool(getattr(args, "json", False)),
+            threshold_person_days=getattr(args, "threshold_person_days", None),
+            max_depth=getattr(args, "max_depth", None),
+        )
     if args.cmd == "events":
         return cmd_events(args.db, args.plan_id, args.limit)
     if args.cmd == "errors":

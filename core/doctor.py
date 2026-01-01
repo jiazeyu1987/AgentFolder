@@ -425,6 +425,9 @@ def doctor_plan(
             for r in check_rows:
                 tid = str(r["task_id"])
                 title = str(r["title"] or "")
+                status = str(r["status"] or "")
+                if status == "ABANDONED":
+                    continue
                 target = _row_get(r, "review_target_task_id")
                 target_s = str(target or "").strip()
                 if not target_s:
