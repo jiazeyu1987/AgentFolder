@@ -76,3 +76,43 @@ export interface ConfigResp {
   paths: Record<string, string>;
 }
 
+export interface TaskLlmCallsResp {
+  task_id: string;
+  calls: Array<{
+    llm_call_id: string;
+    created_at: string;
+    plan_id: string | null;
+    task_id: string | null;
+    agent: string;
+    scope: string;
+    prompt_text: string | null;
+    response_text: string | null;
+    parsed_json: string | null;
+    normalized_json: string | null;
+    validator_error: string | null;
+    error_code: string | null;
+    error_message: string | null;
+  }>;
+  ts: string;
+}
+
+export interface TaskDetailsResp {
+  task: {
+    task_id: string;
+    plan_id: string;
+    title: string;
+    node_type: string;
+    status: string;
+    owner_agent_id: string;
+    blocked_reason: string | null;
+    attempt_count: number;
+    active_artifact_id: string | null;
+  };
+  active_artifact: { artifact_id: string; name: string; format: string; path: string; sha256: string; created_at: string } | null;
+  artifacts: Array<{ artifact_id: string; name: string; format: string; path: string; sha256: string; created_at: string }>;
+  acceptance_criteria: string[];
+  required_docs_path: string;
+  artifact_dir: string;
+  review_dir: string;
+  ts: string;
+}

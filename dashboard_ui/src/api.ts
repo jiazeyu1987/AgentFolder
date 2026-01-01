@@ -1,4 +1,4 @@
-import type { ConfigResp, GraphV1, PlansResp } from "./types";
+import type { ConfigResp, GraphV1, PlansResp, TaskDetailsResp, TaskLlmCallsResp } from "./types";
 
 async function httpJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -52,3 +52,10 @@ export function exportDeliverables(planId: string, includeReviews: boolean): Pro
   return httpJson("/api/export", { method: "POST", body: JSON.stringify({ plan_id: planId, include_reviews: includeReviews }) });
 }
 
+export function getTaskLlmCalls(taskId: string, limit = 20): Promise<TaskLlmCallsResp> {
+  return httpJson<TaskLlmCallsResp>(`/api/task/${encodeURIComponent(taskId)}/llm?limit=${limit}`);
+}
+
+export function getTaskDetails(taskId: string): Promise<TaskDetailsResp> {
+  return httpJson<TaskDetailsResp>(`/api/task/${encodeURIComponent(taskId)}/details`);
+}

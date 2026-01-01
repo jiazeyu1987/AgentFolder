@@ -92,10 +92,6 @@ export default function App() {
       <div className="right">
         <NodeDetails node={selectedNode} />
         <div className="panel">
-          <h3>Debug (placeholder)</h3>
-          <div className="muted">LLM Explorer will be added later.</div>
-        </div>
-        <div className="panel">
           <h3>Logs</h3>
           <textarea className="log" value={logText} readOnly rows={10} />
         </div>
@@ -103,4 +99,3 @@ export default function App() {
     </div>
   );
 }
-

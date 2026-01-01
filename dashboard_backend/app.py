@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -136,6 +136,16 @@ class ResetDbIn(BaseModel):
     purge_logs: bool = False
 
 
+def _truncate(s: Optional[str], *, max_chars: int) -> Optional[str]:
+    if s is None:
+        return None
+    if max_chars <= 0:
+        return s
+    if len(s) <= max_chars:
+        return s
+    return s[: max_chars - 1] + "…"
+
+
 @app.get("/api/config")
 def get_config() -> Dict[str, Any]:
     return {
@@ -166,6 +176,144 @@ def get_plan_graph(plan_id: str) -> Dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return res.graph
+
+
+@app.get("/api/task/{task_id}/llm")
+def get_task_llm_calls(
+    task_id: str,
+    limit: int = Query(default=20, ge=1, le=200),
+    max_chars: int = Query(default=50_000, ge=0, le=500_000),
+) -> Dict[str, Any]:
+    conn = _connect(config.DB_PATH_DEFAULT)
+    rows = conn.execute(
+        """
+        SELECT
+          llm_call_id,
+          created_at,
+          plan_id,
+          task_id,
+          agent,
+          scope,
+          prompt_text,
+          response_text,
+          parsed_json,
+          normalized_json,
+          validator_error,
+          error_code,
+          error_message
+        FROM llm_calls
+        WHERE task_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (task_id, int(limit)),
+    ).fetchall()
+    calls = []
+    for r in rows:
+        calls.append(
+            {
+                "llm_call_id": r["llm_call_id"],
+                "created_at": r["created_at"],
+                "plan_id": r["plan_id"],
+                "task_id": r["task_id"],
+                "agent": r["agent"],
+                "scope": r["scope"],
+                "prompt_text": _truncate(r["prompt_text"], max_chars=max_chars),
+                "response_text": _truncate(r["response_text"], max_chars=max_chars),
+                "parsed_json": _truncate(r["parsed_json"], max_chars=max_chars),
+                "normalized_json": _truncate(r["normalized_json"], max_chars=max_chars),
+                "validator_error": r["validator_error"],
+                "error_code": r["error_code"],
+                "error_message": r["error_message"],
+            }
+        )
+    return {"task_id": task_id, "calls": calls, "ts": utc_now_iso()}
+
+
+@app.get("/api/task/{task_id}/details")
+def get_task_details(task_id: str) -> Dict[str, Any]:
+    conn = _connect(config.DB_PATH_DEFAULT)
+    node = conn.execute(
+        """
+        SELECT task_id, plan_id, title, node_type, status, owner_agent_id, blocked_reason, attempt_count, active_artifact_id
+        FROM task_nodes
+        WHERE task_id = ?
+        """,
+        (task_id,),
+    ).fetchone()
+    if not node:
+        raise HTTPException(status_code=404, detail=f"task not found: {task_id}")
+
+    active = None
+    if node["active_artifact_id"]:
+        a = conn.execute(
+            "SELECT artifact_id, name, format, path, sha256, created_at FROM artifacts WHERE artifact_id=?",
+            (node["active_artifact_id"],),
+        ).fetchone()
+        if a:
+            active = dict(a)
+
+    arts = conn.execute(
+        """
+        SELECT artifact_id, name, format, path, sha256, created_at
+        FROM artifacts
+        WHERE task_id = ?
+        ORDER BY created_at DESC
+        LIMIT 30
+        """,
+        (task_id,),
+    ).fetchall()
+
+    review_row = conn.execute(
+        """
+        SELECT total_score, action_required, summary, suggestions_json, created_at
+        FROM reviews
+        WHERE task_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+
+    acceptance: list[str] = []
+    review_obj = None
+    if review_row:
+        review_obj = {
+            "total_score": int(review_row["total_score"] or 0),
+            "action_required": review_row["action_required"],
+            "summary": review_row["summary"],
+            "created_at": review_row["created_at"],
+        }
+        sugs = []
+        try:
+            sugs = json.loads(review_row["suggestions_json"] or "[]")
+        except Exception:
+            sugs = []
+        if isinstance(sugs, list):
+            for s in sugs:
+                if not isinstance(s, dict):
+                    continue
+                ac = s.get("acceptance_criteria")
+                if isinstance(ac, str) and ac.strip():
+                    acceptance.append(ac.strip())
+
+    if not acceptance:
+        # Default contract: reviewer approves with >=90
+        acceptance = ["xiaojing 审核通过：total_score >= 90 且 action_required = APPROVE"]
+
+    required_docs_path = str(config.REQUIRED_DOCS_DIR / f"{task_id}.md")
+
+    return {
+        "task": dict(node),
+        "active_artifact": active,
+        "artifacts": [dict(a) for a in arts],
+        "acceptance_criteria": acceptance[:10],
+        "required_docs_path": required_docs_path,
+        "artifact_dir": str(config.ARTIFACTS_DIR / task_id),
+        "review_dir": str(config.REVIEWS_DIR / task_id),
+        "last_review": review_obj,
+        "ts": utc_now_iso(),
+    }
 
 
 @app.post("/api/run/start")
