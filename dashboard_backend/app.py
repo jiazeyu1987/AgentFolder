@@ -7,6 +7,8 @@ import subprocess
 import sys
 import uuid
 import hashlib
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,6 +29,25 @@ from core.workflow_graph import WorkflowQuery, build_workflow
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RUN_STATE_PATH = config.STATE_DIR / "run_process.json"
 CREATE_PLAN_STATE_PATH = config.STATE_DIR / "create_plan_process.json"
+
+_DB_RESET_LOCK = threading.Lock()
+_DB_RESETTING = False
+
+
+@contextmanager
+def _db_conn() -> sqlite3.Connection:
+    global _DB_RESETTING
+    with _DB_RESET_LOCK:
+        if _DB_RESETTING:
+            raise HTTPException(status_code=503, detail="DB reset in progress; retry in a moment")
+    conn = _connect(config.DB_PATH_DEFAULT)
+    try:
+        yield conn
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -357,37 +378,37 @@ def get_config() -> Dict[str, Any]:
 
 @app.get("/api/plans")
 def get_plans() -> Dict[str, Any]:
-    conn = _connect(config.DB_PATH_DEFAULT)
-    # Infer workflow version from stored nodes. v2 plans include CHECK nodes.
-    rows = conn.execute(
-        """
-        SELECT
-          p.plan_id,
-          p.title,
-          p.root_task_id,
-          p.created_at,
-          CASE
-            WHEN EXISTS (
-              SELECT 1
-              FROM task_nodes tn
-              WHERE tn.plan_id = p.plan_id
-                AND (
-                  tn.node_type = 'CHECK'
-                  OR tn.review_target_task_id IS NOT NULL
-                  OR tn.deliverable_spec_json IS NOT NULL
-                  OR tn.acceptance_criteria_json IS NOT NULL
-                  OR tn.estimated_person_days IS NOT NULL
-                  OR tn.approved_artifact_id IS NOT NULL
-                )
-              LIMIT 1
-            ) THEN 2
-            ELSE 1
-          END AS workflow_version
-        FROM plans p
-        ORDER BY p.created_at DESC
-        """
-    ).fetchall()
-    return {"plans": [dict(r) for r in rows], "ts": utc_now_iso()}
+    with _db_conn() as conn:
+        # Infer workflow version from stored nodes. v2 plans include CHECK nodes.
+        rows = conn.execute(
+            """
+            SELECT
+              p.plan_id,
+              p.title,
+              p.root_task_id,
+              p.created_at,
+              CASE
+                WHEN EXISTS (
+                  SELECT 1
+                  FROM task_nodes tn
+                  WHERE tn.plan_id = p.plan_id
+                    AND (
+                      tn.node_type = 'CHECK'
+                      OR tn.review_target_task_id IS NOT NULL
+                      OR tn.deliverable_spec_json IS NOT NULL
+                      OR tn.acceptance_criteria_json IS NOT NULL
+                      OR tn.estimated_person_days IS NOT NULL
+                      OR tn.approved_artifact_id IS NOT NULL
+                    )
+                  LIMIT 1
+                ) THEN 2
+                ELSE 1
+              END AS workflow_version
+            FROM plans p
+            ORDER BY p.created_at DESC
+            """
+        ).fetchall()
+        return {"plans": [dict(r) for r in rows], "ts": utc_now_iso()}
 
 
 @app.post("/api/runtime_config/update")
@@ -454,9 +475,9 @@ def get_job(job_id: str) -> Dict[str, Any]:
     if status not in {"RUNNING", "DONE", "FAILED"}:
         status = "DONE" if not alive else "RUNNING"
 
-    conn = _connect(config.DB_PATH_DEFAULT)
-    plan_id = state.get("plan_id")
-    prog = infer_create_plan_progress(conn, plan_id=str(plan_id) if isinstance(plan_id, str) and plan_id.strip() else None)
+    with _db_conn() as conn:
+        plan_id = state.get("plan_id")
+        prog = infer_create_plan_progress(conn, plan_id=str(plan_id) if isinstance(plan_id, str) and plan_id.strip() else None)
     inferred_plan_id = prog.get("inferred_plan_id")
     if not plan_id and isinstance(inferred_plan_id, str) and inferred_plan_id.strip():
         plan_id = inferred_plan_id.strip()
@@ -504,23 +525,23 @@ def get_job(job_id: str) -> Dict[str, Any]:
 
 @app.get("/api/plan/{plan_id}/graph")
 def get_plan_graph(plan_id: str) -> Dict[str, Any]:
-    conn = _connect(config.DB_PATH_DEFAULT)
-    try:
-        res = build_plan_graph(conn, plan_id=plan_id)
-    except Exception as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    return res.graph
+    with _db_conn() as conn:
+        try:
+            res = build_plan_graph(conn, plan_id=plan_id)
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return res.graph
 
 
 @app.get("/api/plan_snapshot")
 def plan_snapshot(plan_id: str = Query(..., min_length=1)) -> Dict[str, Any]:
-    conn = _connect(config.DB_PATH_DEFAULT)
-    cfg = get_runtime_config()
-    try:
-        snap = get_plan_snapshot(conn, str(plan_id), workflow_mode=str(cfg.workflow_mode))
-    except Exception as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    return snap
+    with _db_conn() as conn:
+        cfg = get_runtime_config()
+        try:
+            snap = get_plan_snapshot(conn, str(plan_id), workflow_mode=str(cfg.workflow_mode))
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return snap
 
 
 @app.get("/api/task/{task_id}/llm")
@@ -529,8 +550,8 @@ def get_task_llm_calls(
     limit: int = Query(default=20, ge=1, le=200),
     max_chars: int = Query(default=50_000, ge=0, le=500_000),
 ) -> Dict[str, Any]:
-    conn = _connect(config.DB_PATH_DEFAULT)
-    rows = conn.execute(
+    with _db_conn() as conn:
+        rows = conn.execute(
         """
         SELECT
           llm_call_id,
@@ -552,27 +573,27 @@ def get_task_llm_calls(
         LIMIT ?
         """,
         (task_id, int(limit)),
-    ).fetchall()
-    calls = []
-    for r in rows:
-        calls.append(
-            {
-                "llm_call_id": r["llm_call_id"],
-                "created_at": r["created_at"],
-                "plan_id": r["plan_id"],
-                "task_id": r["task_id"],
-                "agent": r["agent"],
-                "scope": r["scope"],
-                "prompt_text": _truncate(r["prompt_text"], max_chars=max_chars),
-                "response_text": _truncate(r["response_text"], max_chars=max_chars),
-                "parsed_json": _truncate(r["parsed_json"], max_chars=max_chars),
-                "normalized_json": _truncate(r["normalized_json"], max_chars=max_chars),
-                "validator_error": r["validator_error"],
-                "error_code": r["error_code"],
-                "error_message": r["error_message"],
-            }
-        )
-    return {"task_id": task_id, "calls": calls, "ts": utc_now_iso()}
+        ).fetchall()
+        calls = []
+        for r in rows:
+            calls.append(
+                {
+                    "llm_call_id": r["llm_call_id"],
+                    "created_at": r["created_at"],
+                    "plan_id": r["plan_id"],
+                    "task_id": r["task_id"],
+                    "agent": r["agent"],
+                    "scope": r["scope"],
+                    "prompt_text": _truncate(r["prompt_text"], max_chars=max_chars),
+                    "response_text": _truncate(r["response_text"], max_chars=max_chars),
+                    "parsed_json": _truncate(r["parsed_json"], max_chars=max_chars),
+                    "normalized_json": _truncate(r["normalized_json"], max_chars=max_chars),
+                    "validator_error": r["validator_error"],
+                    "error_code": r["error_code"],
+                    "error_message": r["error_message"],
+                }
+            )
+        return {"task_id": task_id, "calls": calls, "ts": utc_now_iso()}
 
 
 @app.get("/api/llm_calls")
@@ -585,83 +606,83 @@ def get_llm_calls(
     plan_id_missing: bool = Query(default=False),
     max_chars: int = Query(default=200_000, ge=0, le=500_000),
 ) -> Dict[str, Any]:
-    conn = _connect(config.DB_PATH_DEFAULT)
-    where: List[str] = []
-    params: List[Any] = []
+    with _db_conn() as conn:
+        where: List[str] = []
+        params: List[Any] = []
 
-    if llm_call_id is not None and str(llm_call_id).strip():
-        where.append("llm_call_id = ?")
-        params.append(str(llm_call_id).strip())
+        if llm_call_id is not None and str(llm_call_id).strip():
+            where.append("llm_call_id = ?")
+            params.append(str(llm_call_id).strip())
 
-    if plan_id_missing:
-        where.append("plan_id IS NULL")
-    elif plan_id is not None and str(plan_id).strip():
-        where.append("plan_id = ?")
-        params.append(str(plan_id).strip())
+        if plan_id_missing:
+            where.append("plan_id IS NULL")
+        elif plan_id is not None and str(plan_id).strip():
+            where.append("plan_id = ?")
+            params.append(str(plan_id).strip())
 
-    if agent is not None and str(agent).strip():
-        where.append("agent = ?")
-        params.append(str(agent).strip())
+        if agent is not None and str(agent).strip():
+            where.append("agent = ?")
+            params.append(str(agent).strip())
 
-    scope_list: List[str] = []
-    if scopes:
-        for s in str(scopes).split(","):
-            s2 = s.strip()
-            if s2:
-                scope_list.append(s2)
-    if scope_list:
-        where.append("scope IN (" + ",".join(["?"] * len(scope_list)) + ")")
-        params.extend(scope_list)
+        scope_list: List[str] = []
+        if scopes:
+            for s in str(scopes).split(","):
+                s2 = s.strip()
+                if s2:
+                    scope_list.append(s2)
+        if scope_list:
+            where.append("scope IN (" + ",".join(["?"] * len(scope_list)) + ")")
+            params.extend(scope_list)
 
-    sql = """
-        SELECT
-          llm_call_id,
-          created_at,
-          plan_id,
-          task_id,
-          agent,
-          scope,
-          prompt_text,
-          response_text,
-          parsed_json,
-          normalized_json,
-          validator_error,
-          error_code,
-          error_message,
-          meta_json
-        FROM llm_calls
-    """
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY created_at DESC LIMIT ?"
-    params.append(int(limit))
+        sql = """
+            SELECT
+              llm_call_id,
+              created_at,
+              plan_id,
+              task_id,
+              agent,
+              scope,
+              prompt_text,
+              response_text,
+              parsed_json,
+              normalized_json,
+              validator_error,
+              error_code,
+              error_message,
+              meta_json
+            FROM llm_calls
+        """
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(int(limit))
 
-    rows = conn.execute(sql, tuple(params)).fetchall()
-    calls = []
-    for r in rows:
-        src = resolve_prompt_sources(agent=r["agent"], scope=r["scope"])
-        calls.append(
-            {
-                "llm_call_id": r["llm_call_id"],
-                "created_at": r["created_at"],
-                "plan_id": r["plan_id"],
-                "task_id": r["task_id"],
-                "agent": r["agent"],
-                "scope": r["scope"],
-                "prompt_text": _truncate(r["prompt_text"], max_chars=max_chars),
-                "response_text": _truncate(r["response_text"], max_chars=max_chars),
-                "parsed_json": _truncate(r["parsed_json"], max_chars=max_chars),
-                "normalized_json": _truncate(r["normalized_json"], max_chars=max_chars),
-                "validator_error": r["validator_error"],
-                "error_code": r["error_code"],
-                "error_message": r["error_message"],
-                "meta_json": _truncate(r["meta_json"], max_chars=max_chars),
-                "shared_prompt_path": src.get("shared_prompt_path"),
-                "agent_prompt_path": src.get("agent_prompt_path"),
-                "prompt_source_reason": src.get("reason"),
-            }
-        )
-    return {"calls": calls, "ts": utc_now_iso()}
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        calls: List[Dict[str, Any]] = []
+        for r in rows:
+            src = resolve_prompt_sources(agent=r["agent"], scope=r["scope"])
+            calls.append(
+                {
+                    "llm_call_id": r["llm_call_id"],
+                    "created_at": r["created_at"],
+                    "plan_id": r["plan_id"],
+                    "task_id": r["task_id"],
+                    "agent": r["agent"],
+                    "scope": r["scope"],
+                    "prompt_text": _truncate(r["prompt_text"], max_chars=max_chars),
+                    "response_text": _truncate(r["response_text"], max_chars=max_chars),
+                    "parsed_json": _truncate(r["parsed_json"], max_chars=max_chars),
+                    "normalized_json": _truncate(r["normalized_json"], max_chars=max_chars),
+                    "validator_error": r["validator_error"],
+                    "error_code": r["error_code"],
+                    "error_message": r["error_message"],
+                    "meta_json": _truncate(r["meta_json"], max_chars=max_chars),
+                    "shared_prompt_path": src.get("shared_prompt_path"),
+                    "agent_prompt_path": src.get("agent_prompt_path"),
+                    "prompt_source_reason": src.get("reason"),
+                }
+            )
+        return {"calls": calls, "ts": utc_now_iso()}
 
 
 @app.get("/api/prompt_file")
@@ -681,108 +702,107 @@ def get_workflow(
     limit: int = Query(default=200, ge=1, le=500),
     plan_id_missing: bool = Query(default=False),
 ) -> Dict[str, Any]:
-    conn = _connect(config.DB_PATH_DEFAULT)
-    scope_list: List[str] = []
-    if scopes:
-        for s in str(scopes).split(","):
-            s2 = s.strip()
-            if s2:
-                scope_list.append(s2)
-    q = WorkflowQuery(
-        plan_id=str(plan_id).strip() if plan_id and str(plan_id).strip() else None,
-        plan_id_missing=bool(plan_id_missing),
-        scopes=scope_list,
-        agent=str(agent).strip() if agent and str(agent).strip() else None,
-        only_errors=bool(only_errors),
-        limit=int(limit),
-    )
-    return build_workflow(conn, q)
+    with _db_conn() as conn:
+        scope_list: List[str] = []
+        if scopes:
+            for s in str(scopes).split(","):
+                s2 = s.strip()
+                if s2:
+                    scope_list.append(s2)
+        q = WorkflowQuery(
+            plan_id=str(plan_id).strip() if plan_id and str(plan_id).strip() else None,
+            plan_id_missing=bool(plan_id_missing),
+            scopes=scope_list,
+            agent=str(agent).strip() if agent and str(agent).strip() else None,
+            only_errors=bool(only_errors),
+            limit=int(limit),
+        )
+        return build_workflow(conn, q)
 
 
 @app.get("/api/task/{task_id}/details")
 def get_task_details(task_id: str) -> Dict[str, Any]:
-    conn = _connect(config.DB_PATH_DEFAULT)
-    node = conn.execute(
-        """
-        SELECT task_id, plan_id, title, node_type, status, owner_agent_id, blocked_reason, attempt_count, active_artifact_id
-        FROM task_nodes
-        WHERE task_id = ?
-        """,
-        (task_id,),
-    ).fetchone()
-    if not node:
-        raise HTTPException(status_code=404, detail=f"task not found: {task_id}")
-
-    active = None
-    if node["active_artifact_id"]:
-        a = conn.execute(
-            "SELECT artifact_id, name, format, path, sha256, created_at FROM artifacts WHERE artifact_id=?",
-            (node["active_artifact_id"],),
+    with _db_conn() as conn:
+        node = conn.execute(
+            """
+            SELECT task_id, plan_id, title, node_type, status, owner_agent_id, blocked_reason, attempt_count, active_artifact_id
+            FROM task_nodes
+            WHERE task_id = ?
+            """,
+            (task_id,),
         ).fetchone()
-        if a:
-            active = dict(a)
+        if not node:
+            raise HTTPException(status_code=404, detail=f"task not found: {task_id}")
 
-    arts = conn.execute(
-        """
-        SELECT artifact_id, name, format, path, sha256, created_at
-        FROM artifacts
-        WHERE task_id = ?
-        ORDER BY created_at DESC
-        LIMIT 30
-        """,
-        (task_id,),
-    ).fetchall()
+        active = None
+        if node["active_artifact_id"]:
+            a = conn.execute(
+                "SELECT artifact_id, name, format, path, sha256, created_at FROM artifacts WHERE artifact_id=?",
+                (node["active_artifact_id"],),
+            ).fetchone()
+            if a:
+                active = dict(a)
 
-    review_row = conn.execute(
-        """
-        SELECT total_score, action_required, summary, suggestions_json, created_at
-        FROM reviews
-        WHERE task_id = ?
-        ORDER BY created_at DESC
-        LIMIT 1
-        """,
-        (task_id,),
-    ).fetchone()
+        arts = conn.execute(
+            """
+            SELECT artifact_id, name, format, path, sha256, created_at
+            FROM artifacts
+            WHERE task_id = ?
+            ORDER BY created_at DESC
+            LIMIT 30
+            """,
+            (task_id,),
+        ).fetchall()
 
-    acceptance: list[str] = []
-    review_obj = None
-    if review_row:
-        review_obj = {
-            "total_score": int(review_row["total_score"] or 0),
-            "action_required": review_row["action_required"],
-            "summary": review_row["summary"],
-            "created_at": review_row["created_at"],
-        }
-        sugs = []
-        try:
-            sugs = json.loads(review_row["suggestions_json"] or "[]")
-        except Exception:
+        review_row = conn.execute(
+            """
+            SELECT total_score, action_required, summary, suggestions_json, created_at
+            FROM reviews
+            WHERE task_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+
+        acceptance: list[str] = []
+        review_obj = None
+        if review_row:
+            review_obj = {
+                "total_score": int(review_row["total_score"] or 0),
+                "action_required": review_row["action_required"],
+                "summary": review_row["summary"],
+                "created_at": review_row["created_at"],
+            }
             sugs = []
-        if isinstance(sugs, list):
-            for s in sugs:
-                if not isinstance(s, dict):
-                    continue
-                ac = s.get("acceptance_criteria")
-                if isinstance(ac, str) and ac.strip():
-                    acceptance.append(ac.strip())
+            try:
+                sugs = json.loads(review_row["suggestions_json"] or "[]")
+            except Exception:
+                sugs = []
+            if isinstance(sugs, list):
+                for s in sugs:
+                    if not isinstance(s, dict):
+                        continue
+                    ac = s.get("acceptance_criteria")
+                    if isinstance(ac, str) and ac.strip():
+                        acceptance.append(ac.strip())
 
-    if not acceptance:
-        # Default contract: reviewer approves with >=90
-        acceptance = ["xiaojing 审核通过：total_score >= 90 且 action_required = APPROVE"]
+        if not acceptance:
+            acceptance = ["xiaojing reviewer passed: total_score >= 90 and action_required = APPROVE"]
 
-    required_docs_path = str(config.REQUIRED_DOCS_DIR / f"{task_id}.md")
+        required_docs_path = str(config.REQUIRED_DOCS_DIR / f"{task_id}.md")
 
-    return {
-        "task": dict(node),
-        "active_artifact": active,
-        "artifacts": [dict(a) for a in arts],
-        "acceptance_criteria": acceptance[:10],
-        "required_docs_path": required_docs_path,
-        "artifact_dir": str(config.ARTIFACTS_DIR / task_id),
-        "review_dir": str(config.REVIEWS_DIR / task_id),
-        "last_review": review_obj,
-        "ts": utc_now_iso(),
-    }
+        return {
+            "task": dict(node),
+            "active_artifact": active,
+            "artifacts": [dict(a) for a in arts],
+            "acceptance_criteria": acceptance[:10],
+            "required_docs_path": required_docs_path,
+            "artifact_dir": str(config.ARTIFACTS_DIR / task_id),
+            "review_dir": str(config.REVIEWS_DIR / task_id),
+            "last_review": review_obj,
+            "ts": utc_now_iso(),
+        }
 
 
 @app.post("/api/run/start")
@@ -832,6 +852,9 @@ def create_plan(body: CreatePlanIn) -> Dict[str, Any]:
 
 @app.post("/api/reset-db")
 def reset_db(body: ResetDbIn) -> Dict[str, Any]:
+    global _DB_RESETTING
+    with _DB_RESET_LOCK:
+        _DB_RESETTING = True
     python_exe = _python_executable()
     cmd = [python_exe, str(ROOT_DIR / "agent_cli.py"), "--db", str(config.DB_PATH_DEFAULT), "reset-db"]
     if body.purge_workspace:
@@ -840,8 +863,12 @@ def reset_db(body: ResetDbIn) -> Dict[str, Any]:
         cmd.append("--purge-tasks")
     if body.purge_logs:
         cmd.append("--purge-logs")
-    proc = subprocess.run(cmd, cwd=str(ROOT_DIR), capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
+    try:
+        proc = subprocess.run(cmd, cwd=str(ROOT_DIR), capture_output=True, text=True, encoding="utf-8", errors="replace")
+        return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
+    finally:
+        with _DB_RESET_LOCK:
+            _DB_RESETTING = False
 
 
 @app.post("/api/export")
