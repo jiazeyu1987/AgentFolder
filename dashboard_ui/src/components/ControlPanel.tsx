@@ -2,6 +2,14 @@ import React, { useMemo, useState } from "react";
 import type { ConfigResp, PlansResp } from "../types";
 import * as api from "../api";
 
+function getNumber(obj: unknown, key: string): number | null {
+  if (!obj || typeof obj !== "object") return null;
+  const v = (obj as any)[key];
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
+  return null;
+}
+
 export default function ControlPanel(props: {
   config: ConfigResp | null;
   plans: PlansResp["plans"];
@@ -15,6 +23,8 @@ export default function ControlPanel(props: {
   const [maxAttempts, setMaxAttempts] = useState(3);
   const [maxIterations, setMaxIterations] = useState(10000);
   const [includeReviews, setIncludeReviews] = useState(false);
+  const [maxDepth, setMaxDepth] = useState<number>(5);
+  const [oneShotDays, setOneShotDays] = useState<number>(10);
 
   const planOptions = useMemo(() => props.plans, [props.plans]);
 
@@ -22,6 +32,17 @@ export default function ControlPanel(props: {
     await navigator.clipboard.writeText(text);
     props.onLog("copied to clipboard");
   }
+
+  // Initialize config fields once config arrives.
+  const cfgRaw = props.config?.runtime_config;
+  React.useEffect(() => {
+    if (!cfgRaw) return;
+    const md = getNumber(cfgRaw, "max_decomposition_depth");
+    const os = getNumber(cfgRaw, "one_shot_threshold_person_days");
+    if (md !== null) setMaxDepth(md);
+    if (os !== null) setOneShotDays(os);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.config?.runtime_config]);
 
   return (
     <div className="panel">
@@ -147,7 +168,41 @@ export default function ControlPanel(props: {
       ) : (
         <div className="muted">loading...</div>
       )}
+
+      <h4>Runtime Config</h4>
+      <div className="field">
+        <label className="inline">
+          最大深度 max_decomposition_depth
+          <input type="number" value={maxDepth} min={1} max={50} onChange={(e) => setMaxDepth(Number(e.target.value))} />
+        </label>
+      </div>
+      <div className="field">
+        <label className="inline">
+          最小LLM天数 one_shot_threshold_person_days
+          <input type="number" value={oneShotDays} min={0.1} step={0.5} onChange={(e) => setOneShotDays(Number(e.target.value))} />
+        </label>
+      </div>
+      <div className="row">
+        <button
+          onClick={async () => {
+            props.onLog("save runtime_config...");
+            const res = await api.updateRuntimeConfig({ max_decomposition_depth: maxDepth, one_shot_threshold_person_days: oneShotDays });
+            props.onLog(JSON.stringify(res, null, 2));
+            props.onRefresh();
+          }}
+        >
+          Save Config
+        </button>
+        <div className="spacer" />
+        <button
+          onClick={() => {
+            const payload = { max_decomposition_depth: maxDepth, one_shot_threshold_person_days: oneShotDays };
+            onCopy(JSON.stringify(payload));
+          }}
+        >
+          Copy
+        </button>
+      </div>
     </div>
   );
 }
-

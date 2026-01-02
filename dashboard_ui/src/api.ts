@@ -19,6 +19,10 @@ export function getConfig(): Promise<ConfigResp> {
   return httpJson<ConfigResp>("/api/config");
 }
 
+export function updateRuntimeConfig(patch: { max_decomposition_depth?: number; one_shot_threshold_person_days?: number }): Promise<unknown> {
+  return httpJson("/api/runtime_config/update", { method: "POST", body: JSON.stringify(patch) });
+}
+
 export function getPlans(): Promise<PlansResp> {
   return httpJson<PlansResp>("/api/plans");
 }

@@ -76,6 +76,11 @@ export interface ConfigResp {
   paths: Record<string, string>;
 }
 
+export type RuntimeConfigPatch = {
+  max_decomposition_depth?: number;
+  one_shot_threshold_person_days?: number;
+};
+
 export interface TaskLlmCallsResp {
   task_id: string;
   calls: Array<{

@@ -33,6 +33,7 @@ Notes:
 `agent_cli.py run` enforces:
 - `guardrails.max_run_iterations`: caps the effective `--max-iterations`.
 - `guardrails.max_llm_calls_per_run`: stops the loop when reached and prints a short hint (no traceback).
+- `guardrails.max_llm_calls_per_task`: per-run in-memory cap (does not depend on lifetime DB counts); prevents infinite loops on one task within a single run invocation.
 
 ### LLM call truncation
 
@@ -64,4 +65,3 @@ Run:
 Outputs:
 - `workspace/regression/regression_<ts>.json`
 - Snapshots: `workspace/observability/<plan_id>/snapshot_*.json` and `.md`
-

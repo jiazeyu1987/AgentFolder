@@ -30,3 +30,9 @@
 - “为什么失败”：`agent_cli.py errors --task-id <TASK_ID>`
 - “Root 一直 READY”：`agent_cli.py doctor --plan-id <PLAN_ID>` → `repair-db`
 
+## 4) Snapshot（SSOT：推荐）
+统一快照（给 UI/排障复用，同一事实源）：
+- CLI：`agent_cli.py snapshot --plan-id <PLAN_ID>`
+  - 输出：`workspace/observability/<plan_id>/snapshot_*.json` 与 `snapshot_*.md`
+- Backend：`GET /api/plan_snapshot?plan_id=<PLAN_ID>`
+  - 返回 JSON：summary/reasons/inputs_needed/waiting_review/recent_errors/final_deliverable/doctor/feasibility/report

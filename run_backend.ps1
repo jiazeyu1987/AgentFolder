@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-Set-Location -Path (Split-Path -Parent $PSScriptRoot)
+Set-Location -Path $PSScriptRoot
 
 $python = "D:\miniconda3\python.exe"
 if (-not (Test-Path $python)) {
@@ -8,4 +8,3 @@ if (-not (Test-Path $python)) {
 }
 
 & $python -m uvicorn dashboard_backend.app:app --host 127.0.0.1 --port 8000
-

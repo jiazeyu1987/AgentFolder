@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import ast
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -35,6 +36,30 @@ def _parse_required_docs_md(path: Path) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     cur: Dict[str, Any] | None = None
 
+    def _parse_accepted_types(raw: str) -> List[str]:
+        s2 = (raw or "").strip()
+        if not s2:
+            return []
+        # Prefer JSON list: ["md","txt"]
+        for candidate in (s2, s2.replace("'", '"')):
+            try:
+                v = json.loads(candidate)
+                if isinstance(v, list):
+                    return [str(x).strip().strip("'").strip('"') for x in v if str(x).strip()]
+            except Exception:
+                pass
+        # Fallback: Python literal list: ['md','txt']
+        try:
+            v = ast.literal_eval(s2)
+            if isinstance(v, list):
+                return [str(x).strip().strip("'").strip('"') for x in v if str(x).strip()]
+        except Exception:
+            pass
+        # Last resort: comma split
+        s3 = s2.strip("[](){} ")
+        parts = [p.strip().strip("'").strip('"') for p in s3.split(",")]
+        return [p for p in parts if p]
+
     def flush() -> None:
         nonlocal cur
         if cur and cur.get("name"):
@@ -61,7 +86,7 @@ def _parse_required_docs_md(path: Path) -> List[Dict[str, Any]]:
             continue
         if s.strip().startswith("- accepted_types:"):
             v = s.split(":", 1)[1].strip()
-            cur["accepted_types"] = v
+            cur["accepted_types"] = _parse_accepted_types(v)
             continue
         if s.strip().startswith("- suggested_path:"):
             v = s.split(":", 1)[1].strip()

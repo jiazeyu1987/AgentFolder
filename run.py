@@ -15,6 +15,7 @@ from core.errors import apply_error_outcome, map_error_to_outcome, maybe_reset_f
 from core.llm_calls import record_llm_call
 from core.llm_client import LLMClient
 from core.contracts_v2 import format_contract_error_short, normalize_and_validate
+from core.guardrails import consume_per_task_budget
 from core.matcher import detect_removed_input_files_all, scan_inputs_and_bind_evidence_all
 from core.plan_loader import load_plan_into_db_if_needed
 from core.prompts import build_xiaobo_prompt, build_xiaojing_review_prompt, load_prompts, register_prompt_versions
@@ -187,7 +188,16 @@ def _select_best_inputs_per_requirement(files: List[Dict[str, Any]]) -> tuple[Li
     return selected, conflicts
 
 
-def xiaobo_round(*, conn, plan_id: str, prompts, llm: LLMClient, llm_calls: int, skills_registry: Dict[str, Any]) -> int:
+def xiaobo_round(
+    *,
+    conn,
+    plan_id: str,
+    prompts,
+    llm: LLMClient,
+    llm_calls: int,
+    skills_registry: Dict[str, Any],
+    per_task_llm_calls: Dict[str, int],
+) -> int:
     cfg = get_runtime_config()
     max_task_calls = int(cfg.guardrails.max_llm_calls_per_task)
     tasks = pick_xiaobo_tasks(conn, plan_id=plan_id, limit=10)
@@ -197,15 +207,7 @@ def xiaobo_round(*, conn, plan_id: str, prompts, llm: LLMClient, llm_calls: int,
             return llm_calls
 
         # Per-task guardrail (per run): do not keep calling LLM for the same task endlessly.
-        row = conn.execute(
-            """
-            SELECT COUNT(1) AS cnt
-            FROM llm_calls
-            WHERE plan_id = ? AND task_id = ?
-            """,
-            (plan_id, task_id),
-        ).fetchone()
-        if row and int(row["cnt"] or 0) >= max_task_calls:
+        if not consume_per_task_budget(per_task_llm_calls, task_id=str(task_id), limit=max_task_calls, cost=1):
             _handle_error(
                 conn,
                 plan_id=plan_id,
@@ -275,7 +277,12 @@ def xiaobo_round(*, conn, plan_id: str, prompts, llm: LLMClient, llm_calls: int,
             artifact_text_snippets=extracted_snippets,
         )
         res = llm.call_json(prompt)
-        llm_calls += 1 + int(getattr(res, "extra_calls", 0))
+        extra = int(getattr(res, "extra_calls", 0))
+        llm_calls += 1 + extra
+        if extra > 0:
+            # Best-effort: count extra calls against the same task for this run.
+            if not consume_per_task_budget(per_task_llm_calls, task_id=str(task_id), limit=max_task_calls, cost=extra):
+                per_task_llm_calls[str(task_id)] = int(max_task_calls)
 
         _append_jsonl(
             config.LLM_RUNS_LOG_PATH,
@@ -1100,6 +1107,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     llm = LLMClient()
     t0 = time.time()
     llm_calls = 0
+    per_task_llm_calls: Dict[str, int] = {}
 
     max_iters = min(int(args.max_iterations), int(cfg.guardrails.max_run_iterations))
     if int(args.max_iterations) > max_iters:
@@ -1129,7 +1137,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             detect_removed_input_files_all(conn, plan_id=plan_id, inputs_dirs=[config.INPUTS_DIR, config.BASELINE_INPUTS_DIR])
             maybe_reset_failed_to_ready(conn, plan_id=plan_id)
             recompute_readiness_for_plan(conn, plan_id=plan_id)
-                llm_calls = xiaobo_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, skills_registry=skills_registry)
+            llm_calls = xiaobo_round(
+                conn=conn,
+                plan_id=plan_id,
+                prompts=prompts,
+                llm=llm,
+                llm_calls=llm_calls,
+                skills_registry=skills_registry,
+                per_task_llm_calls=per_task_llm_calls,
+            )
             if cfg.workflow_mode == "v2":
                 llm_calls = v2_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
             else:

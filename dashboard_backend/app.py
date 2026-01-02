@@ -138,6 +138,11 @@ class ResetDbIn(BaseModel):
     purge_logs: bool = False
 
 
+class RuntimeConfigUpdateIn(BaseModel):
+    max_decomposition_depth: Optional[int] = None
+    one_shot_threshold_person_days: Optional[float] = None
+
+
 def _truncate(s: Optional[str], *, max_chars: int) -> Optional[str]:
     if s is None:
         return None
@@ -168,6 +173,43 @@ def get_plans() -> Dict[str, Any]:
     conn = _connect(config.DB_PATH_DEFAULT)
     rows = conn.execute("SELECT plan_id, title, root_task_id, created_at FROM plans ORDER BY created_at DESC").fetchall()
     return {"plans": [dict(r) for r in rows], "ts": utc_now_iso()}
+
+
+@app.post("/api/runtime_config/update")
+def update_runtime_config(body: RuntimeConfigUpdateIn) -> Dict[str, Any]:
+    p = config.RUNTIME_CONFIG_PATH
+    prev = p.read_text(encoding="utf-8") if p.exists() else None
+    cur = _read_runtime_config()
+    if not isinstance(cur, dict) or cur.get("_error"):
+        cur = {}
+
+    patch: Dict[str, Any] = {}
+    if body.max_decomposition_depth is not None:
+        patch["max_decomposition_depth"] = int(body.max_decomposition_depth)
+    if body.one_shot_threshold_person_days is not None:
+        patch["one_shot_threshold_person_days"] = float(body.one_shot_threshold_person_days)
+
+    merged = dict(cur)
+    merged.update(patch)
+
+    try:
+        p.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Validate (will raise on invalid values); rollback on failure.
+        from core.runtime_config import load_runtime_config, reset_runtime_config_cache
+
+        load_runtime_config(p)
+        reset_runtime_config_cache()
+    except Exception as exc:
+        if prev is None:
+            try:
+                p.unlink(missing_ok=True)  # type: ignore[arg-type]
+            except Exception:
+                pass
+        else:
+            p.write_text(prev, encoding="utf-8")
+        raise HTTPException(status_code=400, detail=f"invalid runtime_config update: {exc}")
+
+    return {"ok": True, "runtime_config": _read_runtime_config(), "ts": utc_now_iso()}
 
 
 @app.get("/api/plan/{plan_id}/graph")

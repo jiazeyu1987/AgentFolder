@@ -90,6 +90,10 @@
 - `GET /api/plan/{plan_id}/graph`
   - 返回任务图 JSON（见第 5 节契约）
 
+- `GET /api/plan_snapshot?plan_id=...`
+  - 返回 SSOT Snapshot（与 CLI `agent_cli.py snapshot` 对齐）：summary/reasons/inputs_needed/waiting_review/recent_errors/final_deliverable/doctor/feasibility
+  - 建议 UI 用它渲染顶部摘要与“下一步怎么做”
+
 - `POST /api/plan/create`
   - body：`top_task` + 其他可选参数（max_attempts/keep_trying/...）
   - 内部调用：`agent_cli.py create-plan ...`
@@ -162,7 +166,12 @@
           "suggested_path": "workspace/inputs/product_spec/xxx.md"
         }
       ],
-      "required_docs_path": "workspace/required_docs/<task_id>.md"
+      "required_docs_path": "workspace/required_docs/<task_id>.md",
+      "last_error": { "created_at": "...", "error_code": "...", "message": "..." },
+      "last_review": { "total_score": 90, "action_required": "APPROVE|MODIFY|REQUEST_EXTERNAL_INPUT", "summary": "...", "created_at": "..." },
+      "artifact_dir": "workspace/artifacts/<task_id>/",
+      "review_dir": "workspace/reviews/<task_id>/",
+      "is_running": false
     }
   ],
   "edges": [
@@ -180,6 +189,7 @@
 
 说明：
 - `missing_inputs` 来自 DB 的 `input_requirements/evidences` 统计 + `workspace/required_docs/<task_id>.md`（若存在则优先展示 suggested_path）。
+- `accepted_types` 必须是数组（list[str]）；若 required_docs 中写的是 `['md','txt']` 也会被解析成数组。
 - `running.task_id` 若 DB 中没有显式 `IN_PROGRESS`，可用“最近事件/最近 llm_calls”推断。
 
 ## 6. Reset DB（与现有 Tk UI 一致）

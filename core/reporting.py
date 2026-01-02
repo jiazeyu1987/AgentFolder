@@ -222,7 +222,7 @@ def _inputs_needed(conn: sqlite3.Connection, *, plan_id: str, required_docs_dir:
                 "items": [
                     {
                         "name": str(it.get("name") or ""),
-                        "accepted_types": it.get("accepted_types") or "",
+                        "accepted_types": it.get("accepted_types") or [],
                         "suggested_path": str(it.get("suggested_path") or ""),
                     }
                     for it in (items or [])
@@ -465,4 +465,3 @@ def render_plan_report_md(report: Dict[str, Any]) -> str:
 
     # Ensure the report does not contain raw task_id tokens outside file paths.
     return "\n".join(lines).rstrip() + "\n"
-

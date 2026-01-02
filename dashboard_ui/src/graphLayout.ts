@@ -1,5 +1,5 @@
 import dagre from "dagre";
-import type { Edge, Node } from "reactflow";
+import { Position, type Edge, type Node } from "reactflow";
 
 export function layoutDagre(nodes: Node[], edges: Edge[], direction: "TB" | "LR" = "TB"): { nodes: Node[]; edges: Edge[] } {
   const g = new dagre.graphlib.Graph();
@@ -22,10 +22,9 @@ export function layoutDagre(nodes: Node[], edges: Edge[], direction: "TB" | "LR"
     return {
       ...n,
       position: { x: p.x - p.width / 2, y: p.y - p.height / 2 },
-      sourcePosition: direction === "LR" ? "right" : "bottom",
-      targetPosition: direction === "LR" ? "left" : "top",
+      sourcePosition: direction === "LR" ? Position.Right : Position.Bottom,
+      targetPosition: direction === "LR" ? Position.Left : Position.Top,
     };
   });
   return { nodes: outNodes, edges };
 }
-

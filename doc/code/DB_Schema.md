@@ -14,6 +14,8 @@
 - `reviews`：审核结果（评分/建议等）
 - `task_events`：事件流（`ERROR/STATUS_CHANGED/ARTIFACT_CREATED/...`）
 - `llm_calls`：LLM 遥测（prompt/raw/parsed/normalized/validator_error；**无外键**，允许先记日志后入库计划/任务）
+  - 里程碑 6：`prompt_truncated/response_truncated`（整型 0/1）标记是否因 guardrails 截断
+  - `meta_json.truncated`（对象）也会记录截断标记（便于 UI/审计）
 
 ## 自检与修复
 - 自检：`agent_cli.py doctor --plan-id <PLAN_ID>`

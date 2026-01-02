@@ -1,191 +1,139 @@
 {
-  "title": "3D Web Shooter Game (Three.js)",
-  "description": "Create a complete 3D shooting game contained in a single HTML file using Three.js. Features include player movement, enemy AI, shooting mechanics, and a game environment.",
-  "requirements": [],
+  "title": "HTML5 Canvas Danmaku Shooter Game (Single File)",
+  "description": "Create a complete, single-file 'Plane Shooter' (Danmaku) game using HTML5 Canvas and vanilla JS. Features include player movement, auto-fire, diverse enemy patterns, Boss encounters with configurable bullet barrages (spread, ring, spiral, homing), and a power-up system that alters weapon types.",
   "nodes": [
     {
-      "id": "n1",
-      "type": "action",
-      "title": "Initialize Project Structure",
-      "status": "pending",
-      "inputs": [
-        "Project requirements"
-      ],
-      "outputs": [
-        "project_skeleton"
-      ],
-      "implementation": "create_skeleton",
-      "task_id": "f0c2087a-ee39-4041-9cd1-aa51afe4827a",
+      "id": "task_1_structure",
+      "type": "ACTION",
+      "title": "Implement HTML/CSS Structure",
+      "description": "Create the basic HTML skeleton, CSS for centering and styling the game container, and Canvas element setup (responsive 800x600).",
+      "status": "TODO",
+      "config": {},
+      "task_id": "b74a4e4d-d503-403d-85b1-fd2a6b4110e5",
       "node_type": "ACTION",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
-      "id": "n2",
-      "type": "action",
-      "title": "Implement Core Engine & Scene",
-      "status": "pending",
-      "dependencies": [
-        "n1"
-      ],
-      "inputs": [
-        "Three.js library reference"
-      ],
-      "outputs": [
-        "scene_setup"
-      ],
-      "implementation": "setup_scene",
-      "task_id": "691193ba-5c3c-425e-8bc2-f05d3c6dfd37",
+      "id": "task_2_player",
+      "type": "ACTION",
+      "title": "Implement Player System",
+      "description": "Implement the player class with movement (Arrow/WASD), clamping to screen bounds, input handling (auto-fire vs space), and rendering.",
+      "status": "TODO",
+      "config": {},
+      "task_id": "2f8eb7aa-9c93-42d9-81c3-b8d2826b8c90",
       "node_type": "ACTION",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
-      "id": "n3",
-      "type": "action",
-      "title": "Implement Player Control",
-      "status": "pending",
-      "dependencies": [
-        "n2"
-      ],
-      "inputs": [
-        "Player 3D Model (or primitive)",
-        "Input Mapping Config"
-      ],
-      "outputs": [
-        "player_controller"
-      ],
-      "implementation": "setup_player",
-      "task_id": "5393829f-bdf5-4ec3-b2ed-6c93c22701ba",
+      "id": "task_3_enemy",
+      "type": "ACTION",
+      "title": "Implement Enemy Spawner & Logic",
+      "description": "Create enemy spawning logic (basic enemies falling from top), movement patterns, and simple rendering (geometric shapes). Handle difficulty scaling (speed/count).",
+      "status": "TODO",
+      "config": {},
+      "task_id": "3e78699e-d962-4b69-8da7-f623083465bc",
       "node_type": "ACTION",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
-      "id": "n4",
-      "type": "action",
-      "title": "Implement Weapon & Shooting Mechanics",
-      "status": "pending",
-      "dependencies": [
-        "n3"
-      ],
-      "inputs": [
-        "Player camera reference"
-      ],
-      "outputs": [
-        "weapon_system"
-      ],
-      "implementation": "setup_weapons",
-      "task_id": "071a1536-d22b-4cf3-b795-429cf23d29ee",
+      "id": "task_7_collision",
+      "type": "ACTION",
+      "title": "Implement Collision System",
+      "description": "Implement the core collision detection logic. Checks interactions between Player Bullets vs Enemies, Player vs Enemy Bodies, and Player vs PowerUps using Circle/Rect intersection.",
+      "status": "TODO",
+      "config": {},
+      "task_id": "9ec7243e-ee17-4e10-8b91-b5238088d211",
       "node_type": "ACTION",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
-      "id": "n5",
-      "type": "action",
-      "title": "Implement Enemies",
-      "status": "pending",
-      "dependencies": [
-        "n2"
-      ],
-      "inputs": [
-        "Enemy 3D Model",
-        "AI Behavior Params"
-      ],
-      "outputs": [
-        "enemy_system"
-      ],
-      "implementation": "setup_enemies",
-      "task_id": "aac60651-6bfa-4af1-9115-30b68022c415",
+      "id": "task_4_bullets",
+      "type": "ACTION",
+      "title": "Implement Bullet & Weapon System",
+      "description": "Build the bullet manager and firing logic. Includes standard fire and 4 power-up modes (Apple 3-way, Chicken Shotgun, Grape Pierce, Lemon Laser).",
+      "status": "TODO",
+      "config": {},
+      "task_id": "46737a49-4613-491c-9f00-bf13579a7d01",
       "node_type": "ACTION",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
-      "id": "n8",
-      "type": "action",
-      "title": "Implement Game Environment & Level",
-      "status": "pending",
-      "dependencies": [
-        "n5"
-      ],
-      "inputs": [
-        "Level dimensions"
-      ],
-      "outputs": [
-        "game_environment"
-      ],
-      "implementation": "setup_environment",
-      "task_id": "5d512fb9-d32e-4c5a-8253-3b2f9aa3d8d6",
+      "id": "task_5_boss",
+      "type": "ACTION",
+      "title": "Implement Boss & Barrage System",
+      "description": "Implement Boss entity with HP bar, movement logic, and the requested barrage patterns (Fan, Ring, Spiral, Homing). Trigger based on score/time.",
+      "status": "TODO",
+      "config": {},
+      "task_id": "13160430-77a7-4697-884e-1f709eae9b8d",
       "node_type": "ACTION",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
-      "id": "n6",
-      "type": "action",
-      "title": "Implement Game Logic & HUD",
-      "status": "pending",
-      "dependencies": [
-        "n8",
-        "n4"
-      ],
-      "inputs": [
-        "Enemy system",
-        "Weapon system"
-      ],
-      "outputs": [
-        "game_logic"
-      ],
-      "implementation": "setup_hud",
-      "task_id": "5d27be05-54d4-4b93-8d75-d23837bf8983",
+      "id": "task_6_items",
+      "type": "ACTION",
+      "title": "Implement Power-Up System",
+      "description": "Implement item drops from enemies/boss. Handle player collision with items to trigger weapon changes, timers, and UI updates for active buffs.",
+      "status": "TODO",
+      "config": {},
+      "task_id": "36b5de78-a560-4580-a03b-4b54be3dc81b",
       "node_type": "ACTION",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
-      "id": "n7",
-      "type": "action",
-      "title": "Packaging: Generate Single HTML",
-      "status": "pending",
-      "dependencies": [
-        "n6"
-      ],
-      "inputs": [
-        "All script tags must be inline or CDN imports only."
-      ],
-      "outputs": [
-        "artifact"
-      ],
-      "implementation": "package_game",
-      "task_id": "623f901b-08ba-465e-bd88-b9333a4f5d5f",
+      "id": "task_8_ui",
+      "type": "ACTION",
+      "title": "Implement Game State & UI",
+      "description": "Manage game loop states (Start, Playing, GameOver). Implement HUD (Score, HP, Weapon). Handle Game Over logic and restart.",
+      "status": "TODO",
+      "config": {},
+      "task_id": "81527d73-e1c7-4789-8368-f17d6e2f0baf",
       "node_type": "ACTION",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
-      "task_id": "646296c0-f842-45cd-9cd6-8a56cf404157",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "id": "task_9_polish",
+      "type": "ACTION",
+      "title": "Final Polish & FX",
+      "description": "Add particle explosions, background effects (optional), and ensure performance (object pooling checks). Review and merge code into single file.",
+      "status": "TODO",
+      "config": {},
+      "task_id": "2d73b822-85cb-4ec1-b895-5342376a8b84",
+      "node_type": "ACTION",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "owner_agent_id": "xiaobo",
+      "priority": 0,
+      "tags": []
+    },
+    {
+      "task_id": "21c6d639-1893-48a8-be3f-0742067f8487",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "node_type": "GOAL",
       "title": "Root Task",
-      "goal_statement": "创建一个3D射击游戏,最终交付物是一个html文件",
+      "goal_statement": "请你用 HTML5 Canvas + 原生 JavaScript 实现一个“打飞机 / 弹幕射击”小游戏，要求一个 HTML 文件即可运行，复制到浏览器就能玩。",
       "rationale": "Autocreated placeholder node for referential integrity.",
       "owner_agent_id": "xiaobo",
       "priority": 0,
@@ -197,175 +145,212 @@
   ],
   "edges": [
     {
-      "from": "n1",
-      "to": "n2",
-      "from_task_id": "f0c2087a-ee39-4041-9cd1-aa51afe4827a",
-      "to_task_id": "691193ba-5c3c-425e-8bc2-f05d3c6dfd37",
-      "edge_id": "1b0a22fa-f9dc-44f2-80fc-954d5b2f0686",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "from": "task_1_structure",
+      "to": "task_2_player",
+      "from_task_id": "b74a4e4d-d503-403d-85b1-fd2a6b4110e5",
+      "to_task_id": "2f8eb7aa-9c93-42d9-81c3-b8d2826b8c90",
+      "edge_id": "0ce7d5d2-90a0-4494-8f61-dd3d2eef2a40",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "edge_type": "DEPENDS_ON",
       "metadata": {}
     },
     {
-      "from": "n2",
-      "to": "n3",
-      "from_task_id": "691193ba-5c3c-425e-8bc2-f05d3c6dfd37",
-      "to_task_id": "5393829f-bdf5-4ec3-b2ed-6c93c22701ba",
-      "edge_id": "389a0d2a-d84f-431f-9497-d3704c750ab1",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "from": "task_1_structure",
+      "to": "task_3_enemy",
+      "from_task_id": "b74a4e4d-d503-403d-85b1-fd2a6b4110e5",
+      "to_task_id": "3e78699e-d962-4b69-8da7-f623083465bc",
+      "edge_id": "b61b6f81-cdcf-4b14-bbda-b946ff760e5f",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "edge_type": "DEPENDS_ON",
       "metadata": {}
     },
     {
-      "from": "n3",
-      "to": "n4",
-      "from_task_id": "5393829f-bdf5-4ec3-b2ed-6c93c22701ba",
-      "to_task_id": "071a1536-d22b-4cf3-b795-429cf23d29ee",
-      "edge_id": "00676db0-d5f8-4056-9bdb-247d4762764a",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "from": "task_2_player",
+      "to": "task_4_bullets",
+      "from_task_id": "2f8eb7aa-9c93-42d9-81c3-b8d2826b8c90",
+      "to_task_id": "46737a49-4613-491c-9f00-bf13579a7d01",
+      "edge_id": "e8d38f49-32a8-48d8-80c4-353ad8eaa624",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "edge_type": "DEPENDS_ON",
       "metadata": {}
     },
     {
-      "from": "n2",
-      "to": "n5",
-      "from_task_id": "691193ba-5c3c-425e-8bc2-f05d3c6dfd37",
-      "to_task_id": "aac60651-6bfa-4af1-9115-30b68022c415",
-      "edge_id": "d0ecc5d3-a449-4a36-bff9-28258e6c37c5",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "from": "task_3_enemy",
+      "to": "task_7_collision",
+      "from_task_id": "3e78699e-d962-4b69-8da7-f623083465bc",
+      "to_task_id": "9ec7243e-ee17-4e10-8b91-b5238088d211",
+      "edge_id": "f86fb5ff-38cc-4abc-9768-73fc1d001a23",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "edge_type": "DEPENDS_ON",
       "metadata": {}
     },
     {
-      "from": "n5",
-      "to": "n8",
-      "from_task_id": "aac60651-6bfa-4af1-9115-30b68022c415",
-      "to_task_id": "5d512fb9-d32e-4c5a-8253-3b2f9aa3d8d6",
-      "edge_id": "0f2f39d0-63af-4487-b437-4fcf22def7d8",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "from": "task_2_player",
+      "to": "task_7_collision",
+      "from_task_id": "2f8eb7aa-9c93-42d9-81c3-b8d2826b8c90",
+      "to_task_id": "9ec7243e-ee17-4e10-8b91-b5238088d211",
+      "edge_id": "4a9e5329-494e-489a-ac99-037c385caf39",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "edge_type": "DEPENDS_ON",
       "metadata": {}
     },
     {
-      "from": "n8",
-      "to": "n6",
-      "from_task_id": "5d512fb9-d32e-4c5a-8253-3b2f9aa3d8d6",
-      "to_task_id": "5d27be05-54d4-4b93-8d75-d23837bf8983",
-      "edge_id": "fdc66957-b68e-411f-86f4-7b73c5527d3b",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "from": "task_7_collision",
+      "to": "task_4_bullets",
+      "from_task_id": "9ec7243e-ee17-4e10-8b91-b5238088d211",
+      "to_task_id": "46737a49-4613-491c-9f00-bf13579a7d01",
+      "edge_id": "2e6e7239-1547-4590-8196-ca32f6b7009e",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "edge_type": "DEPENDS_ON",
       "metadata": {}
     },
     {
-      "from": "n4",
-      "to": "n6",
-      "from_task_id": "071a1536-d22b-4cf3-b795-429cf23d29ee",
-      "to_task_id": "5d27be05-54d4-4b93-8d75-d23837bf8983",
-      "edge_id": "9364d56e-033a-4864-a88c-ff332fc86835",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "from": "task_4_bullets",
+      "to": "task_5_boss",
+      "from_task_id": "46737a49-4613-491c-9f00-bf13579a7d01",
+      "to_task_id": "13160430-77a7-4697-884e-1f709eae9b8d",
+      "edge_id": "eff433cf-874e-4c85-863a-dd587a75f62f",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "edge_type": "DEPENDS_ON",
       "metadata": {}
     },
     {
-      "from": "n6",
-      "to": "n7",
-      "from_task_id": "5d27be05-54d4-4b93-8d75-d23837bf8983",
-      "to_task_id": "623f901b-08ba-465e-bd88-b9333a4f5d5f",
-      "edge_id": "76cc4ae1-d04f-4fa8-a077-f78d1a72ac15",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
+      "from": "task_5_boss",
+      "to": "task_6_items",
+      "from_task_id": "13160430-77a7-4697-884e-1f709eae9b8d",
+      "to_task_id": "36b5de78-a560-4580-a03b-4b54be3dc81b",
+      "edge_id": "6ef08160-dcde-4790-879f-2b8323315ed4",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
       "edge_type": "DEPENDS_ON",
       "metadata": {}
     },
     {
-      "edge_id": "5cd0b959-95e6-4ff8-aa49-3043f38a2612",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
-      "from_task_id": "646296c0-f842-45cd-9cd6-8a56cf404157",
-      "to_task_id": "f0c2087a-ee39-4041-9cd1-aa51afe4827a",
+      "from": "task_7_collision",
+      "to": "task_6_items",
+      "from_task_id": "9ec7243e-ee17-4e10-8b91-b5238088d211",
+      "to_task_id": "36b5de78-a560-4580-a03b-4b54be3dc81b",
+      "edge_id": "c0d6fff7-d0dd-43ec-8067-eeb4889cf713",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "from": "task_6_items",
+      "to": "task_8_ui",
+      "from_task_id": "36b5de78-a560-4580-a03b-4b54be3dc81b",
+      "to_task_id": "81527d73-e1c7-4789-8368-f17d6e2f0baf",
+      "edge_id": "e7548f4a-4914-4764-9a01-bb67487ee281",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "from": "task_8_ui",
+      "to": "task_9_polish",
+      "from_task_id": "81527d73-e1c7-4789-8368-f17d6e2f0baf",
+      "to_task_id": "2d73b822-85cb-4ec1-b895-5342376a8b84",
+      "edge_id": "ddd2b677-0828-43a7-99ba-2d5bd74c347e",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "edge_id": "f972f863-4b19-4090-97b5-b0b999a83ddf",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "from_task_id": "21c6d639-1893-48a8-be3f-0742067f8487",
+      "to_task_id": "b74a4e4d-d503-403d-85b1-fd2a6b4110e5",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "ac9f8d0a-095b-4e9d-854f-0cd4bacb4c15",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
-      "from_task_id": "646296c0-f842-45cd-9cd6-8a56cf404157",
-      "to_task_id": "691193ba-5c3c-425e-8bc2-f05d3c6dfd37",
+      "edge_id": "e6486916-88b1-46c1-9b23-3c946935b292",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "from_task_id": "21c6d639-1893-48a8-be3f-0742067f8487",
+      "to_task_id": "2f8eb7aa-9c93-42d9-81c3-b8d2826b8c90",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "90db7b15-98ce-430e-9a86-53c8f42f517d",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
-      "from_task_id": "646296c0-f842-45cd-9cd6-8a56cf404157",
-      "to_task_id": "5393829f-bdf5-4ec3-b2ed-6c93c22701ba",
+      "edge_id": "643f52ae-9f6c-436e-9d34-7619ccbab3a1",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "from_task_id": "21c6d639-1893-48a8-be3f-0742067f8487",
+      "to_task_id": "3e78699e-d962-4b69-8da7-f623083465bc",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "3ab89ad6-ccae-43e1-af64-654547b47f06",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
-      "from_task_id": "646296c0-f842-45cd-9cd6-8a56cf404157",
-      "to_task_id": "071a1536-d22b-4cf3-b795-429cf23d29ee",
+      "edge_id": "107480b2-9856-433a-9ed6-831e1774c57d",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "from_task_id": "21c6d639-1893-48a8-be3f-0742067f8487",
+      "to_task_id": "9ec7243e-ee17-4e10-8b91-b5238088d211",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "72655eda-dc3c-440d-a645-7ee46a3df1b0",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
-      "from_task_id": "646296c0-f842-45cd-9cd6-8a56cf404157",
-      "to_task_id": "aac60651-6bfa-4af1-9115-30b68022c415",
+      "edge_id": "cd10d96c-2930-4511-86ae-7bb57c44f5f9",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "from_task_id": "21c6d639-1893-48a8-be3f-0742067f8487",
+      "to_task_id": "46737a49-4613-491c-9f00-bf13579a7d01",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "b6a8e26e-260b-4a31-9dde-4fa1a335441d",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
-      "from_task_id": "646296c0-f842-45cd-9cd6-8a56cf404157",
-      "to_task_id": "5d512fb9-d32e-4c5a-8253-3b2f9aa3d8d6",
+      "edge_id": "b7dc0352-91ff-48c9-8676-7ef9ceccd3e9",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "from_task_id": "21c6d639-1893-48a8-be3f-0742067f8487",
+      "to_task_id": "13160430-77a7-4697-884e-1f709eae9b8d",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "db1a8aad-1dd8-4c7f-a2ed-a8083aeb8b3a",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
-      "from_task_id": "646296c0-f842-45cd-9cd6-8a56cf404157",
-      "to_task_id": "5d27be05-54d4-4b93-8d75-d23837bf8983",
+      "edge_id": "d205028a-1489-446f-97ca-81a99dfa40fe",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "from_task_id": "21c6d639-1893-48a8-be3f-0742067f8487",
+      "to_task_id": "36b5de78-a560-4580-a03b-4b54be3dc81b",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "9d07d3ab-78b8-42be-b563-8b0ee15a08cb",
-      "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
-      "from_task_id": "646296c0-f842-45cd-9cd6-8a56cf404157",
-      "to_task_id": "623f901b-08ba-465e-bd88-b9333a4f5d5f",
+      "edge_id": "451d98ab-fc32-4431-b3dc-6dbab30fd51d",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "from_task_id": "21c6d639-1893-48a8-be3f-0742067f8487",
+      "to_task_id": "81527d73-e1c7-4789-8368-f17d6e2f0baf",
+      "edge_type": "DECOMPOSE",
+      "metadata": {
+        "and_or": "AND"
+      }
+    },
+    {
+      "edge_id": "4f78d118-33af-472b-ad48-19906dc61cf7",
+      "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+      "from_task_id": "21c6d639-1893-48a8-be3f-0742067f8487",
+      "to_task_id": "2d73b822-85cb-4ec1-b895-5342376a8b84",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     }
   ],
-  "ui_hints": {
-    "primary_color": "#3b82f6",
-    "icon": "gamepad-2"
-  },
+  "requirements": [],
   "plan": {
-    "title": "创建一个3D射击游戏,最终交付物是一个html文件",
-    "plan_id": "bd1aa949-3a36-4ba9-8e07-0796163586df",
-    "root_task_id": "646296c0-f842-45cd-9cd6-8a56cf404157",
-    "created_at": "2025-12-31T14:54:49Z",
+    "title": "请你用 HTML5 Canvas + 原生 JavaScript 实现一个“打飞机 / 弹幕射击”小游戏，要求一个 HTML 文件即可运行，复制到浏览器就能玩。",
+    "plan_id": "4e0369e2-c203-4a18-b804-3915c2fc35d2",
+    "root_task_id": "21c6d639-1893-48a8-be3f-0742067f8487",
+    "created_at": "2026-01-02T04:36:20Z",
     "owner_agent_id": "xiaobo",
     "constraints": {
       "deadline": null,

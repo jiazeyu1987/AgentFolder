@@ -22,7 +22,7 @@ Write-Host "Starting backend (uvicorn on :8000)..." -ForegroundColor Green
 Start-Process -FilePath "powershell" -ArgumentList @(
   "-ExecutionPolicy", "Bypass",
   "-NoProfile",
-  "-File", (Join-Path $root "dashboard_backend\\run_backend.ps1")
+  "-File", (Join-Path $root "run_backend.ps1")
 ) -WorkingDirectory $root -WindowStyle Normal | Out-Null
 
 Start-Sleep -Seconds 1
@@ -35,4 +35,3 @@ Start-Process -FilePath "powershell" -ArgumentList @(
 ) -WorkingDirectory $root -WindowStyle Normal | Out-Null
 
 Write-Host "Done. UI: http://127.0.0.1:5173  API: http://127.0.0.1:8000" -ForegroundColor Cyan
-
