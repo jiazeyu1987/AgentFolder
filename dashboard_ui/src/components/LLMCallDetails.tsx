@@ -26,6 +26,12 @@ async function copyText(text: string) {
   await navigator.clipboard.writeText(text);
 }
 
+function preview(s: string | null, n = 160): string {
+  const t = (s ?? "").replace(/\s+/g, " ").trim();
+  if (!t) return "-";
+  return t.length > n ? t.slice(0, n - 1) + "…" : t;
+}
+
 export default function LLMCallDetails(props: { llmCallId: string | null }) {
   const [call, setCall] = useState<LlmCallsQueryResp["calls"][number] | null>(null);
   const [err, setErr] = useState<string>("");
@@ -47,6 +53,16 @@ export default function LLMCallDetails(props: { llmCallId: string | null }) {
   }, [props.llmCallId]);
 
   const review = useMemo(() => extractReview(call?.normalized_json ?? null), [call?.normalized_json]);
+  const suggestionSummary = useMemo(() => {
+    if (!review) return "-";
+    const sugs = (review as any).suggestions;
+    if (!Array.isArray(sugs) || sugs.length === 0) return "-";
+    const first = sugs
+      .map((s: any) => (s && typeof s === "object" ? String(s.change ?? "").trim() : ""))
+      .filter((x: string) => x)
+      .slice(0, 2);
+    return first.length ? first.join(" | ") : "-";
+  }, [review]);
 
   async function loadShared() {
     if (!call?.shared_prompt_path) return;
@@ -82,25 +98,54 @@ export default function LLMCallDetails(props: { llmCallId: string | null }) {
       {!call ? <div className="muted">loading...</div> : null}
       {call ? (
         <>
-          <div className="kv">
-            <div className="k">created_at</div>
-            <div className="v mono">{call.created_at}</div>
-            <div className="k">scope</div>
-            <div className="v mono">{call.scope}</div>
-            <div className="k">agent</div>
-            <div className="v mono">{call.agent}</div>
-            <div className="k">plan_id</div>
-            <div className="v mono">{call.plan_id ?? "-"}</div>
-            <div className="k">task_id</div>
-            <div className="v mono">{call.task_id ?? "-"}</div>
-            <div className="k">error</div>
-            <div className="v mono">{call.error_code ?? "-"}</div>
+          <div className="details">
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 18, fontWeight: 900, color: "#38bdf8" }}>{call.agent}</span>
+              <span className="mono" style={{ fontSize: 12, color: "#94a3b8" }}>
+                scope={call.scope} · {call.created_at}
+              </span>
+              {call.error_code ? (
+                <span className="mono" style={{ fontSize: 12, color: "#fca5a5" }}>
+                  err={call.error_code}
+                </span>
+              ) : null}
+            </div>
+
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 6, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 16, fontWeight: 900, color: "#fbbf24" }}>
+                Score {review ? String((review as any).total_score ?? "-") : "-"}
+              </span>
+              <span className="mono" style={{ fontSize: 12, color: "#cbd5e1" }}>
+                action={review ? String((review as any).action_required ?? "-") : "-"}
+              </span>
+            </div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              Suggestion: <span className="mono">{suggestionSummary}</span>
+            </div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              Final Prompt: <span className="mono">{preview(call.prompt_text)}</span>
+            </div>
+            <details style={{ marginTop: 6 }}>
+              <summary>Final Prompt (expand)</summary>
+              <div className="row">
+                <button onClick={() => copyText(call.prompt_text ?? "")}>Copy</button>
+              </div>
+              <pre className="pre">{call.prompt_text ?? ""}</pre>
+            </details>
+            <div className="muted" style={{ marginTop: 6 }}>
+              Raw Response: <span className="mono">{preview(call.response_text)}</span>
+            </div>
+            <details style={{ marginTop: 6 }}>
+              <summary>Raw Response (expand)</summary>
+              <div className="row">
+                <button onClick={() => copyText(call.response_text ?? "")}>Copy</button>
+              </div>
+              <pre className="pre">{call.response_text ?? ""}</pre>
+            </details>
+            {call.validator_error ? <div className="muted" style={{ marginTop: 6 }}>validator_error: {String(call.validator_error).slice(0, 400)}</div> : null}
           </div>
 
-          {call.validator_error ? <div className="muted">validator_error: {String(call.validator_error).slice(0, 400)}</div> : null}
-          {call.prompt_source_reason ? <div className="muted">prompt_source: {call.prompt_source_reason}</div> : null}
-
-          <h4>Prompts</h4>
+          <h4 style={{ marginTop: 12 }}>Other</h4>
           <div className="muted">
             shared: <span className="mono">{call.shared_prompt_path ?? "-"}</span>{" "}
             {call.shared_prompt_path ? (
@@ -141,39 +186,10 @@ export default function LLMCallDetails(props: { llmCallId: string | null }) {
             </details>
           ) : null}
 
-          <details open style={{ marginTop: 8 }}>
-            <summary>Final Prompt (sent to model)</summary>
-            <div className="row">
-              <button onClick={() => copyText(call.prompt_text ?? "")}>Copy</button>
-            </div>
-            <pre className="pre">{call.prompt_text ?? ""}</pre>
-          </details>
-
-          <h4>Outputs</h4>
-          <details open>
-            <summary>Raw Response</summary>
-            <div className="row">
-              <button onClick={() => copyText(call.response_text ?? "")}>Copy</button>
-            </div>
-            <pre className="pre">{call.response_text ?? ""}</pre>
-          </details>
-          <details>
-            <summary>Parsed JSON</summary>
-            <pre className="pre">{call.parsed_json ?? ""}</pre>
-          </details>
-          <details>
-            <summary>Normalized JSON</summary>
-            <pre className="pre">{call.normalized_json ?? ""}</pre>
-          </details>
-
           {review ? (
-            <>
-              <h4>Review</h4>
-              <div className="kv">
-                <div className="k">total_score</div>
-                <div className="v mono">{String((review as any).total_score ?? "-")}</div>
-                <div className="k">action_required</div>
-                <div className="v mono">{String((review as any).action_required ?? "-")}</div>
+            <details style={{ marginTop: 8 }}>
+              <summary>Review details</summary>
+              <div className="kv" style={{ marginTop: 8 }}>
                 <div className="k">summary</div>
                 <div className="v">{String((review as any).summary ?? "-")}</div>
               </div>
@@ -183,13 +199,7 @@ export default function LLMCallDetails(props: { llmCallId: string | null }) {
                   <pre className="pre">{JSON.stringify((review as any).dimension_scores, null, 2)}</pre>
                 </details>
               ) : null}
-              {(review as any).suggestions ? (
-                <details>
-                  <summary>suggestions</summary>
-                  <pre className="pre">{JSON.stringify((review as any).suggestions, null, 2)}</pre>
-                </details>
-              ) : null}
-            </>
+            </details>
           ) : null}
 
           {call.scope === "PLAN_REVIEW" ? (

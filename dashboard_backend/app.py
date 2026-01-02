@@ -24,6 +24,7 @@ from core.graph import build_plan_graph
 from core.observability import get_plan_snapshot
 from core.runtime_config import get_runtime_config
 from core.util import ensure_dir, utc_now_iso
+from core.util import stable_hash_text
 from core.workflow_graph import WorkflowQuery, build_workflow
 
 
@@ -147,7 +148,8 @@ def _read_create_plan_state() -> Optional[Dict[str, Any]]:
 
 
 def _hash_top_task(s: str) -> str:
-    return hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()
+    # Use the same stable hash function as other parts of the system (audit/top_task grouping).
+    return stable_hash_text(s or "")
 
 
 def _start_create_plan_process(*, db_path: Path, top_task: str, max_attempts: int, keep_trying: bool, max_total_attempts: Optional[int]) -> Dict[str, Any]:
@@ -359,6 +361,7 @@ class ResetDbIn(BaseModel):
 class RuntimeConfigUpdateIn(BaseModel):
     max_decomposition_depth: Optional[int] = None
     one_shot_threshold_person_days: Optional[float] = None
+    plan_review_pass_score: Optional[int] = None
 
 
 def _job_status_from_state(*, alive: bool, state_status: Optional[str], last_error: Any) -> str:
@@ -651,6 +654,8 @@ def update_runtime_config(body: RuntimeConfigUpdateIn) -> Dict[str, Any]:
         patch["max_decomposition_depth"] = int(body.max_decomposition_depth)
     if body.one_shot_threshold_person_days is not None:
         patch["one_shot_threshold_person_days"] = float(body.one_shot_threshold_person_days)
+    if body.plan_review_pass_score is not None:
+        patch["plan_review_pass_score"] = int(body.plan_review_pass_score)
 
     merged = dict(cur)
     merged.update(patch)
@@ -706,7 +711,7 @@ def create_plan_async(body: CreatePlanIn) -> Dict[str, Any]:
                 category="API_CALL",
                 action="CREATE_PLAN_START",
                 message="create-plan start",
-                top_task_hash=state.get("top_task_hash"),
+                top_task_hash=_hash_top_task(body.top_task),
                 top_task_title=str(body.top_task).strip()[:200],
                 job_id=str(state.get("job_id") or ""),
                 payload={
@@ -1114,7 +1119,10 @@ def get_task_details(task_id: str) -> Dict[str, Any]:
                         acceptance.append(ac.strip())
 
         if not acceptance:
-            acceptance = ["xiaojing reviewer passed: total_score >= 90 and action_required = APPROVE"]
+            from core.runtime_config import get_runtime_config
+
+            cfg = get_runtime_config()
+            acceptance = [f"xiaojing reviewer passed: total_score >= {cfg.plan_review_pass_score} and action_required = APPROVE"]
 
         required_docs_path = str(config.REQUIRED_DOCS_DIR / f"{task_id}.md")
 

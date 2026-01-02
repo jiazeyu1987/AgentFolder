@@ -217,6 +217,8 @@ def build_xiaojing_review_prompt(
             bundle.xiaojing.content.strip(),
             "RUNTIME_CONTEXT_JSON:",
             json.dumps(context, ensure_ascii=False, indent=2),
+            "OUTPUT_JSON_TEMPLATE (copy exactly, fill values; do not wrap inside another object):",
+            _xiaojing_review_output_template(review_target="NODE", task_id=task_id),
         ]
     ).strip() + "\n"
 
@@ -228,15 +230,62 @@ def build_xiaojing_plan_review_prompt(
     rubric_json: Dict[str, Any],
     plan_json: Dict[str, Any],
 ) -> str:
-    context = {"plan_id": plan_id, "review_target": "PLAN", "rubric": rubric_json, "plan_json": plan_json}
+    from core.runtime_config import get_runtime_config
+
+    cfg = get_runtime_config()
+    context = {"plan_id": plan_id, "review_target": "PLAN", "pass_score": int(cfg.plan_review_pass_score), "rubric": rubric_json, "plan_json": plan_json}
     return "\n\n".join(
         [
             bundle.shared.content.strip(),
             bundle.xiaojing.content.strip(),
             "RUNTIME_CONTEXT_JSON:",
             json.dumps(context, ensure_ascii=False, indent=2),
+            "OUTPUT_JSON_TEMPLATE (copy exactly, fill values; do not wrap inside another object):",
+            _xiaojing_review_output_template(review_target="PLAN", task_id=plan_id),
         ]
     ).strip() + "\n"
+
+
+def _xiaojing_review_output_template(*, review_target: str, task_id: str) -> str:
+    """
+    Minimal contract template to reduce reviewer output drift.
+    Must match `xiaojing_review_v1` exactly (see core.contracts_v2 PLAN_REVIEW/TASK_CHECK).
+    """
+    rt = str(review_target or "").strip().upper() or "PLAN"
+    tid = str(task_id or "").strip() or "<TASK_ID>"
+    tmpl = {
+        "schema_version": "xiaojing_review_v1",
+        "task_id": tid,
+        "review_target": rt,
+        "total_score": 0,
+        "action_required": "MODIFY",
+        "summary": "Explain the main issues and why score does not meet pass_score.",
+        "breakdown": [
+            {
+                "dimension": "overall",
+                "score": 0,
+                "max_score": 100,
+                "issues": [
+                    {
+                        "problem": "What is wrong (concrete).",
+                        "evidence": "Where in the plan/artifact this appears.",
+                        "impact": "Why it matters / what breaks.",
+                        "suggestion": "What to change (concrete).",
+                        "acceptance_criteria": "How to verify the change.",
+                    }
+                ],
+            }
+        ],
+        "suggestions": [
+            {
+                "priority": "MED",
+                "change": "Summarize the most important fix.",
+                "steps": ["Step 1", "Step 2"],
+                "acceptance_criteria": "What must be true after the fix.",
+            }
+        ],
+    }
+    return json.dumps(tmpl, ensure_ascii=False, indent=2)
 
 
 def build_xiaojing_check_prompt(

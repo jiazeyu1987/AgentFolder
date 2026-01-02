@@ -1,13 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
-import type { ConfigResp, CreatePlanJobResp, GraphNode, GraphV1, LlmCallsQueryResp, PlansResp } from "./types";
+import type { ConfigResp, CreatePlanJobResp, GraphNode, GraphV1, PlansResp } from "./types";
 import ControlPanel from "./components/ControlPanel";
 import TaskGraph from "./components/TaskGraph";
 import NodeDetails from "./components/NodeDetails";
-import CreatePlanProgress from "./components/CreatePlanProgress";
 import LLMWorkflowGraph from "./components/LLMWorkflowGraph";
 import LLMCallDetails from "./components/LLMCallDetails";
-import ErrorsPanel from "./components/ErrorsPanel";
+import ReviewSuggestionsPanel from "./components/ReviewSuggestionsPanel";
 import ErrorAnalysisPage from "./components/ErrorAnalysisPage";
 import AuditLogPage from "./components/AuditLogPage";
 import type { WorkflowResp } from "./types";
@@ -23,13 +22,48 @@ export default function App() {
   const [logText, setLogText] = useState<string>("");
   const [createPlanJobId, setCreatePlanJobId] = useState<string | null>(() => localStorage.getItem("create_plan_job_id"));
   const [createPlanJob, setCreatePlanJob] = useState<CreatePlanJobResp | null>(null);
-  const [createPlanTimeline, setCreatePlanTimeline] = useState<LlmCallsQueryResp["calls"]>([]);
   const [viewMode, setViewMode] = useState<"TASK" | "WORKFLOW" | "ERROR_ANALYSIS" | "AUDIT_LOG">("TASK");
   const [workflow, setWorkflow] = useState<WorkflowResp | null>(null);
   const [selectedLlmCallId, setSelectedLlmCallId] = useState<string | null>(null);
   const [workflowScopes, setWorkflowScopes] = useState<string>("PLAN_GEN,PLAN_REVIEW");
   const [workflowAgent, setWorkflowAgent] = useState<string>("");
   const [workflowOnlyErrors, setWorkflowOnlyErrors] = useState<boolean>(false);
+
+  const planVersionLabelById = useMemo(() => {
+    function normalizeTitle(t: string): string {
+      const s = (t ?? "").trim();
+      // Ignore a trailing "(...)" suffix often used to show a short id in the UI.
+      return s.replace(/\s*\([0-9a-f]{6,}\)\s*$/i, "").trim();
+    }
+
+    const byTitle = new Map<string, Array<{ plan_id: string; created_at: string; title: string }>>();
+    for (const p of plans) {
+      const key = normalizeTitle(p.title ?? "");
+      if (!key) continue;
+      const arr = byTitle.get(key) ?? [];
+      arr.push({ plan_id: p.plan_id, created_at: p.created_at, title: p.title });
+      byTitle.set(key, arr);
+    }
+
+    const out = new Map<string, string>();
+    for (const [key, arr] of byTitle.entries()) {
+      arr.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+      if (arr.length <= 1) {
+        out.set(arr[0].plan_id, key);
+        continue;
+      }
+      for (let i = 0; i < arr.length; i++) {
+        const v = i + 1;
+        out.set(arr[i].plan_id, `(v${v}) ${key}`);
+      }
+    }
+    return out;
+  }, [plans]);
+
+  const selectedPlanLabel = useMemo(() => {
+    if (!selectedPlanId) return null;
+    return planVersionLabelById.get(selectedPlanId) ?? null;
+  }, [planVersionLabelById, selectedPlanId]);
 
   function log(s: string) {
     setLogText((prev) => (prev ? prev + "\n\n" + s : s));
@@ -101,14 +135,6 @@ export default function App() {
             setSelectedPlanId(j.plan_id);
             setAutoSelectPlanFromJob(false);
           }
-          const havePlanId = Boolean(j.plan_id);
-          const params = havePlanId
-            ? { plan_id: j.plan_id!, scopes: "PLAN_GEN,PLAN_REVIEW", limit: 200 }
-            : { plan_id_missing: true, scopes: "PLAN_GEN", limit: 50 };
-          api
-            .getLlmCallsQuery(params)
-            .then((resp) => setCreatePlanTimeline(resp.calls))
-            .catch(() => {});
         })
         .catch((e) => {
           const msg = String(e);
@@ -222,6 +248,8 @@ export default function App() {
         ) : viewMode === "WORKFLOW" ? (
           <div className="panel" style={{ padding: 12, display: "flex", flexDirection: "column", minHeight: 0 }}>
             <div className="row" style={{ gap: 8, marginBottom: 10 }}>
+              <div style={{ fontWeight: 900, color: "#a855f7" }}>{selectedPlanLabel ? `Plan: ${selectedPlanLabel}` : "Plan: -"}</div>
+              <div className="spacer" />
               <label className="inline">
                 scopes
                 <input value={workflowScopes} onChange={(e) => setWorkflowScopes(e.target.value)} style={{ width: 220 }} />
@@ -234,7 +262,6 @@ export default function App() {
                 only_errors
                 <input type="checkbox" checked={workflowOnlyErrors} onChange={(e) => setWorkflowOnlyErrors(e.target.checked)} />
               </label>
-              <div className="spacer" />
               <button
                 onClick={() => {
                   const pid = selectedPlanId ?? undefined;
@@ -264,31 +291,8 @@ export default function App() {
         )}
       </div>
       <div className="right">
-        <CreatePlanProgress
-          job={createPlanJob}
-          timeline={createPlanTimeline}
-          onSelectPlanId={(pid) => setSelectedPlanId(pid)}
-        />
-        <ErrorsPanel
-          title="Errors (Plan)"
-          planId={selectedPlanId}
-          followCreatePlanWithoutPlanId={createPlanJob?.status === "RUNNING" && !createPlanJob?.plan_id}
-          onSelectPlanId={(pid) => setSelectedPlanId(pid)}
-          onSetViewMode={(m) => setViewMode(m)}
-          onSelectLlmCallId={(id) => {
-            setViewMode("WORKFLOW");
-            setSelectedLlmCallId(id);
-          }}
-          onSelectTaskId={(id) => {
-            setViewMode("TASK");
-            setSelectedTaskId(id);
-          }}
-        />
+        <ReviewSuggestionsPanel llmCallId={viewMode === "WORKFLOW" ? selectedLlmCallId : null} />
         {viewMode === "WORKFLOW" ? <LLMCallDetails llmCallId={selectedLlmCallId} /> : viewMode === "TASK" ? <NodeDetails node={selectedNode} /> : null}
-        <div className="panel">
-          <h3>Logs</h3>
-          <textarea className="log" value={logText} readOnly rows={10} />
-        </div>
       </div>
     </div>
   );

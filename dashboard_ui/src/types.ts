@@ -79,6 +79,7 @@ export interface ConfigResp {
 export type RuntimeConfigPatch = {
   max_decomposition_depth?: number;
   one_shot_threshold_person_days?: number;
+  plan_review_pass_score?: number;
 };
 
 export interface TaskLlmCallsResp {
@@ -200,6 +201,8 @@ export interface WorkflowResp {
     review_attempt: number;
     error_code: string | null;
     validator_error: string | null;
+    total_score?: number | null;
+    action_required?: string | null;
   }>;
   edges: Array<{ from: string; to: string; edge_type: WorkflowEdgeType }>;
   groups: Array<{ group_type: "ATTEMPT"; id: string; attempt: number; node_ids: string[] }>;

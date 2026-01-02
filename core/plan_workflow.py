@@ -16,6 +16,7 @@ from core.llm_client import LLMClient
 from core.models import validate_plan_dict
 from core.plan_loader import upsert_plan
 from core.prompts import PromptBundle, build_xiaobo_plan_prompt, build_xiaojing_plan_review_prompt
+from core.runtime_config import get_runtime_config
 from core.reviews import insert_review, write_review_json
 from core.util import ensure_dir, stable_hash_text, utc_now_iso
 
@@ -81,6 +82,7 @@ def _build_plan_remediation_note(review: Dict[str, Any], *, max_chars: int = 500
 
 
 def _summarize_plan_review(review: Dict[str, Any]) -> str:
+    cfg = get_runtime_config()
     score = int(review.get("total_score") or 0)
     action = str(review.get("action_required") or "")
     summary = str(review.get("summary") or "").strip()
@@ -127,7 +129,7 @@ def _summarize_plan_review(review: Dict[str, Any]) -> str:
                 sug_lines.append(f"- {pr or 'MED'}: {change}")
 
     parts: list[str] = []
-    parts.append(f"Plan 审核未通过：score={score}（门槛>=90），action_required={action or 'MODIFY'}")
+    parts.append(f"Plan 审核未通过：score={score}（门槛>={cfg.plan_review_pass_score}），action_required={action or 'MODIFY'}")
     if summary:
         parts.append(f"主要原因：{summary}")
     if dims:
@@ -453,6 +455,14 @@ def generate_and_review_plan(
                 root_task_id=str(plan.get("root_task_id") or plan_id),
                 constraints=constraints,
             )
+        # Keep audit_events consistent: PLAN_GEN was logged before plan_id/title existed.
+        if plan_gen_call_id and plan_gen_call_id != "UNKNOWN":
+            try:
+                from core.audit_log import backfill_audit_llm_call_plan_id
+
+                backfill_audit_llm_call_plan_id(conn, llm_call_id=str(plan_gen_call_id), plan_id=str(plan_id))
+            except Exception:
+                pass
         # Update latest PLAN_GEN telemetry row with normalized_json (best-effort).
         try:
             conn.execute(
@@ -499,7 +509,7 @@ def generate_and_review_plan(
                     )
                 raise PlanWorkflowError("plan review still invalid (timeout); see llm_calls/LLM Workflow for details")
             review_res = llm.call_json(review_prompt_to_use)
-            record_llm_call(
+            review_call_id = record_llm_call(
                 conn,
                 plan_id=plan_id,
                 task_id=None,
@@ -551,6 +561,14 @@ def generate_and_review_plan(
 
             if review_res.error or not isinstance(review_res.parsed_json, dict):
                 reason = str(review_res.error or review_res.error_code or "review_unparseable")
+                # Persist why we are retrying in telemetry for observability.
+                try:
+                    conn.execute("UPDATE llm_calls SET validator_error=? WHERE llm_call_id=?", (_limit_chars(reason, max_chars=500), review_call_id))
+                    from core.audit_log import annotate_llm_output_for_retry
+
+                    annotate_llm_output_for_retry(conn, llm_call_id=review_call_id, retry_kind="PARSE_ERROR", retry_reason=reason)
+                except Exception:
+                    pass
                 review_prompt_to_use = _build_review_retry_prompt(original_prompt=review_prompt, invalid_response=review_res.raw_response_text, reason=reason)
                 if (not keep_trying) and review_attempt >= max(1, int(max_review_attempts_per_plan)):
                     break
@@ -581,6 +599,14 @@ def generate_and_review_plan(
                 break
 
             detailed = _review_invalid_reason(review_json=review_json, expected_target="PLAN")
+            try:
+                # Attach concrete contract mismatch detail to the llm_calls + audit timeline.
+                conn.execute("UPDATE llm_calls SET validator_error=? WHERE llm_call_id=?", (_limit_chars(detailed, max_chars=500), review_call_id))
+                from core.audit_log import annotate_llm_output_for_retry
+
+                annotate_llm_output_for_retry(conn, llm_call_id=review_call_id, retry_kind="CONTRACT_MISMATCH", retry_reason=detailed)
+            except Exception:
+                pass
             review_prompt_to_use = _build_review_retry_prompt(original_prompt=review_prompt, invalid_response=review_res.raw_response_text, reason=detailed)
             if (not keep_trying) and review_attempt >= max(1, int(max_review_attempts_per_plan)):
                 break
@@ -608,7 +634,8 @@ def generate_and_review_plan(
         total_score = int(review_json.get("total_score") or 0)
         action_required = str(review_json.get("action_required") or "")
 
-        if total_score >= 90 and action_required == "APPROVE":
+        cfg = get_runtime_config()
+        if total_score >= int(cfg.plan_review_pass_score) and action_required == "APPROVE":
             ensure_dir(plan_output_path.parent)
             plan_output_path.write_text(json.dumps(plan_json, ensure_ascii=False, indent=2), encoding="utf-8")
             with transaction(conn):

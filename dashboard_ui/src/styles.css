@@ -123,6 +123,16 @@ button.danger {
   border-color: #7f1d1d;
 }
 
+button.success {
+  background: #052e16;
+  border-color: #22c55e;
+  color: #dcfce7;
+}
+
+button.success:hover {
+  border-color: #34d399;
+}
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }

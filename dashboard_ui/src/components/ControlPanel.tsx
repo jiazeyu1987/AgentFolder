@@ -30,6 +30,7 @@ export default function ControlPanel(props: {
   const [maxTotalAttempts, setMaxTotalAttempts] = useState<number | "">("");
   const [maxDepth, setMaxDepth] = useState<number>(5);
   const [oneShotDays, setOneShotDays] = useState<number>(10);
+  const [planPassScore, setPlanPassScore] = useState<number>(90);
 
   const planOptions = useMemo(() => props.plans, [props.plans]);
   const planTitleCounts = useMemo(() => {
@@ -68,8 +69,10 @@ export default function ControlPanel(props: {
     if (!cfgRaw) return;
     const md = getNumber(cfgRaw, "max_decomposition_depth");
     const os = getNumber(cfgRaw, "one_shot_threshold_person_days");
+    const ps = getNumber(cfgRaw, "plan_review_pass_score");
     if (md !== null) setMaxDepth(md);
     if (os !== null) setOneShotDays(os);
+    if (ps !== null) setPlanPassScore(ps);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.config?.runtime_config]);
 
@@ -113,6 +116,7 @@ export default function ControlPanel(props: {
 
       <div className="row">
         <button
+          className="success"
           onClick={async () => {
             props.onLog("create-plan (async)...");
             const res = await api.createPlanAsync(props.topTask, maxAttempts, keepTrying, maxTotalAttempts === "" ? undefined : maxTotalAttempts);
@@ -164,6 +168,7 @@ export default function ControlPanel(props: {
 
       <div className="row">
         <button
+          className="success"
           onClick={async () => {
             props.onLog("run start...");
             const res = await api.runStart(maxIterations);
@@ -253,11 +258,21 @@ export default function ControlPanel(props: {
           <input type="number" value={oneShotDays} min={0.1} step={0.5} onChange={(e) => setOneShotDays(Number(e.target.value))} />
         </label>
       </div>
+      <div className="field">
+        <label className="inline">
+          plan_review_pass_score (pass if score ≥ this)
+          <input type="number" value={planPassScore} min={1} max={100} onChange={(e) => setPlanPassScore(Number(e.target.value))} />
+        </label>
+      </div>
       <div className="row">
         <button
           onClick={async () => {
             props.onLog("save runtime_config...");
-            const res = await api.updateRuntimeConfig({ max_decomposition_depth: maxDepth, one_shot_threshold_person_days: oneShotDays });
+            const res = await api.updateRuntimeConfig({
+              max_decomposition_depth: maxDepth,
+              one_shot_threshold_person_days: oneShotDays,
+              plan_review_pass_score: planPassScore,
+            });
             props.onLog(JSON.stringify(res, null, 2));
             props.onRefresh();
           }}
@@ -267,7 +282,7 @@ export default function ControlPanel(props: {
         <div className="spacer" />
         <button
           onClick={() => {
-            const payload = { max_decomposition_depth: maxDepth, one_shot_threshold_person_days: oneShotDays };
+            const payload = { max_decomposition_depth: maxDepth, one_shot_threshold_person_days: oneShotDays, plan_review_pass_score: planPassScore };
             onCopy(JSON.stringify(payload));
           }}
         >

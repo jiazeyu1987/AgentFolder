@@ -16,10 +16,22 @@ function shortTs(ts: string) {
   return m ? m[1] : ts;
 }
 
+function parsePayload(payloadJson: string | null): Record<string, any> | null {
+  if (!payloadJson) return null;
+  try {
+    const obj = JSON.parse(payloadJson);
+    if (!obj || typeof obj !== "object") return null;
+    return obj as any;
+  } catch {
+    return null;
+  }
+}
+
 export default function AuditLogPage(props: Props) {
   const [tops, setTops] = useState<TopTasksResp["top_tasks"]>([]);
   const [topHash, setTopHash] = useState<string>("");
   const [category, setCategory] = useState<string>("");
+  const [filterPlan, setFilterPlan] = useState<boolean>(false);
   const [events, setEvents] = useState<AuditResp["events"]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [err, setErr] = useState<string>("");
@@ -38,12 +50,11 @@ export default function AuditLogPage(props: Props) {
   const query = useMemo(() => {
     return {
       top_task_hash: topHash || undefined,
-      plan_id: props.selectedPlanId || undefined,
-      job_id: props.createPlanJobId || undefined,
+      plan_id: filterPlan ? props.selectedPlanId || undefined : undefined,
       category: category.trim() ? category.trim() : undefined,
       limit: 300,
     };
-  }, [topHash, category, props.selectedPlanId, props.createPlanJobId]);
+  }, [topHash, category, filterPlan, props.selectedPlanId]);
 
   useEffect(() => {
     if (!topHash) return;
@@ -69,6 +80,11 @@ export default function AuditLogPage(props: Props) {
     if (!selectedId) return null;
     return events.find((e) => e.audit_id === selectedId) ?? null;
   }, [events, selectedId]);
+
+  const selectedPayload = useMemo(() => {
+    if (!selected) return null;
+    return parsePayload(selected.payload_json);
+  }, [selected]);
 
   return (
     <div className="panel" style={{ padding: 12, display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -98,6 +114,11 @@ export default function AuditLogPage(props: Props) {
           category
           <input value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: 160 }} placeholder="LLM_INPUT" />
         </label>
+        <label className="inline" style={{ gap: 6 }}>
+          plan_id
+          <input type="checkbox" checked={filterPlan} onChange={(e) => setFilterPlan(e.target.checked)} disabled={!props.selectedPlanId} />
+          <span className="muted mono">{props.selectedPlanId ? props.selectedPlanId.slice(0, 8) : "-"}</span>
+        </label>
         <div className="spacer" />
         <button
           onClick={() => {
@@ -124,6 +145,8 @@ export default function AuditLogPage(props: Props) {
               const active = e.audit_id === selectedId;
               const ok = Number(e.ok) === 1;
               const msg = (e.message ?? "").replace(/\s+/g, " ").trim();
+              const payload = parsePayload(e.payload_json);
+              const retryKind = payload && typeof (payload as any).retry_kind === "string" ? ((payload as any).retry_kind as string) : "";
               return (
                 <button
                   key={e.audit_id}
@@ -140,6 +163,7 @@ export default function AuditLogPage(props: Props) {
                     <span className="mono">{shortTs(e.created_at)}</span>
                     <span className="mono">{e.category}</span>
                     <span className="mono">{e.action}</span>
+                    {retryKind ? <span className="mono" style={{ color: "#fca5a5" }}>retry={retryKind}</span> : null}
                     <span className="spacer" />
                     <span className="mono" style={{ color: ok ? "#86efac" : "#fca5a5" }}>
                       {ok ? "OK" : "FAIL"}
@@ -166,17 +190,27 @@ export default function AuditLogPage(props: Props) {
                 <div className="v mono">{selected.category}</div>
                 <div className="k">action</div>
                 <div className="v mono">{selected.action}</div>
-                <div className="k">plan_id</div>
-                <div className="v mono">{selected.plan_id ?? "-"}</div>
+                <div className="k">agent</div>
+                <div className="v mono">{(selectedPayload?.agent as string) ?? "-"}</div>
                 <div className="k">task_id</div>
                 <div className="v mono">{selected.task_id ?? "-"}</div>
-                <div className="k">llm_call_id</div>
-                <div className="v mono">{selected.llm_call_id ?? "-"}</div>
+                <div className="k">error_code</div>
+                <div className="v mono">{(selectedPayload?.error_code as string) ?? "-"}</div>
+                <div className="k">retry_kind</div>
+                <div className="v mono">{(selectedPayload?.retry_kind as string) ?? "-"}</div>
                 <div className="k">status</div>
                 <div className="v mono">
                   {(selected.status_before ?? "-") + " -> " + (selected.status_after ?? "-")}
                 </div>
               </div>
+              {selectedPayload?.retry_reason ? (
+                <>
+                  <div className="muted" style={{ marginTop: 8 }}>
+                    retry_reason
+                  </div>
+                  <pre className="pre">{String(selectedPayload.retry_reason)}</pre>
+                </>
+              ) : null}
               {selected.payload_json ? (
                 <details open style={{ marginTop: 8 }}>
                   <summary className="muted">payload_json</summary>
@@ -193,15 +227,6 @@ export default function AuditLogPage(props: Props) {
               ) : null}
 
               <div className="row" style={{ marginTop: 10, gap: 8 }}>
-                {selected.plan_id ? (
-                  <button
-                    onClick={() => {
-                      props.onSelectPlanId(selected.plan_id!);
-                    }}
-                  >
-                    Switch Plan
-                  </button>
-                ) : null}
                 {selected.llm_call_id ? (
                   <button
                     onClick={() => {
@@ -230,4 +255,3 @@ export default function AuditLogPage(props: Props) {
     </div>
   );
 }
-

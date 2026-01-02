@@ -37,8 +37,21 @@ def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> None:
         if row:
             continue
         sql = path.read_text(encoding="utf-8")
-        conn.executescript(sql)
-        conn.execute("INSERT INTO schema_migrations(filename, applied_at) VALUES(?, datetime('now'))", (filename,))
+        try:
+            conn.executescript(sql)
+        except sqlite3.OperationalError as exc:
+            # Some migrations use ALTER TABLE ADD COLUMN without IF NOT EXISTS. If a user's DB already
+            # contains the column (e.g., from a previous manual run or a renamed migration), treat
+            # known "already applied" errors as success and record the migration as applied.
+            msg = str(exc).lower()
+            safe_idempotent = (
+                "duplicate column name" in msg
+                or "duplicate index" in msg
+                or "already exists" in msg
+            )
+            if not safe_idempotent:
+                raise
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(filename, applied_at) VALUES(?, datetime('now'))", (filename,))
         conn.commit()
 
 

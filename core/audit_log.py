@@ -161,3 +161,83 @@ def query_top_tasks(conn: sqlite3.Connection, *, limit: int = 50) -> List[Dict[s
     ).fetchall()
     return [dict(r) for r in rows]
 
+
+def backfill_audit_llm_call_plan_id(conn: sqlite3.Connection, *, llm_call_id: str, plan_id: str) -> None:
+    """
+    When an LLM call is recorded before plan_id is known (e.g., PLAN_GEN in create-plan),
+    we later back-fill llm_calls.plan_id. This helper does the same for audit_events so that
+    top_task-scoped queries include PLAN_GEN rows.
+    Best-effort: never raise.
+    """
+    try:
+        llm_call_id2 = str(llm_call_id or "").strip()
+        plan_id2 = str(plan_id or "").strip()
+        if not llm_call_id2 or not plan_id2:
+            return
+        h2, t2 = _resolve_top_task_from_plan(conn, plan_id2)
+        conn.execute(
+            """
+            UPDATE audit_events
+            SET plan_id = ?,
+                top_task_hash = COALESCE(NULLIF(top_task_hash,''), ?),
+                top_task_title = COALESCE(NULLIF(top_task_title,''), ?)
+            WHERE llm_call_id = ?
+            """,
+            (plan_id2, h2, t2, llm_call_id2),
+        )
+    except Exception:
+        return
+
+
+def annotate_llm_output_for_retry(
+    conn: sqlite3.Connection,
+    *,
+    llm_call_id: str,
+    retry_kind: str,
+    retry_reason: str,
+) -> None:
+    """
+    Update the existing LLM_OUTPUT audit row for a given llm_call_id with retry metadata so that
+    the audit timeline explains why the system will execute the next review call.
+    Best-effort: never raise.
+    """
+    try:
+        llm_call_id2 = str(llm_call_id or "").strip()
+        if not llm_call_id2:
+            return
+        rr = _truncate(str(retry_reason or "").strip(), max_chars=500) or ""
+        rk = str(retry_kind or "").strip() or "UNKNOWN"
+
+        row = conn.execute(
+            """
+            SELECT audit_id, message, payload_json
+            FROM audit_events
+            WHERE llm_call_id = ? AND category = 'LLM_OUTPUT'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (llm_call_id2,),
+        ).fetchone()
+        if not row:
+            return
+        payload: Dict[str, Any] = {}
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload["retry_kind"] = rk
+        payload["retry_reason"] = rr
+        payload["next_action"] = "RETRY_REVIEW"
+
+        msg0 = str(row["message"] or "").strip()
+        suffix = f" retry={rk}"
+        msg = (msg0 + suffix) if suffix not in msg0 else msg0
+
+        conn.execute(
+            "UPDATE audit_events SET message = ?, payload_json = ?, ok = 0 WHERE audit_id = ?",
+            (msg, json.dumps(payload, ensure_ascii=False), row["audit_id"]),
+        )
+    except Exception:
+        return

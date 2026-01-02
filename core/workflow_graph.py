@@ -45,6 +45,35 @@ def _parse_attempts(meta_json: Optional[str]) -> Tuple[int, int]:
     return a2, ra2
 
 
+def _safe_parse_json(s: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not s:
+        return None
+    try:
+        obj = json.loads(s)
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _extract_review_fields(obj: Optional[Dict[str, Any]]) -> Tuple[Optional[int], Optional[str]]:
+    if not obj:
+        return None, None
+    # Common shapes:
+    # - { total_score, action_required, ... }
+    # - { review_result: { total_score, action_required, ... } }
+    root = obj
+    if isinstance(obj.get("review_result"), dict):
+        root = obj["review_result"]  # type: ignore[assignment]
+    score = root.get("total_score")
+    action = root.get("action_required")
+    try:
+        score_i = int(score) if score is not None else None
+    except Exception:
+        score_i = None
+    action_s = str(action).strip() if isinstance(action, str) else None
+    return score_i, action_s
+
+
 def build_workflow(conn: sqlite3.Connection, q: WorkflowQuery) -> Dict[str, Any]:
     """
     Build an LLM workflow graph from llm_calls, returning nodes/edges/groups.
@@ -84,7 +113,9 @@ def build_workflow(conn: sqlite3.Connection, q: WorkflowQuery) -> Dict[str, Any]
         c.scope,
         c.meta_json,
         c.error_code,
-        c.validator_error
+        c.validator_error,
+        c.normalized_json,
+        c.parsed_json
       FROM llm_calls c
       LEFT JOIN task_nodes tn ON tn.task_id = c.task_id
     """
@@ -98,6 +129,12 @@ def build_workflow(conn: sqlite3.Connection, q: WorkflowQuery) -> Dict[str, Any]
     nodes: List[Dict[str, Any]] = []
     for r in rows:
         attempt, review_attempt = _parse_attempts(r["meta_json"])
+        total_score = None
+        action_required = None
+        if str(r["scope"] or "") == "PLAN_REVIEW":
+            # Prefer normalized_json; fallback to parsed_json.
+            obj = _safe_parse_json(r["normalized_json"]) or _safe_parse_json(r["parsed_json"])
+            total_score, action_required = _extract_review_fields(obj)
         nodes.append(
             {
                 "llm_call_id": r["llm_call_id"],
@@ -111,6 +148,8 @@ def build_workflow(conn: sqlite3.Connection, q: WorkflowQuery) -> Dict[str, Any]
                 "review_attempt": review_attempt,
                 "error_code": r["error_code"],
                 "validator_error": r["validator_error"],
+                "total_score": total_score,
+                "action_required": action_required,
             }
         )
 
@@ -154,4 +193,3 @@ def build_workflow(conn: sqlite3.Connection, q: WorkflowQuery) -> Dict[str, Any]
         "groups": groups,
         "ts": utc_now_iso(),
     }
-
