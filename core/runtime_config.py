@@ -20,6 +20,18 @@ class LLMRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class GuardrailsConfig:
+    max_run_iterations: int
+    max_llm_calls_per_run: int
+    max_llm_calls_per_task: int
+    max_prompt_chars: int
+    max_response_chars: int
+    max_task_events_per_task: int
+    max_llm_calls_rows: int
+    max_task_events_rows: int
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     llm: LLMRuntimeConfig
     workflow_mode: str  # "v1" | "v2"
@@ -30,6 +42,7 @@ class RuntimeConfig:
     max_artifact_versions_per_task: int
     max_review_versions_per_check: int
     max_check_attempts_v2: int
+    guardrails: GuardrailsConfig
 
 
 _CACHE: Optional[RuntimeConfig] = None
@@ -53,6 +66,16 @@ def _load_json(path: Path) -> Dict[str, Any]:
             "max_artifact_versions_per_task": 50,
             "max_review_versions_per_check": 50,
             "max_check_attempts_v2": 3,
+            "guardrails": {
+                "max_run_iterations": 200,
+                "max_llm_calls_per_run": 50,
+                "max_llm_calls_per_task": 10,
+                "max_prompt_chars": 120_000,
+                "max_response_chars": 200_000,
+                "max_task_events_per_task": 200,
+                "max_llm_calls_rows": 5_000,
+                "max_task_events_rows": 20_000,
+            },
         }
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -90,17 +113,55 @@ def load_runtime_config(path: Optional[Path] = None) -> RuntimeConfig:
 
     export_include_candidates = bool(data.get("export_include_candidates") or False)
 
-    max_artifact_versions_per_task = int(data.get("max_artifact_versions_per_task") or 50)
+    guardrails_raw = data.get("guardrails") or {}
+    if guardrails_raw is None:
+        guardrails_raw = {}
+    if not isinstance(guardrails_raw, dict):
+        raise RuntimeConfigError("guardrails must be an object")
+
+    max_artifact_versions_per_task = int(guardrails_raw.get("max_artifact_versions_per_task") or data.get("max_artifact_versions_per_task") or 50)
     if max_artifact_versions_per_task <= 0:
         raise RuntimeConfigError("max_artifact_versions_per_task must be > 0")
 
-    max_review_versions_per_check = int(data.get("max_review_versions_per_check") or 50)
+    max_review_versions_per_check = int(guardrails_raw.get("max_review_versions_per_check") or data.get("max_review_versions_per_check") or 50)
     if max_review_versions_per_check <= 0:
         raise RuntimeConfigError("max_review_versions_per_check must be > 0")
 
     max_check_attempts_v2 = int(data.get("max_check_attempts_v2") or 3)
     if max_check_attempts_v2 <= 0:
         raise RuntimeConfigError("max_check_attempts_v2 must be > 0")
+
+    max_run_iterations = int(guardrails_raw.get("max_run_iterations") or 200)
+    if max_run_iterations <= 0:
+        raise RuntimeConfigError("guardrails.max_run_iterations must be > 0")
+
+    max_llm_calls_per_run = int(guardrails_raw.get("max_llm_calls_per_run") or 50)
+    if max_llm_calls_per_run <= 0:
+        raise RuntimeConfigError("guardrails.max_llm_calls_per_run must be > 0")
+
+    max_llm_calls_per_task = int(guardrails_raw.get("max_llm_calls_per_task") or 10)
+    if max_llm_calls_per_task <= 0:
+        raise RuntimeConfigError("guardrails.max_llm_calls_per_task must be > 0")
+
+    max_prompt_chars = int(guardrails_raw.get("max_prompt_chars") or 120_000)
+    if max_prompt_chars <= 0:
+        raise RuntimeConfigError("guardrails.max_prompt_chars must be > 0")
+
+    max_response_chars = int(guardrails_raw.get("max_response_chars") or 200_000)
+    if max_response_chars <= 0:
+        raise RuntimeConfigError("guardrails.max_response_chars must be > 0")
+
+    max_task_events_per_task = int(guardrails_raw.get("max_task_events_per_task") or 200)
+    if max_task_events_per_task <= 0:
+        raise RuntimeConfigError("guardrails.max_task_events_per_task must be > 0")
+
+    max_llm_calls_rows = int(guardrails_raw.get("max_llm_calls_rows") or 5_000)
+    if max_llm_calls_rows <= 0:
+        raise RuntimeConfigError("guardrails.max_llm_calls_rows must be > 0")
+
+    max_task_events_rows = int(guardrails_raw.get("max_task_events_rows") or 20_000)
+    if max_task_events_rows <= 0:
+        raise RuntimeConfigError("guardrails.max_task_events_rows must be > 0")
 
     return RuntimeConfig(
         llm=LLMRuntimeConfig(
@@ -116,6 +177,16 @@ def load_runtime_config(path: Optional[Path] = None) -> RuntimeConfig:
         max_artifact_versions_per_task=max_artifact_versions_per_task,
         max_review_versions_per_check=max_review_versions_per_check,
         max_check_attempts_v2=max_check_attempts_v2,
+        guardrails=GuardrailsConfig(
+            max_run_iterations=max_run_iterations,
+            max_llm_calls_per_run=max_llm_calls_per_run,
+            max_llm_calls_per_task=max_llm_calls_per_task,
+            max_prompt_chars=max_prompt_chars,
+            max_response_chars=max_response_chars,
+            max_task_events_per_task=max_task_events_per_task,
+            max_llm_calls_rows=max_llm_calls_rows,
+            max_task_events_rows=max_task_events_rows,
+        ),
     )
 
 

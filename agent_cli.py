@@ -23,6 +23,8 @@ from core.contract_audit import audit_llm_calls
 from core.deliverables import export_deliverables
 from core.graph import build_plan_graph
 from core.reporting import generate_plan_report, render_plan_report_md
+from core.observability import get_plan_snapshot, render_snapshot_brief, render_snapshot_md
+from core.cleanup import plan_cleanup
 from core.rewriter_v2 import apply_rewrite, propose_rewrite, render_patch_plan_md
 from core.feasibility_v2 import feasibility_check
 from core.v2_converge import converge_v2_plan
@@ -179,45 +181,8 @@ def cmd_status(db_path: Path, plan_id: Optional[str], *, verbose: bool = False, 
 
     if brief:
         cfg = get_runtime_config()
-        report = generate_plan_report(conn, str(plan_id), workflow_mode=cfg.workflow_mode)
-        nodes = report.get("nodes") or {}
-        inputs_needed = report.get("inputs_needed") or []
-        recent_errors = report.get("recent_errors") or []
-        print(f"plan: {report['plan']['title']}")
-        print(f"plan_id: {report['plan']['plan_id']}")
-        print(f"workflow_mode: {report['plan']['workflow_mode']}")
-        print("")
-        print(f"is_done: {bool((report.get('summary') or {}).get('is_done'))}")
-        print(f"blocked_waiting_input: {bool((report.get('summary') or {}).get('is_blocked_waiting_input'))}")
-        print("")
-        for k in ("waiting_review", "blocked", "failed"):
-            items = nodes.get(k) or []
-            if not items:
-                continue
-            print(f"{k.upper()}:")
-            for it in items[:12]:
-                br = str(it.get("blocked_reason") or "")
-                br_part = f" blocked_reason={br}" if br else ""
-                reason = str(it.get("reason") or "")
-                reason_part = f" reason={reason}" if reason else ""
-                print(f"- {it.get('task_title','')} [{it.get('node_type','')}] status={it.get('status','')}{br_part}{reason_part}")
-            print("")
-        if inputs_needed:
-            print("INPUTS_NEEDED:")
-            for it in inputs_needed[:8]:
-                print(f"- {it.get('task_title','')}")
-                print(f"  - required_docs_path: {it.get('required_docs_path','')}")
-            print("")
-        if recent_errors:
-            print("RECENT_ERRORS:")
-            for e in recent_errors[:6]:
-                hint = str(e.get("hint") or "").strip()
-                h = f" hint={hint}" if hint else ""
-                print(f"- {e.get('task_title','')}: {e.get('error_code','')} {e.get('message','')}{h}".strip())
-            print("")
-        print("NEXT_STEPS:")
-        for s in (report.get("next_steps") or [])[:8]:
-            print(f"- {s.get('cmd','')}")
+        snap = get_plan_snapshot(conn, str(plan_id), workflow_mode=cfg.workflow_mode)
+        print(render_snapshot_brief(snap).rstrip())
         return 0
 
     # Concise mode (default): focus on why we are blocked/failed and what to do next.
@@ -612,7 +577,15 @@ def cmd_contract_audit(db_path: Path, plan_id: Optional[str], limit: int) -> int
     return 0
 
 
-def cmd_export(db_path: Path, plan_id: Optional[str], out_dir: Optional[Path], include_reviews: bool) -> int:
+def cmd_export(
+    db_path: Path,
+    plan_id: Optional[str],
+    out_dir: Optional[Path],
+    include_reviews: bool,
+    *,
+    include_candidates: Optional[bool] = None,
+    as_json: bool = False,
+) -> int:
     conn = connect(db_path)
     apply_migrations(conn, config.MIGRATIONS_DIR)
 
@@ -626,8 +599,55 @@ def cmd_export(db_path: Path, plan_id: Optional[str], out_dir: Optional[Path], i
     if out_dir is None:
         out_dir = config.DELIVERABLES_DIR / plan_id
 
-    res = export_deliverables(conn, plan_id=plan_id, out_dir=out_dir, include_reviews=include_reviews)
-    print(json.dumps({"plan_id": res.plan_id, "out_dir": str(res.out_dir), "files_copied": int(res.files_copied)}, ensure_ascii=False))
+    cfg = get_runtime_config()
+    include_candidates_effective = bool(include_candidates) if include_candidates is not None else bool(cfg.export_include_candidates)
+    try:
+        res = export_deliverables(
+            conn,
+            plan_id=plan_id,
+            out_dir=out_dir,
+            include_reviews=include_reviews,
+            include_candidates=include_candidates_effective,
+        )
+    except Exception as exc:
+        msg = str(exc)
+        print(f"export failed: {msg}", file=sys.stderr)
+        print("next: ensure CHECK reviews approved an artifact, then re-run `agent_cli.py export` or run `agent_cli.py doctor` for details.", file=sys.stderr)
+        return 2
+
+    final_path = Path(out_dir) / "final.json"
+    final_obj: Dict[str, Any] = {}
+    if final_path.exists():
+        try:
+            final_obj = json.loads(final_path.read_text(encoding="utf-8"))
+        except Exception:
+            final_obj = {}
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "plan_id": res.plan_id,
+                    "out_dir": str(res.out_dir),
+                    "files_copied": int(res.files_copied),
+                    "final": final_obj,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    entry = str(final_obj.get("final_entrypoint") or "")
+    print(f"deliverables_dir: {out_dir}")
+    if entry:
+        print(f"final_entrypoint: {entry}")
+    how = final_obj.get("how_to_run") if isinstance(final_obj.get("how_to_run"), list) else []
+    if how:
+        print("how_to_run:")
+        for s in how[:6]:
+            print(f"- {s}")
+    print(f"manifest: {Path(out_dir) / 'manifest.json'}")
+    print(f"final: {final_path}")
     return 0
 
 
@@ -752,7 +772,8 @@ def cmd_report(db_path: Path, plan_id: Optional[str], *, as_json: bool = False, 
         plan_id = str(row["plan_id"])
 
     cfg = get_runtime_config()
-    report = generate_plan_report(conn, str(plan_id), workflow_mode=cfg.workflow_mode)
+    snap = get_plan_snapshot(conn, str(plan_id), workflow_mode=cfg.workflow_mode)
+    report = snap.get("report") or {}
     if as_json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
@@ -768,6 +789,50 @@ def cmd_report(db_path: Path, plan_id: Optional[str], *, as_json: bool = False, 
     print(md.rstrip())
     print("")
     print(f"report_saved_to: {out_path}")
+    return 0
+
+
+def cmd_snapshot(db_path: Path, plan_id: Optional[str], *, as_json: bool = False, out_dir: Optional[Path] = None) -> int:
+    conn = connect(db_path)
+    apply_migrations(conn, config.MIGRATIONS_DIR)
+
+    if plan_id is None:
+        row = conn.execute("SELECT plan_id FROM plans ORDER BY created_at DESC LIMIT 1").fetchone()
+        if not row:
+            print("No plan found in DB.")
+            return 1
+        plan_id = str(row["plan_id"])
+
+    cfg = get_runtime_config()
+    try:
+        snap = get_plan_snapshot(conn, str(plan_id), workflow_mode=cfg.workflow_mode)
+    except Exception as exc:  # noqa: BLE001
+        print(f"snapshot failed: {exc}")
+        print(f"hint: run `agent_cli.py doctor --plan-id {plan_id}` to locate issues.")
+        return 1
+
+    if as_json and out_dir is None:
+        print(json.dumps(snap, ensure_ascii=False, indent=2))
+        return 0
+
+    if out_dir is None:
+        out_dir = config.WORKSPACE_DIR / "observability" / str(plan_id)
+    ensure_dir(out_dir)
+
+    ts = utc_now_iso().replace(":", "").replace("-", "")
+    json_path = out_dir / f"snapshot_{ts}.json"
+    md_path = out_dir / f"snapshot_{ts}.md"
+
+    json_path.write_text(json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8")
+    md_path.write_text(render_snapshot_md(snap), encoding="utf-8")
+
+    if as_json:
+        print(json.dumps(snap, ensure_ascii=False, indent=2))
+    else:
+        print(render_snapshot_brief(snap).rstrip())
+    print("")
+    print(f"snapshot_saved_to: {json_path}")
+    print(f"snapshot_md_saved_to: {md_path}")
     return 0
 
 
@@ -813,6 +878,39 @@ def cmd_rewrite(
     print(md.rstrip())
     print("")
     print("hint: re-run with `agent_cli.py rewrite --apply` to apply (writes snapshot + DB changes).")
+    return 0
+
+
+def cmd_cleanup(db_path: Path, *, apply: bool = False, as_json: bool = False) -> int:
+    conn = connect(db_path)
+    apply_migrations(conn, config.MIGRATIONS_DIR)
+    cfg = get_runtime_config()
+    dry_run = not apply
+
+    with conn:
+        plan = plan_cleanup(
+            conn,
+            max_llm_calls_rows=int(cfg.guardrails.max_llm_calls_rows),
+            max_task_events_rows=int(cfg.guardrails.max_task_events_rows),
+            max_artifact_versions_per_task=int(cfg.max_artifact_versions_per_task),
+            max_review_versions_per_check=int(cfg.max_review_versions_per_check),
+            dry_run=dry_run,
+        )
+
+    if as_json:
+        print(json.dumps(plan.__dict__, ensure_ascii=False, indent=2))
+        return 0
+
+    mode = "DRY_RUN" if dry_run else "APPLIED"
+    print(f"cleanup: {mode}")
+    print(f"- llm_calls: would delete {plan.llm_calls_delete}")
+    print(f"- task_events: would delete {plan.task_events_delete}")
+    print(f"- reviews: would delete {plan.reviews_delete}")
+    print(f"- artifacts: would delete {plan.artifacts_delete}")
+    if not dry_run:
+        print(f"- artifact_files: deleted={plan.artifact_files_delete}")
+    print("- keep approved: always keep approved artifacts and reviewed artifacts")
+    print("hint: re-run with `agent_cli.py cleanup --apply` to actually delete (default is dry-run).")
     return 0
 
 
@@ -892,6 +990,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_report.add_argument("--json", action="store_true", help="Output machine-readable JSON")
     p_report.add_argument("--out", type=Path, default=None, help="Write markdown report to this path (default workspace/reports/<plan_id>/...)")
 
+    p_snapshot = sub.add_parser("snapshot", help="Write a unified observability snapshot (Markdown + JSON).")
+    p_snapshot.add_argument("--plan-id", type=str, default=None)
+    p_snapshot.add_argument("--json", action="store_true", help="Output machine-readable JSON to stdout.")
+    p_snapshot.add_argument("--out", type=Path, default=None, help="Write snapshot files into this directory (default workspace/observability/<plan_id>/).")
+
     p_rewrite = sub.add_parser("rewrite", help="Propose/apply safe structural rewrites for v2 plans (dry-run by default).")
     p_rewrite.add_argument("--plan-id", type=str, default=None)
     p_rewrite.add_argument("--apply", action="store_true", help="Apply proposed patches (writes snapshot + DB changes)")
@@ -904,6 +1007,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_feas.add_argument("--json", action="store_true", help="Output machine-readable JSON")
     p_feas.add_argument("--threshold-person-days", type=float, default=None)
     p_feas.add_argument("--max-depth", type=int, default=None)
+
+    p_cleanup = sub.add_parser("cleanup", help="Trim DB/file growth safely (guardrails).")
+    p_cleanup.add_argument("--apply", action="store_true", help="Actually delete rows/files (default: dry-run).")
+    p_cleanup.add_argument("--json", action="store_true", help="Output machine-readable JSON.")
 
     p_events = sub.add_parser("events", help="Show recent task events (JSON)")
     p_events.add_argument("--plan-id", type=str, default=None)
@@ -938,6 +1045,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_export.add_argument("--plan-id", type=str, default=None)
     p_export.add_argument("--out-dir", type=Path, default=None)
     p_export.add_argument("--include-reviews", action="store_true")
+    p_export.add_argument("--include-candidates", action="store_true", help="Also export candidate (active) artifacts when approved is missing.")
+    p_export.add_argument("--json", action="store_true", help="Output machine-readable JSON (includes final.json content).")
 
     p_graph = sub.add_parser("graph", help="Output a plan task graph as JSON (for UI).")
     p_graph.add_argument("--plan-id", type=str, default=None)
@@ -1032,6 +1141,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_status(args.db, args.plan_id, verbose=bool(getattr(args, "verbose", False)), brief=bool(getattr(args, "brief", False)))
     if args.cmd == "report":
         return cmd_report(args.db, args.plan_id, as_json=bool(getattr(args, "json", False)), out_path=getattr(args, "out", None))
+    if args.cmd == "snapshot":
+        return cmd_snapshot(args.db, args.plan_id, as_json=bool(getattr(args, "json", False)), out_dir=getattr(args, "out", None))
     if args.cmd == "rewrite":
         return cmd_rewrite(
             args.db,
@@ -1041,6 +1152,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             max_depth=getattr(args, "max_depth", None),
             threshold_person_days=getattr(args, "threshold_person_days", None),
         )
+    if args.cmd == "cleanup":
+        return cmd_cleanup(args.db, apply=bool(getattr(args, "apply", False)), as_json=bool(getattr(args, "json", False)))
     if args.cmd == "feasibility-check":
         return cmd_feasibility_check(
             args.db,
@@ -1064,7 +1177,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.cmd == "contract-audit":
         return cmd_contract_audit(args.db, args.plan_id, args.limit)
     if args.cmd == "export":
-        return cmd_export(args.db, args.plan_id, args.out_dir, bool(getattr(args, "include_reviews", False)))
+        return cmd_export(
+            args.db,
+            args.plan_id,
+            args.out_dir,
+            bool(getattr(args, "include_reviews", False)),
+            include_candidates=True if bool(getattr(args, "include_candidates", False)) else None,
+            as_json=bool(getattr(args, "json", False)),
+        )
     if args.cmd == "graph":
         conn = connect(args.db)
         apply_migrations(conn, config.MIGRATIONS_DIR)

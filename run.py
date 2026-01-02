@@ -23,6 +23,7 @@ from core.reviews import insert_review, write_review_json
 from core.scheduler import pick_xiaobo_tasks, pick_xiaojing_tasks
 from core.scheduler import pick_xiaojing_check_nodes
 from core.scheduler import pick_v2_check_tasks
+from core.runtime_config import get_runtime_config
 from core.util import ensure_dir, safe_read_text, stable_hash_text, utc_now_iso
 from core.workflow_mode import WorkflowModeGuardError, ensure_mode_supported_for_action
 from core.v2_review_gate import ReviewContractMismatch, run_check_once as run_v2_check_once
@@ -187,9 +188,34 @@ def _select_best_inputs_per_requirement(files: List[Dict[str, Any]]) -> tuple[Li
 
 
 def xiaobo_round(*, conn, plan_id: str, prompts, llm: LLMClient, llm_calls: int, skills_registry: Dict[str, Any]) -> int:
+    cfg = get_runtime_config()
+    max_task_calls = int(cfg.guardrails.max_llm_calls_per_task)
     tasks = pick_xiaobo_tasks(conn, plan_id=plan_id, limit=10)
     for task in tasks:
         task_id = task["task_id"]
+        if llm_calls >= int(cfg.guardrails.max_llm_calls_per_run):
+            return llm_calls
+
+        # Per-task guardrail (per run): do not keep calling LLM for the same task endlessly.
+        row = conn.execute(
+            """
+            SELECT COUNT(1) AS cnt
+            FROM llm_calls
+            WHERE plan_id = ? AND task_id = ?
+            """,
+            (plan_id, task_id),
+        ).fetchone()
+        if row and int(row["cnt"] or 0) >= max_task_calls:
+            _handle_error(
+                conn,
+                plan_id=plan_id,
+                task_id=task_id,
+                error_code="GUARDRAIL_MAX_LLM_CALLS_TASK",
+                message=f"LLM calls for this task reached {max_task_calls} (guardrail).",
+                context={"hint": "Fix prompts/inputs, then use `agent_cli.py reset-failed --include-blocked` or regenerate the plan."},
+            )
+            continue
+
         suggestions_path = config.REVIEWS_DIR / task_id / "suggestions.md"
         suggestions_text = suggestions_path.read_text(encoding="utf-8") if suggestions_path.exists() else ""
 
@@ -1053,8 +1079,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     apply_migrations(conn, config.MIGRATIONS_DIR)
 
     plan_id = load_plan_into_db_if_needed(conn, args.plan)
-    from core.runtime_config import get_runtime_config
-
     cfg = get_runtime_config()
     if not bool(getattr(args, "skip_doctor", False)):
         from core.doctor import format_findings_human, run_doctor
@@ -1077,9 +1101,27 @@ def main(argv: Optional[List[str]] = None) -> int:
     t0 = time.time()
     llm_calls = 0
 
-    for _ in range(int(args.max_iterations)):
+    max_iters = min(int(args.max_iterations), int(cfg.guardrails.max_run_iterations))
+    if int(args.max_iterations) > max_iters:
+        print(f"guardrail: max_run_iterations capped to {max_iters} (from runtime_config.guardrails.max_run_iterations).")
+
+    max_llm_calls_run = int(cfg.guardrails.max_llm_calls_per_run)
+
+    for _ in range(max_iters):
         if time.time() - t0 > config.MAX_PLAN_RUNTIME_SECONDS:
             record_error(conn, plan_id=plan_id, task_id=None, error_code="PLAN_TIMEOUT", message="Plan runtime exceeded")
+            break
+
+        if llm_calls >= max_llm_calls_run:
+            emit_event(
+                conn,
+                plan_id=plan_id,
+                task_id=None,
+                event_type="GUARDRAIL_HIT",
+                payload={"guardrail": "max_llm_calls_per_run", "limit": max_llm_calls_run, "llm_calls": llm_calls},
+            )
+            print(f"guardrail hit: max_llm_calls_per_run={max_llm_calls_run}, stopping run loop.")
+            print(f"hint: fix blockers, then re-run `agent_cli.py run --max-iterations {max_iters}` (or raise guardrails in runtime_config.json).")
             break
 
         with transaction(conn):
@@ -1087,7 +1129,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             detect_removed_input_files_all(conn, plan_id=plan_id, inputs_dirs=[config.INPUTS_DIR, config.BASELINE_INPUTS_DIR])
             maybe_reset_failed_to_ready(conn, plan_id=plan_id)
             recompute_readiness_for_plan(conn, plan_id=plan_id)
-            llm_calls = xiaobo_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, skills_registry=skills_registry)
+                llm_calls = xiaobo_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, skills_registry=skills_registry)
             if cfg.workflow_mode == "v2":
                 llm_calls = v2_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
             else:
@@ -1095,9 +1137,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 llm_calls = xiaojing_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
                 llm_calls = xiaoxie_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
 
-        if llm_calls > config.MAX_LLM_CALLS:
-            record_error(conn, plan_id=plan_id, task_id=None, error_code="MAX_LLM_CALLS_EXCEEDED", message="Max LLM calls exceeded")
-            break
         if is_plan_done(conn, plan_id):
             break
         if is_plan_blocked_waiting_user(conn, plan_id):

@@ -16,6 +16,8 @@ from pydantic import BaseModel
 import config
 from core.db import apply_migrations, connect
 from core.graph import build_plan_graph
+from core.observability import get_plan_snapshot
+from core.runtime_config import get_runtime_config
 from core.util import ensure_dir, utc_now_iso
 
 
@@ -143,7 +145,7 @@ def _truncate(s: Optional[str], *, max_chars: int) -> Optional[str]:
         return s
     if len(s) <= max_chars:
         return s
-    return s[: max_chars - 1] + "…"
+    return s[: max_chars - 1] + "..."
 
 
 @app.get("/api/config")
@@ -176,6 +178,17 @@ def get_plan_graph(plan_id: str) -> Dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return res.graph
+
+
+@app.get("/api/plan_snapshot")
+def plan_snapshot(plan_id: str = Query(..., min_length=1)) -> Dict[str, Any]:
+    conn = _connect(config.DB_PATH_DEFAULT)
+    cfg = get_runtime_config()
+    try:
+        snap = get_plan_snapshot(conn, str(plan_id), workflow_mode=str(cfg.workflow_mode))
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return snap
 
 
 @app.get("/api/task/{task_id}/llm")
