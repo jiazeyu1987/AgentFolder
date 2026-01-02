@@ -5,6 +5,9 @@ import ControlPanel from "./components/ControlPanel";
 import TaskGraph from "./components/TaskGraph";
 import NodeDetails from "./components/NodeDetails";
 import CreatePlanProgress from "./components/CreatePlanProgress";
+import LLMWorkflowGraph from "./components/LLMWorkflowGraph";
+import LLMCallDetails from "./components/LLMCallDetails";
+import type { WorkflowResp } from "./types";
 
 export default function App() {
   const [config, setConfig] = useState<ConfigResp | null>(null);
@@ -17,6 +20,12 @@ export default function App() {
   const [createPlanJobId, setCreatePlanJobId] = useState<string | null>(() => localStorage.getItem("create_plan_job_id"));
   const [createPlanJob, setCreatePlanJob] = useState<CreatePlanJobResp | null>(null);
   const [createPlanTimeline, setCreatePlanTimeline] = useState<LlmCallsQueryResp["calls"]>([]);
+  const [viewMode, setViewMode] = useState<"TASK" | "WORKFLOW">("TASK");
+  const [workflow, setWorkflow] = useState<WorkflowResp | null>(null);
+  const [selectedLlmCallId, setSelectedLlmCallId] = useState<string | null>(null);
+  const [workflowScopes, setWorkflowScopes] = useState<string>("PLAN_GEN,PLAN_REVIEW");
+  const [workflowAgent, setWorkflowAgent] = useState<string>("");
+  const [workflowOnlyErrors, setWorkflowOnlyErrors] = useState<boolean>(false);
 
   function log(s: string) {
     setLogText((prev) => (prev ? prev + "\n\n" + s : s));
@@ -53,6 +62,24 @@ export default function App() {
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (viewMode !== "WORKFLOW") return;
+    const t = setInterval(() => {
+      const pid = selectedPlanId ?? undefined;
+      api
+        .getWorkflow({
+          plan_id: pid,
+          scopes: workflowScopes.trim() ? workflowScopes : undefined,
+          agent: workflowAgent.trim() ? workflowAgent : undefined,
+          only_errors: workflowOnlyErrors,
+          limit: 200,
+        })
+        .then((w) => setWorkflow(w))
+        .catch(() => {});
+    }, 1200);
+    return () => clearInterval(t);
+  }, [viewMode, selectedPlanId, workflowScopes, workflowAgent, workflowOnlyErrors]);
 
   useEffect(() => {
     if (!createPlanJobId) return;
@@ -126,8 +153,59 @@ export default function App() {
           <div className="muted">
             running: <span className="mono">{graph?.running.task_id ? graph.running.task_id.slice(0, 8) : "-"}</span>
           </div>
+          <div className="spacer" />
+          <div className="row" style={{ gap: 8 }}>
+            <button className={viewMode === "TASK" ? "pillBtn active" : "pillBtn"} onClick={() => setViewMode("TASK")}>
+              Task Graph
+            </button>
+            <button className={viewMode === "WORKFLOW" ? "pillBtn active" : "pillBtn"} onClick={() => setViewMode("WORKFLOW")}>
+              LLM Workflow
+            </button>
+          </div>
         </div>
-        <div className="panel graphWrap">{graph ? <TaskGraph nodes={graph.nodes} edges={graph.edges} onSelectNode={(id) => setSelectedTaskId(id)} /> : <div className="muted">no graph</div>}</div>
+        {viewMode === "WORKFLOW" ? (
+          <div className="panel" style={{ padding: 12, display: "flex", flexDirection: "column", minHeight: 0 }}>
+            <div className="row" style={{ gap: 8, marginBottom: 10 }}>
+              <label className="inline">
+                scopes
+                <input value={workflowScopes} onChange={(e) => setWorkflowScopes(e.target.value)} style={{ width: 220 }} />
+              </label>
+              <label className="inline">
+                agent
+                <input value={workflowAgent} onChange={(e) => setWorkflowAgent(e.target.value)} style={{ width: 120 }} />
+              </label>
+              <label className="inline">
+                only_errors
+                <input type="checkbox" checked={workflowOnlyErrors} onChange={(e) => setWorkflowOnlyErrors(e.target.checked)} />
+              </label>
+              <div className="spacer" />
+              <button
+                onClick={() => {
+                  const pid = selectedPlanId ?? undefined;
+                  api
+                    .getWorkflow({
+                      plan_id: pid,
+                      scopes: workflowScopes.trim() ? workflowScopes : undefined,
+                      agent: workflowAgent.trim() ? workflowAgent : undefined,
+                      only_errors: workflowOnlyErrors,
+                      limit: 200,
+                    })
+                    .then((w) => setWorkflow(w))
+                    .catch((e) => log(String(e)));
+                }}
+              >
+                Refresh
+              </button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              {workflow ? <LLMWorkflowGraph workflow={workflow} onSelectCall={(id) => setSelectedLlmCallId(id)} /> : <div className="muted">loading workflow...</div>}
+            </div>
+          </div>
+        ) : (
+          <div className="panel graphWrap">
+            {graph ? <TaskGraph nodes={graph.nodes} edges={graph.edges} onSelectNode={(id) => setSelectedTaskId(id)} /> : <div className="muted">no graph</div>}
+          </div>
+        )}
       </div>
       <div className="right">
         <CreatePlanProgress
@@ -135,7 +213,7 @@ export default function App() {
           timeline={createPlanTimeline}
           onSelectPlanId={(pid) => setSelectedPlanId(pid)}
         />
-        <NodeDetails node={selectedNode} />
+        {viewMode === "WORKFLOW" ? <LLMCallDetails llmCallId={selectedLlmCallId} /> : <NodeDetails node={selectedNode} />}
         <div className="panel">
           <h3>Logs</h3>
           <textarea className="log" value={logText} readOnly rows={10} />

@@ -21,6 +21,7 @@ from core.graph import build_plan_graph
 from core.observability import get_plan_snapshot
 from core.runtime_config import get_runtime_config
 from core.util import ensure_dir, utc_now_iso
+from core.workflow_graph import WorkflowQuery, build_workflow
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -298,6 +299,47 @@ def _truncate(s: Optional[str], *, max_chars: int) -> Optional[str]:
     return s[: max_chars - 1] + "..."
 
 
+def resolve_prompt_sources(agent: str, scope: str) -> Dict[str, Any]:
+    """
+    Best-effort mapping from an agent/scope to shared/private prompt files.
+    MVP convention:
+    - shared: <repo>/shared_prompt.md
+    - agent: <repo>/agents/<agent>_prompt.md
+    """
+    shared = ROOT_DIR / "shared_prompt.md"
+    agent_file = ROOT_DIR / "agents" / f"{str(agent).strip()}_prompt.md"
+    out: Dict[str, Any] = {
+        "shared_prompt_path": str(shared) if shared.exists() else None,
+        "agent_prompt_path": str(agent_file) if agent_file.exists() else None,
+        "reason": None,
+    }
+    if not out["shared_prompt_path"]:
+        out["reason"] = "shared_prompt.md not found"
+    elif not out["agent_prompt_path"]:
+        out["reason"] = f"agent prompt not found for {agent}"
+    return out
+
+
+def _safe_read_text_file(path_str: str, *, max_chars: int) -> Dict[str, Any]:
+    """
+    Read a text file from an allow-list of directories. Returns content (possibly truncated).
+    """
+    if not isinstance(path_str, str) or not path_str.strip():
+        raise HTTPException(status_code=400, detail="path is required")
+    p = Path(path_str).resolve()
+    allow_roots = [ROOT_DIR.resolve(), (ROOT_DIR / "agents").resolve()]
+    if not any(str(p).startswith(str(r)) for r in allow_roots):
+        raise HTTPException(status_code=400, detail="path not allowed")
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    txt = p.read_text(encoding="utf-8", errors="replace")
+    truncated = False
+    if max_chars > 0 and len(txt) > max_chars:
+        txt = txt[: max_chars - 1] + "..."
+        truncated = True
+    return {"path": str(p), "content": txt, "truncated": truncated, "ts": utc_now_iso()}
+
+
 @app.get("/api/config")
 def get_config() -> Dict[str, Any]:
     return {
@@ -535,6 +577,7 @@ def get_task_llm_calls(
 
 @app.get("/api/llm_calls")
 def get_llm_calls(
+    llm_call_id: Optional[str] = Query(default=None),
     plan_id: Optional[str] = Query(default=None),
     scopes: Optional[str] = Query(default=None),
     agent: Optional[str] = Query(default=None),
@@ -545,6 +588,10 @@ def get_llm_calls(
     conn = _connect(config.DB_PATH_DEFAULT)
     where: List[str] = []
     params: List[Any] = []
+
+    if llm_call_id is not None and str(llm_call_id).strip():
+        where.append("llm_call_id = ?")
+        params.append(str(llm_call_id).strip())
 
     if plan_id_missing:
         where.append("plan_id IS NULL")
@@ -592,6 +639,7 @@ def get_llm_calls(
     rows = conn.execute(sql, tuple(params)).fetchall()
     calls = []
     for r in rows:
+        src = resolve_prompt_sources(agent=r["agent"], scope=r["scope"])
         calls.append(
             {
                 "llm_call_id": r["llm_call_id"],
@@ -608,9 +656,47 @@ def get_llm_calls(
                 "error_code": r["error_code"],
                 "error_message": r["error_message"],
                 "meta_json": _truncate(r["meta_json"], max_chars=max_chars),
+                "shared_prompt_path": src.get("shared_prompt_path"),
+                "agent_prompt_path": src.get("agent_prompt_path"),
+                "prompt_source_reason": src.get("reason"),
             }
         )
     return {"calls": calls, "ts": utc_now_iso()}
+
+
+@app.get("/api/prompt_file")
+def get_prompt_file(
+    path: str = Query(..., min_length=1),
+    max_chars: int = Query(default=200_000, ge=0, le=500_000),
+) -> Dict[str, Any]:
+    return _safe_read_text_file(path, max_chars=int(max_chars))
+
+
+@app.get("/api/workflow")
+def get_workflow(
+    plan_id: Optional[str] = Query(default=None),
+    scopes: Optional[str] = Query(default=None),
+    agent: Optional[str] = Query(default=None),
+    only_errors: bool = Query(default=False),
+    limit: int = Query(default=200, ge=1, le=500),
+    plan_id_missing: bool = Query(default=False),
+) -> Dict[str, Any]:
+    conn = _connect(config.DB_PATH_DEFAULT)
+    scope_list: List[str] = []
+    if scopes:
+        for s in str(scopes).split(","):
+            s2 = s.strip()
+            if s2:
+                scope_list.append(s2)
+    q = WorkflowQuery(
+        plan_id=str(plan_id).strip() if plan_id and str(plan_id).strip() else None,
+        plan_id_missing=bool(plan_id_missing),
+        scopes=scope_list,
+        agent=str(agent).strip() if agent and str(agent).strip() else None,
+        only_errors=bool(only_errors),
+        limit=int(limit),
+    )
+    return build_workflow(conn, q)
 
 
 @app.get("/api/task/{task_id}/details")

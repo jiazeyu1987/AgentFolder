@@ -144,6 +144,9 @@ export interface LlmCallsQueryResp {
     error_code: string | null;
     error_message: string | null;
     meta_json: string | null;
+    shared_prompt_path?: string | null;
+    agent_prompt_path?: string | null;
+    prompt_source_reason?: string | null;
   }>;
   ts: string;
 }
@@ -166,5 +169,35 @@ export interface TaskDetailsResp {
   required_docs_path: string;
   artifact_dir: string;
   review_dir: string;
+  ts: string;
+}
+
+export interface PromptFileResp {
+  path: string;
+  content: string;
+  truncated: boolean;
+  ts: string;
+}
+
+export type WorkflowEdgeType = "NEXT" | "PAIR";
+
+export interface WorkflowResp {
+  schema_version: "workflow_v1";
+  plan: { plan_id: string | null; title: string | null; workflow_mode: string };
+  nodes: Array<{
+    llm_call_id: string;
+    created_at: string;
+    plan_id: string | null;
+    task_id: string | null;
+    task_title: string | null;
+    agent: string;
+    scope: string;
+    attempt: number;
+    review_attempt: number;
+    error_code: string | null;
+    validator_error: string | null;
+  }>;
+  edges: Array<{ from: string; to: string; edge_type: WorkflowEdgeType }>;
+  groups: Array<{ group_type: "ATTEMPT"; id: string; attempt: number; node_ids: string[] }>;
   ts: string;
 }

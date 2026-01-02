@@ -1,4 +1,15 @@
-import type { ConfigResp, CreatePlanAsyncResp, CreatePlanJobResp, GraphV1, LlmCallsQueryResp, PlansResp, TaskDetailsResp, TaskLlmCallsResp } from "./types";
+import type {
+  ConfigResp,
+  CreatePlanAsyncResp,
+  CreatePlanJobResp,
+  GraphV1,
+  LlmCallsQueryResp,
+  PlansResp,
+  PromptFileResp,
+  TaskDetailsResp,
+  TaskLlmCallsResp,
+  WorkflowResp,
+} from "./types";
 
 async function httpJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -59,6 +70,7 @@ export function getJob(jobId: string): Promise<CreatePlanJobResp> {
 }
 
 export function getLlmCallsQuery(params: {
+  llm_call_id?: string;
   plan_id?: string;
   scopes?: string;
   agent?: string;
@@ -66,12 +78,36 @@ export function getLlmCallsQuery(params: {
   plan_id_missing?: boolean;
 }): Promise<LlmCallsQueryResp> {
   const usp = new URLSearchParams();
+  if (params.llm_call_id) usp.set("llm_call_id", params.llm_call_id);
   if (params.plan_id) usp.set("plan_id", params.plan_id);
   if (params.scopes) usp.set("scopes", params.scopes);
   if (params.agent) usp.set("agent", params.agent);
   if (params.limit) usp.set("limit", String(params.limit));
   if (params.plan_id_missing) usp.set("plan_id_missing", "true");
   return httpJson<LlmCallsQueryResp>(`/api/llm_calls?${usp.toString()}`);
+}
+
+export function getWorkflow(params: {
+  plan_id?: string;
+  scopes?: string;
+  agent?: string;
+  only_errors?: boolean;
+  limit?: number;
+  plan_id_missing?: boolean;
+}): Promise<WorkflowResp> {
+  const usp = new URLSearchParams();
+  if (params.plan_id) usp.set("plan_id", params.plan_id);
+  if (params.scopes) usp.set("scopes", params.scopes);
+  if (params.agent) usp.set("agent", params.agent);
+  if (params.only_errors) usp.set("only_errors", "true");
+  if (params.limit) usp.set("limit", String(params.limit));
+  if (params.plan_id_missing) usp.set("plan_id_missing", "true");
+  return httpJson<WorkflowResp>(`/api/workflow?${usp.toString()}`);
+}
+
+export function getPromptFile(path: string, maxChars = 200_000): Promise<PromptFileResp> {
+  const usp = new URLSearchParams({ path, max_chars: String(maxChars) });
+  return httpJson<PromptFileResp>(`/api/prompt_file?${usp.toString()}`);
 }
 
 export function resetDb(purgeAll: boolean): Promise<unknown> {

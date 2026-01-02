@@ -224,6 +224,21 @@ button.danger {
   font-weight: 800;
 }
 
+.pillBtn {
+  border: 1px solid #334155;
+  background: #0b1220;
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.pillBtn.active {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+}
+
 .log {
   width: 100%;
   box-sizing: border-box;
