@@ -22,11 +22,30 @@ class ReviewContractMismatch(RuntimeError):
 
 
 def _set_status(conn: sqlite3.Connection, *, plan_id: str, task_id: str, status: str, blocked_reason: Optional[str] = None) -> None:
+    row = conn.execute("SELECT status FROM task_nodes WHERE task_id = ?", (task_id,)).fetchone()
+    before = str(row["status"]) if row and row["status"] is not None else None
     conn.execute(
         "UPDATE task_nodes SET status = ?, blocked_reason = ?, updated_at = ? WHERE task_id = ?",
         (status, blocked_reason, utc_now_iso(), task_id),
     )
     emit_event(conn, plan_id=plan_id, task_id=task_id, event_type="STATUS_CHANGED", payload={"status": status, "blocked_reason": blocked_reason})
+    try:
+        from core.audit_log import log_audit
+
+        log_audit(
+            conn,
+            category="STATUS_CHANGED",
+            action="TASK_STATUS_CHANGED",
+            message=f"Task status changed: {before or '-'} -> {status}",
+            plan_id=plan_id,
+            task_id=task_id,
+            status_before=before,
+            status_after=status,
+            ok=True,
+            payload={"blocked_reason": blocked_reason, "source": "v2_review_gate"},
+        )
+    except Exception:
+        pass
 
 
 def _inc_attempt(conn: sqlite3.Connection, *, task_id: str) -> None:
@@ -54,7 +73,26 @@ def _acquire_check_lock(conn: sqlite3.Connection, *, plan_id: str, check_task_id
         """,
         (utc_now_iso(), plan_id, check_task_id),
     )
-    return int(getattr(cur, "rowcount", 0) or 0) == 1
+    acquired = int(getattr(cur, "rowcount", 0) or 0) == 1
+    if acquired:
+        try:
+            from core.audit_log import log_audit
+
+            log_audit(
+                conn,
+                category="STATUS_CHANGED",
+                action="TASK_STATUS_CHANGED",
+                message="Task status changed: READY -> IN_PROGRESS",
+                plan_id=plan_id,
+                task_id=check_task_id,
+                status_before="READY",
+                status_after="IN_PROGRESS",
+                ok=True,
+                payload={"source": "v2_check_lock"},
+            )
+        except Exception:
+            pass
+    return acquired
 
 
 def _load_artifact_path(conn: sqlite3.Connection, *, artifact_id: str) -> Optional[str]:

@@ -13,6 +13,7 @@ import config
 class CleanupPlan:
     llm_calls_delete: int
     task_events_delete: int
+    audit_events_delete: int
     reviews_delete: int
     artifacts_delete: int
     artifact_files_delete: int
@@ -140,6 +141,29 @@ def trim_task_events(conn: sqlite3.Connection, *, max_rows: int, dry_run: bool) 
         DELETE FROM task_events
         WHERE rowid NOT IN (
           SELECT rowid FROM task_events ORDER BY created_at DESC LIMIT ?
+        )
+        """,
+        (int(max_rows),),
+    )
+    return to_delete
+
+
+def trim_audit_events(conn: sqlite3.Connection, *, max_rows: int, dry_run: bool) -> int:
+    cols = [c[1] for c in conn.execute("PRAGMA table_info(audit_events)").fetchall()]
+    if not cols:
+        return 0
+    cur = conn.execute("SELECT COUNT(1) AS cnt FROM audit_events").fetchone()
+    total = int(cur["cnt"] or 0) if cur else 0
+    if total <= max_rows:
+        return 0
+    to_delete = total - max_rows
+    if dry_run:
+        return to_delete
+    conn.execute(
+        """
+        DELETE FROM audit_events
+        WHERE rowid NOT IN (
+          SELECT rowid FROM audit_events ORDER BY created_at DESC LIMIT ?
         )
         """,
         (int(max_rows),),
@@ -278,6 +302,7 @@ def plan_cleanup(
     keep_ids = compute_keeper_artifact_ids(conn, extra_keep=extra_keep_artifact_ids, deliverables_dir=deliverables_dir)
     llm_del = trim_llm_calls(conn, max_rows=max_llm_calls_rows, dry_run=dry_run)
     evt_del = trim_task_events(conn, max_rows=max_task_events_rows, dry_run=dry_run)
+    aud_del = trim_audit_events(conn, max_rows=max_task_events_rows, dry_run=dry_run)
     rev_del = trim_reviews(conn, max_versions_per_check=max_review_versions_per_check, keep_latest_verdict=True, dry_run=dry_run)
     art_del, file_del = trim_artifacts(
         conn,
@@ -288,9 +313,9 @@ def plan_cleanup(
     return CleanupPlan(
         llm_calls_delete=int(llm_del),
         task_events_delete=int(evt_del),
+        audit_events_delete=int(aud_del),
         reviews_delete=int(rev_del),
         artifacts_delete=int(art_del),
         artifact_files_delete=int(file_del),
         kept_artifact_ids=sorted(list(keep_ids))[:200],
     )
-

@@ -35,11 +35,30 @@ def apply_error_outcome(conn: sqlite3.Connection, *, plan_id: str, task_id: str,
             (int(outcome.attempt_delta), utc_now_iso(), task_id),
         )
     if outcome.status:
+        row = conn.execute("SELECT status FROM task_nodes WHERE task_id = ?", (task_id,)).fetchone()
+        before = str(row["status"]) if row and row["status"] is not None else None
         conn.execute(
             "UPDATE task_nodes SET status = ?, blocked_reason = ?, updated_at = ? WHERE task_id = ?",
             (outcome.status, outcome.blocked_reason, utc_now_iso(), task_id),
         )
         emit_event(conn, plan_id=plan_id, task_id=task_id, event_type="STATUS_CHANGED", payload={"status": outcome.status, "blocked_reason": outcome.blocked_reason})
+        try:
+            from core.audit_log import log_audit
+
+            log_audit(
+                conn,
+                category="STATUS_CHANGED",
+                action="TASK_STATUS_CHANGED",
+                message=f"Task status changed: {before or '-'} -> {outcome.status}",
+                plan_id=plan_id,
+                task_id=task_id,
+                status_before=before,
+                status_after=str(outcome.status),
+                ok=True,
+                payload={"blocked_reason": outcome.blocked_reason, "source": "error_outcome"},
+            )
+        except Exception:
+            pass
 
 
 def map_error_to_outcome(error_code: str) -> ErrorOutcome:

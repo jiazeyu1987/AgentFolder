@@ -905,6 +905,7 @@ def cmd_cleanup(db_path: Path, *, apply: bool = False, as_json: bool = False) ->
     print(f"cleanup: {mode}")
     print(f"- llm_calls: would delete {plan.llm_calls_delete}")
     print(f"- task_events: would delete {plan.task_events_delete}")
+    print(f"- audit_events: would delete {plan.audit_events_delete}")
     print(f"- reviews: would delete {plan.reviews_delete}")
     print(f"- artifacts: would delete {plan.artifacts_delete}")
     if not dry_run:

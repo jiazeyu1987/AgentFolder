@@ -161,8 +161,16 @@ def build_xiaobo_plan_prompt(
     top_task: str,
     constraints: Dict[str, Any],
     skills: List[str],
+    review_notes: Optional[str] = None,
+    gen_notes: Optional[str] = None,
 ) -> str:
-    context = {"top_task": top_task, "constraints": constraints, "available_skills": skills}
+    context = {
+        "top_task": top_task,
+        "constraints": constraints,
+        "available_skills": skills,
+        "review_notes": (review_notes or "").strip(),
+        "generation_notes": (gen_notes or "").strip(),
+    }
     return "\n\n".join(
         [
             bundle.shared.content.strip(),

@@ -135,6 +135,11 @@ def _val_task_action(obj: Any, ctx: Dict[str, Any]) -> Tuple[bool, str]:
 def _norm_review_plan(raw: Any, ctx: Dict[str, Any]) -> Any:
     if not isinstance(raw, dict):
         return raw
+    # Do not silently coerce a wrong schema_version into a valid one.
+    # We want the reviewer to re-emit a correct `xiaojing_review_v1` JSON instead of losing information.
+    sv = raw.get("schema_version")
+    if isinstance(sv, str) and sv.strip() and sv.strip() != "xiaojing_review_v1":
+        return raw
     return normalize_xiaojing_review(raw, task_id=str(ctx.get("plan_id") or ctx.get("task_id") or ""), review_target="PLAN")
 
 
@@ -146,6 +151,9 @@ def _val_review_plan(obj: Any, ctx: Dict[str, Any]) -> Tuple[bool, str]:
 
 def _norm_review_node(raw: Any, ctx: Dict[str, Any]) -> Any:
     if not isinstance(raw, dict):
+        return raw
+    sv = raw.get("schema_version")
+    if isinstance(sv, str) and sv.strip() and sv.strip() != "xiaojing_review_v1":
         return raw
     return normalize_xiaojing_review(raw, task_id=str(ctx.get("task_id") or ""), review_target="NODE")
 
@@ -250,4 +258,3 @@ def normalize_and_validate(contract_name: str, raw_obj: Any, context: Optional[D
 
     err = _infer_error_from_reason(schema=spec.name, schema_version=spec.schema_version, reason=reason, obj=normalized)
     return normalized, err.to_dict()
-

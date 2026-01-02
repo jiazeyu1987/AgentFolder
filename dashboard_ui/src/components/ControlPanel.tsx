@@ -16,6 +16,8 @@ export default function ControlPanel(props: {
   selectedPlanId: string | null;
   onSelectPlanId: (v: string) => void;
   onCreatePlanJobId: (jobId: string) => void;
+  onOpenErrorAnalysis: () => void;
+  onOpenAuditLog: () => void;
   topTask: string;
   onTopTaskChange: (v: string) => void;
   onRefresh: () => void;
@@ -124,6 +126,20 @@ export default function ControlPanel(props: {
           disabled={!props.topTask.trim()}
         >
           Create Plan
+        </button>
+        <button
+          onClick={() => {
+            props.onOpenErrorAnalysis();
+          }}
+        >
+          错误分析
+        </button>
+        <button
+          onClick={() => {
+            props.onOpenAuditLog();
+          }}
+        >
+          动作日志
         </button>
       </div>
 

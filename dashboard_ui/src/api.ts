@@ -9,6 +9,9 @@ import type {
   TaskDetailsResp,
   TaskLlmCallsResp,
   WorkflowResp,
+  ErrorsResp,
+  TopTasksResp,
+  AuditResp,
 } from "./types";
 
 async function httpJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -69,6 +72,11 @@ export function getJob(jobId: string): Promise<CreatePlanJobResp> {
   return httpJson<CreatePlanJobResp>(`/api/jobs/${encodeURIComponent(jobId)}`);
 }
 
+export function getJobLog(jobId: string, maxChars = 50_000): Promise<PromptFileResp> {
+  const usp = new URLSearchParams({ job_id: jobId, max_chars: String(maxChars) });
+  return httpJson<PromptFileResp>(`/api/job_log?${usp.toString()}`);
+}
+
 export function getLlmCallsQuery(params: {
   llm_call_id?: string;
   plan_id?: string;
@@ -108,6 +116,29 @@ export function getWorkflow(params: {
 export function getPromptFile(path: string, maxChars = 200_000): Promise<PromptFileResp> {
   const usp = new URLSearchParams({ path, max_chars: String(maxChars) });
   return httpJson<PromptFileResp>(`/api/prompt_file?${usp.toString()}`);
+}
+
+export function getErrors(params: { plan_id?: string; plan_id_missing?: boolean; limit?: number }): Promise<ErrorsResp> {
+  const usp = new URLSearchParams();
+  if (params.plan_id) usp.set("plan_id", params.plan_id);
+  if (params.plan_id_missing) usp.set("plan_id_missing", "true");
+  if (params.limit) usp.set("limit", String(params.limit));
+  return httpJson<ErrorsResp>(`/api/errors?${usp.toString()}`);
+}
+
+export function getTopTasks(limit = 50): Promise<TopTasksResp> {
+  const usp = new URLSearchParams({ limit: String(limit) });
+  return httpJson<TopTasksResp>(`/api/top_tasks?${usp.toString()}`);
+}
+
+export function getAudit(params: { top_task_hash?: string; plan_id?: string; job_id?: string; category?: string; limit?: number }): Promise<AuditResp> {
+  const usp = new URLSearchParams();
+  if (params.top_task_hash) usp.set("top_task_hash", params.top_task_hash);
+  if (params.plan_id) usp.set("plan_id", params.plan_id);
+  if (params.job_id) usp.set("job_id", params.job_id);
+  if (params.category) usp.set("category", params.category);
+  if (params.limit) usp.set("limit", String(params.limit));
+  return httpJson<AuditResp>(`/api/audit?${usp.toString()}`);
 }
 
 export function resetDb(purgeAll: boolean): Promise<unknown> {

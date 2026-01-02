@@ -158,4 +158,48 @@ def record_llm_call(
             )
         except Exception:
             return "UNKNOWN"
+
+    # Best-effort audit: record input/output actions without storing prompt/response content.
+    try:
+        from core.audit_log import log_audit
+
+        meta3 = meta2 if isinstance(meta2, dict) else {}
+        attempt = meta3.get("attempt")
+        review_attempt = meta3.get("review_attempt")
+        payload = {
+            "agent": agent,
+            "scope": scope,
+            "attempt": attempt,
+            "review_attempt": review_attempt,
+            "started_at_ts": started_at_ts,
+            "finished_at_ts": finished_at_ts,
+        }
+        log_audit(
+            conn,
+            category="LLM_INPUT",
+            action="LLM_CALL_INPUT",
+            message=f"LLM input: {agent}/{scope}",
+            plan_id=plan_id,
+            task_id=task_id,
+            llm_call_id=llm_call_id,
+            ok=True,
+            payload=payload,
+        )
+        ok_out = not (error_code or validator_error)
+        msg_out = f"LLM output: {agent}/{scope}"
+        if error_code:
+            msg_out += f" err={error_code}"
+        log_audit(
+            conn,
+            category="LLM_OUTPUT",
+            action="LLM_CALL_OUTPUT",
+            message=msg_out,
+            plan_id=plan_id,
+            task_id=task_id,
+            llm_call_id=llm_call_id,
+            ok=bool(ok_out),
+            payload={**payload, "error_code": error_code, "validator_error": validator_error},
+        )
+    except Exception:
+        pass
     return llm_call_id

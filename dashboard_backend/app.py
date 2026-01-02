@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 import config
 from core.db import apply_migrations, connect
+from core.audit_log import AuditQuery, log_audit, query_audit_events, query_top_tasks
 from core.graph import build_plan_graph
 from core.observability import get_plan_snapshot
 from core.runtime_config import get_runtime_config
@@ -152,6 +153,10 @@ def _hash_top_task(s: str) -> str:
 def _start_create_plan_process(*, db_path: Path, top_task: str, max_attempts: int, keep_trying: bool, max_total_attempts: Optional[int]) -> Dict[str, Any]:
     python_exe = _python_executable()
     job_id = str(uuid.uuid4())
+    job_dir = config.STATE_DIR / "jobs" / job_id
+    ensure_dir(job_dir)
+    log_path = job_dir / "create_plan.log"
+    exit_path = job_dir / "exit.json"
     cmd = [
         python_exe,
         str(ROOT_DIR / "agent_cli.py"),
@@ -168,8 +173,32 @@ def _start_create_plan_process(*, db_path: Path, top_task: str, max_attempts: in
     if max_total_attempts is not None:
         cmd += ["--max-total-attempts", str(int(max_total_attempts))]
 
+    # Use a tiny wrapper .cmd to persist stdout/stderr + exit_code for observability.
+    wrapper_cmd = job_dir / "run_create_plan.cmd"
+    cmd_quoted = " ".join([f"\"{c}\"" if " " in str(c) or "\t" in str(c) else str(c) for c in cmd])
+    # Note: use cmd.exe redirection so we capture Python tracebacks too.
+    wrapper_cmd.write_text(
+        "\n".join(
+            [
+                "@echo off",
+                "setlocal",
+                f"cd /d \"{ROOT_DIR}\"",
+                f"{cmd_quoted} > \"{log_path}\" 2>&1",
+                "set EC=%ERRORLEVEL%",
+                # Write exit.json with exit_code; include file mtime as finished_at via backend.
+                (
+                    "powershell -NoProfile -Command "
+                    f"\"$ec=%ERRORLEVEL%; $obj=@{{job_id='{job_id}'; exit_code=$ec}}; "
+                    f"$obj|ConvertTo-Json -Compress | Out-File -Encoding utf8 '{exit_path}'\""
+                ),
+                "exit /b %EC%",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
     creationflags = 0x00000008  # CREATE_NO_WINDOW
-    proc = subprocess.Popen(cmd, cwd=str(ROOT_DIR), creationflags=creationflags)
+    proc = subprocess.Popen(["cmd.exe", "/c", str(wrapper_cmd)], cwd=str(ROOT_DIR), creationflags=creationflags)
     state = {
         "job_id": job_id,
         "pid": int(proc.pid),
@@ -180,6 +209,8 @@ def _start_create_plan_process(*, db_path: Path, top_task: str, max_attempts: in
         "status": "RUNNING",
         "last_error": None,
         "top_task_hash": _hash_top_task(top_task),
+        "log_path": str(log_path),
+        "exit_path": str(exit_path),
     }
     _write_create_plan_state(state)
     return state
@@ -210,13 +241,33 @@ def infer_create_plan_progress(
     conn: sqlite3.Connection,
     *,
     plan_id: Optional[str],
+    started_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Infer create-plan progress from llm_calls (PLAN_GEN/PLAN_REVIEW).
     Returns: {attempt, phase, review_attempt, last_llm_call, inferred_plan_id}
     """
     inferred_plan_id: Optional[str] = None
-    if plan_id:
+
+    # Preferred: if we know when the job started, infer from the most recent PLAN_GEN/PLAN_REVIEW since then.
+    # This also correctly handles the case where a new plan_id is generated on the next attempt.
+    if isinstance(started_at, str) and started_at.strip():
+        r = conn.execute(
+            """
+            SELECT created_at, plan_id, task_id, agent, scope, validator_error, error_code, error_message, meta_json
+            FROM llm_calls
+            WHERE created_at >= ? AND scope IN ('PLAN_GEN','PLAN_REVIEW')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (started_at.strip(),),
+        ).fetchone()
+        rows = [r] if r else []
+        if r and r["plan_id"]:
+            inferred_plan_id = str(r["plan_id"])
+        elif plan_id:
+            inferred_plan_id = str(plan_id)
+    elif plan_id:
         inferred_plan_id = str(plan_id)
         rows = conn.execute(
             """
@@ -310,6 +361,18 @@ class RuntimeConfigUpdateIn(BaseModel):
     one_shot_threshold_person_days: Optional[float] = None
 
 
+def _job_status_from_state(*, alive: bool, state_status: Optional[str], last_error: Any) -> str:
+    if alive:
+        return "RUNNING"
+    s = str(state_status or "").strip().upper()
+    if s == "FAILED":
+        return "FAILED"
+    # If process is dead but state still says RUNNING, treat it as DONE unless we captured an error.
+    if last_error:
+        return "FAILED"
+    return "DONE"
+
+
 def _truncate(s: Optional[str], *, max_chars: int) -> Optional[str]:
     if s is None:
         return None
@@ -348,7 +411,7 @@ def _safe_read_text_file(path_str: str, *, max_chars: int) -> Dict[str, Any]:
     if not isinstance(path_str, str) or not path_str.strip():
         raise HTTPException(status_code=400, detail="path is required")
     p = Path(path_str).resolve()
-    allow_roots = [ROOT_DIR.resolve(), (ROOT_DIR / "agents").resolve()]
+    allow_roots = [ROOT_DIR.resolve(), (ROOT_DIR / "agents").resolve(), config.REVIEW_NOTES_DIR.resolve()]
     if not any(str(p).startswith(str(r)) for r in allow_roots):
         raise HTTPException(status_code=400, detail="path not allowed")
     if not p.exists() or not p.is_file():
@@ -359,6 +422,131 @@ def _safe_read_text_file(path_str: str, *, max_chars: int) -> Dict[str, Any]:
         txt = txt[: max_chars - 1] + "..."
         truncated = True
     return {"path": str(p), "content": txt, "truncated": truncated, "ts": utc_now_iso()}
+
+
+def query_plan_errors(
+    conn: sqlite3.Connection,
+    *,
+    plan_id: Optional[str],
+    plan_id_missing: bool,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """
+    Unified error feed for UI.
+    Sources:
+      - task_events(event_type='ERROR')  [workflow/skill/input errors]
+      - llm_calls(error_code/validator_error) [LLM contract/parse errors]
+    """
+    out: List[Dict[str, Any]] = []
+    limit = max(1, min(int(limit), 500))
+
+    # 1) task_events ERROR
+    if plan_id and str(plan_id).strip():
+        rows = conn.execute(
+            """
+            SELECT
+              e.event_id,
+              e.created_at,
+              e.plan_id,
+              e.task_id,
+              tn.title AS task_title,
+              e.payload_json
+            FROM task_events e
+            LEFT JOIN task_nodes tn ON tn.task_id = e.task_id
+            WHERE e.plan_id = ? AND e.event_type = 'ERROR'
+            ORDER BY e.created_at DESC
+            LIMIT ?
+            """,
+            (str(plan_id).strip(), limit),
+        ).fetchall()
+        for r in rows:
+            payload: Dict[str, Any] = {}
+            try:
+                payload = json.loads(r["payload_json"] or "{}")
+            except Exception:
+                payload = {"raw": r["payload_json"]}
+            err_code = payload.get("error_code")
+            msg = payload.get("message")
+            ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+            hint = ctx.get("hint") if isinstance(ctx, dict) else None
+            # Best-effort: if error was produced by an LLM step, allow linking back to llm_calls/workflow.
+            scope = ctx.get("scope") if isinstance(ctx, dict) else None
+            agent = ctx.get("agent") if isinstance(ctx, dict) else None
+            llm_call_id = ctx.get("llm_call_id") if isinstance(ctx, dict) else None
+            validator_error = ctx.get("validator_error") if isinstance(ctx, dict) else None
+            out.append(
+                {
+                    "source": "TASK_EVENT",
+                    "created_at": r["created_at"],
+                    "plan_id": r["plan_id"],
+                    "task_id": r["task_id"],
+                    "task_title": r["task_title"],
+                    "llm_call_id": llm_call_id,
+                    "scope": scope,
+                    "agent": agent,
+                    "error_code": err_code,
+                    "message": _truncate(str(msg) if msg is not None else None, max_chars=500),
+                    "hint": hint,
+                    "validator_error": _truncate(str(validator_error) if validator_error is not None else None, max_chars=500),
+                    "error_message": _truncate(str(msg) if msg is not None else None, max_chars=500),
+                }
+            )
+
+    # 2) llm_calls errors
+    where: List[str] = ["((error_code IS NOT NULL AND error_code != '') OR (validator_error IS NOT NULL AND validator_error != ''))"]
+    params: List[Any] = []
+    if plan_id_missing:
+        where.append("plan_id IS NULL")
+    elif plan_id and str(plan_id).strip():
+        where.append("plan_id = ?")
+        params.append(str(plan_id).strip())
+    rows = conn.execute(
+        f"""
+        SELECT
+          llm_call_id,
+          created_at,
+          plan_id,
+          task_id,
+          agent,
+          scope,
+          error_code,
+          error_message,
+          validator_error
+        FROM llm_calls
+        WHERE {' AND '.join(where)}
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (*params, limit),
+    ).fetchall()
+    for r in rows:
+        task_title = None
+        if r["task_id"]:
+            tn = conn.execute("SELECT title FROM task_nodes WHERE task_id = ?", (r["task_id"],)).fetchone()
+            if tn:
+                task_title = tn["title"]
+        msg = r["error_message"] or r["validator_error"]
+        out.append(
+            {
+                "source": "LLM_CALL",
+                "created_at": r["created_at"],
+                "plan_id": r["plan_id"],
+                "task_id": r["task_id"],
+                "task_title": task_title,
+                "llm_call_id": r["llm_call_id"],
+                "scope": r["scope"],
+                "agent": r["agent"],
+                "error_code": r["error_code"] or ("VALIDATOR_ERROR" if r["validator_error"] else None),
+                "message": _truncate(str(msg) if msg is not None else None, max_chars=500),
+                "hint": None,
+                "validator_error": _truncate(str(r["validator_error"]) if r["validator_error"] is not None else None, max_chars=500),
+                "error_message": _truncate(str(r["error_message"]) if r["error_message"] is not None else None, max_chars=500),
+            }
+        )
+
+    # merge + sort
+    out.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    return out[:limit]
 
 
 @app.get("/api/config")
@@ -411,6 +599,45 @@ def get_plans() -> Dict[str, Any]:
         return {"plans": [dict(r) for r in rows], "ts": utc_now_iso()}
 
 
+@app.get("/api/errors")
+def get_errors(
+    plan_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+    plan_id_missing: bool = Query(default=False),
+) -> Dict[str, Any]:
+    with _db_conn() as conn:
+        items = query_plan_errors(conn, plan_id=str(plan_id).strip() if plan_id and str(plan_id).strip() else None, plan_id_missing=bool(plan_id_missing), limit=int(limit))
+        return {"errors": items, "ts": utc_now_iso()}
+
+
+@app.get("/api/audit")
+def get_audit(
+    top_task_hash: Optional[str] = Query(default=None),
+    plan_id: Optional[str] = Query(default=None),
+    job_id: Optional[str] = Query(default=None),
+    category: Optional[str] = Query(default=None),
+    limit: int = Query(default=300, ge=1, le=2000),
+) -> Dict[str, Any]:
+    with _db_conn() as conn:
+        items = query_audit_events(
+            conn,
+            AuditQuery(
+                top_task_hash=str(top_task_hash).strip() if top_task_hash and str(top_task_hash).strip() else None,
+                plan_id=str(plan_id).strip() if plan_id and str(plan_id).strip() else None,
+                job_id=str(job_id).strip() if job_id and str(job_id).strip() else None,
+                category=str(category).strip() if category and str(category).strip() else None,
+                limit=int(limit),
+            ),
+        )
+        return {"events": items, "ts": utc_now_iso()}
+
+
+@app.get("/api/top_tasks")
+def get_top_tasks(limit: int = Query(default=50, ge=1, le=200)) -> Dict[str, Any]:
+    with _db_conn() as conn:
+        items = query_top_tasks(conn, limit=int(limit))
+        return {"top_tasks": items, "ts": utc_now_iso()}
+
 @app.post("/api/runtime_config/update")
 def update_runtime_config(body: RuntimeConfigUpdateIn) -> Dict[str, Any]:
     p = config.RUNTIME_CONFIG_PATH
@@ -445,6 +672,18 @@ def update_runtime_config(body: RuntimeConfigUpdateIn) -> Dict[str, Any]:
             p.write_text(prev, encoding="utf-8")
         raise HTTPException(status_code=400, detail=f"invalid runtime_config update: {exc}")
 
+    try:
+        with _db_conn() as conn:
+            log_audit(
+                conn,
+                category="API_CALL",
+                action="CONFIG_UPDATE",
+                message="runtime_config updated",
+                payload={k: v for k, v in patch.items()},
+            )
+    except Exception:
+        pass
+
     return {"ok": True, "runtime_config": _read_runtime_config(), "ts": utc_now_iso()}
 
 
@@ -460,6 +699,24 @@ def create_plan_async(body: CreatePlanIn) -> Dict[str, Any]:
         keep_trying=bool(body.keep_trying),
         max_total_attempts=body.max_total_attempts,
     )
+    try:
+        with _db_conn() as conn:
+            log_audit(
+                conn,
+                category="API_CALL",
+                action="CREATE_PLAN_START",
+                message="create-plan start",
+                top_task_hash=state.get("top_task_hash"),
+                top_task_title=str(body.top_task).strip()[:200],
+                job_id=str(state.get("job_id") or ""),
+                payload={
+                    "max_attempts": int(body.max_attempts),
+                    "keep_trying": bool(body.keep_trying),
+                    "max_total_attempts": body.max_total_attempts,
+                },
+            )
+    except Exception:
+        pass
     return {"started": True, "job_id": state.get("job_id"), "pid": state.get("pid"), "ts": utc_now_iso()}
 
 
@@ -471,15 +728,48 @@ def get_job(job_id: str) -> Dict[str, Any]:
 
     pid = state.get("pid")
     alive = bool(isinstance(pid, int) and _is_process_alive(int(pid)))
-    status = "RUNNING" if alive else str(state.get("status") or "DONE")
-    if status not in {"RUNNING", "DONE", "FAILED"}:
-        status = "DONE" if not alive else "RUNNING"
+    # If process exited, try to read persisted exit code from wrapper.
+    exit_code = None
+    exit_path = state.get("exit_path")
+    if not alive and isinstance(exit_path, str) and exit_path.strip():
+        p = Path(exit_path)
+        if p.exists():
+            try:
+                obj = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(obj, dict):
+                    exit_code = obj.get("exit_code")
+            except Exception:
+                exit_code = None
+            if not state.get("finished_at"):
+                try:
+                    state["finished_at"] = utc_now_iso()
+                except Exception:
+                    pass
+            if exit_code not in (None, 0, "0"):
+                state["last_error"] = {"exit_code": exit_code, "log_path": state.get("log_path")}
+
+    status = _job_status_from_state(alive=alive, state_status=state.get("status"), last_error=state.get("last_error"))
+    if status != state.get("status"):
+        state["status"] = status
+    if not alive and not state.get("finished_at"):
+        state["finished_at"] = utc_now_iso()
+    _write_create_plan_state(state)
 
     with _db_conn() as conn:
         plan_id = state.get("plan_id")
-        prog = infer_create_plan_progress(conn, plan_id=str(plan_id) if isinstance(plan_id, str) and plan_id.strip() else None)
+        started_at = state.get("started_at")
+        prog = infer_create_plan_progress(
+            conn,
+            plan_id=str(plan_id) if isinstance(plan_id, str) and plan_id.strip() else None,
+            started_at=str(started_at) if isinstance(started_at, str) and started_at.strip() else None,
+        )
     inferred_plan_id = prog.get("inferred_plan_id")
     if not plan_id and isinstance(inferred_plan_id, str) and inferred_plan_id.strip():
+        plan_id = inferred_plan_id.strip()
+        state["plan_id"] = plan_id
+        _write_create_plan_state(state)
+    # Plan ID can change across attempts; keep state updated.
+    if plan_id and isinstance(inferred_plan_id, str) and inferred_plan_id.strip() and inferred_plan_id.strip() != str(plan_id).strip():
         plan_id = inferred_plan_id.strip()
         state["plan_id"] = plan_id
         _write_create_plan_state(state)
@@ -490,6 +780,7 @@ def get_job(job_id: str) -> Dict[str, Any]:
 
     hint = ""
     last_call = prog.get("last_llm_call")
+    retry_reason = ""
     if status == "RUNNING":
         if phase == "PLAN_GEN":
             hint = "当前在 PLAN_GEN 生成计划。"
@@ -503,6 +794,8 @@ def get_job(job_id: str) -> Dict[str, Any]:
     if isinstance(last_call, dict):
         ve = str(last_call.get("validator_error") or "").strip()
         ec = str(last_call.get("error_code") or "").strip()
+        if status == "RUNNING" and phase == "PLAN_REVIEW" and (ve or ec):
+            retry_reason = (ec or ve)[:200]
         if ve or ec:
             hint = f"{hint} 建议打开 LLM Timeline 查看 validator_error/error_code。"
 
@@ -513,14 +806,31 @@ def get_job(job_id: str) -> Dict[str, Any]:
         "pid": pid,
         "started_at": state.get("started_at"),
         "finished_at": state.get("finished_at"),
+        "exit_code": exit_code,
+        "log_path": state.get("log_path"),
         "plan_id": plan_id,
         "attempt": attempt,
         "phase": phase,
         "review_attempt": review_attempt,
         "last_llm_call": last_call,
         "hint": hint,
+        "retry_reason": retry_reason,
         "ts": utc_now_iso(),
     }
+
+
+@app.get("/api/job_log")
+def get_job_log(
+    job_id: str = Query(..., min_length=1),
+    max_chars: int = Query(default=50_000, ge=0, le=200_000),
+) -> Dict[str, Any]:
+    state = _read_create_plan_state()
+    if not state or str(state.get("job_id") or "") != str(job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+    p = state.get("log_path")
+    if not isinstance(p, str) or not p.strip():
+        raise HTTPException(status_code=404, detail="job log not available")
+    return _safe_read_text_file(p, max_chars=int(max_chars))
 
 
 @app.get("/api/plan/{plan_id}/graph")
@@ -661,6 +971,21 @@ def get_llm_calls(
         calls: List[Dict[str, Any]] = []
         for r in rows:
             src = resolve_prompt_sources(agent=r["agent"], scope=r["scope"])
+            review_note_path = None
+            if r["scope"] == "PLAN_REVIEW" and r["plan_id"]:
+                try:
+                    meta = json.loads(r["meta_json"] or "{}") if r["meta_json"] else {}
+                except Exception:
+                    meta = {}
+                attempt = meta.get("attempt")
+                try:
+                    attempt_i = int(attempt) if attempt is not None else None
+                except Exception:
+                    attempt_i = None
+                if attempt_i and attempt_i > 0:
+                    p = config.REVIEW_NOTES_DIR / str(r["plan_id"]) / f"plan_review_attempt_{attempt_i}.md"
+                    if p.exists():
+                        review_note_path = str(p)
             calls.append(
                 {
                     "llm_call_id": r["llm_call_id"],
@@ -680,6 +1005,7 @@ def get_llm_calls(
                     "shared_prompt_path": src.get("shared_prompt_path"),
                     "agent_prompt_path": src.get("agent_prompt_path"),
                     "prompt_source_reason": src.get("reason"),
+                    "plan_review_attempt_path": review_note_path,
                 }
             )
         return {"calls": calls, "ts": utc_now_iso()}
@@ -812,11 +1138,21 @@ def run_start(body: RunStartIn) -> Dict[str, Any]:
     if state and isinstance(state.get("pid"), int) and _is_process_alive(int(state["pid"])):
         return {"started": False, "reason": "already running", "pid": state["pid"]}
     state = _start_run_process(db_path=config.DB_PATH_DEFAULT, plan_path=config.PLAN_PATH_DEFAULT, max_iterations=body.max_iterations)
+    try:
+        with _db_conn() as conn:
+            log_audit(conn, category="API_CALL", action="RUN_START", message="run start", payload={"max_iterations": int(body.max_iterations)})
+    except Exception:
+        pass
     return {"started": True, **state}
 
 
 @app.post("/api/run/stop")
 def run_stop() -> Dict[str, Any]:
+    try:
+        with _db_conn() as conn:
+            log_audit(conn, category="API_CALL", action="RUN_STOP", message="run stop")
+    except Exception:
+        pass
     return _stop_run_process()
 
 
@@ -825,6 +1161,11 @@ def run_once() -> Dict[str, Any]:
     python_exe = _python_executable()
     cmd = [python_exe, str(ROOT_DIR / "agent_cli.py"), "--db", str(config.DB_PATH_DEFAULT), "run", "--plan", str(config.PLAN_PATH_DEFAULT), "--max-iterations", "1"]
     proc = subprocess.run(cmd, cwd=str(ROOT_DIR), capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        with _db_conn() as conn:
+            log_audit(conn, category="API_CALL", action="RUN_ONCE", message="run once", payload={"exit_code": int(proc.returncode)})
+    except Exception:
+        pass
     return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
 
 
@@ -855,6 +1196,17 @@ def reset_db(body: ResetDbIn) -> Dict[str, Any]:
     global _DB_RESETTING
     with _DB_RESET_LOCK:
         _DB_RESETTING = True
+    try:
+        with _db_conn() as conn:
+            log_audit(
+                conn,
+                category="API_CALL",
+                action="RESET_DB",
+                message="reset db",
+                payload={"purge_workspace": bool(body.purge_workspace), "purge_tasks": bool(body.purge_tasks), "purge_logs": bool(body.purge_logs)},
+            )
+    except Exception:
+        pass
     python_exe = _python_executable()
     cmd = [python_exe, str(ROOT_DIR / "agent_cli.py"), "--db", str(config.DB_PATH_DEFAULT), "reset-db"]
     if body.purge_workspace:
@@ -877,5 +1229,30 @@ def export(body: ExportIn) -> Dict[str, Any]:
     cmd = [python_exe, str(ROOT_DIR / "agent_cli.py"), "--db", str(config.DB_PATH_DEFAULT), "export", "--plan-id", body.plan_id]
     if body.include_reviews:
         cmd.append("--include-reviews")
+    try:
+        with _db_conn() as conn:
+            log_audit(
+                conn,
+                category="API_CALL",
+                action="EXPORT_START",
+                message="export start",
+                plan_id=str(body.plan_id),
+                payload={"include_reviews": bool(body.include_reviews)},
+            )
+    except Exception:
+        pass
     proc = subprocess.run(cmd, cwd=str(ROOT_DIR), capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        with _db_conn() as conn:
+            log_audit(
+                conn,
+                category="API_CALL",
+                action="EXPORT_DONE",
+                message="export done",
+                plan_id=str(body.plan_id),
+                ok=proc.returncode == 0,
+                payload={"exit_code": int(proc.returncode)},
+            )
+    except Exception:
+        pass
     return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}

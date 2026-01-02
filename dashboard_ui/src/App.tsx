@@ -7,12 +7,16 @@ import NodeDetails from "./components/NodeDetails";
 import CreatePlanProgress from "./components/CreatePlanProgress";
 import LLMWorkflowGraph from "./components/LLMWorkflowGraph";
 import LLMCallDetails from "./components/LLMCallDetails";
+import ErrorsPanel from "./components/ErrorsPanel";
+import ErrorAnalysisPage from "./components/ErrorAnalysisPage";
+import AuditLogPage from "./components/AuditLogPage";
 import type { WorkflowResp } from "./types";
 
 export default function App() {
   const [config, setConfig] = useState<ConfigResp | null>(null);
   const [plans, setPlans] = useState<PlansResp["plans"]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [autoSelectPlanFromJob, setAutoSelectPlanFromJob] = useState<boolean>(false);
   const [graph, setGraph] = useState<GraphV1 | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [topTask, setTopTask] = useState<string>("");
@@ -20,7 +24,7 @@ export default function App() {
   const [createPlanJobId, setCreatePlanJobId] = useState<string | null>(() => localStorage.getItem("create_plan_job_id"));
   const [createPlanJob, setCreatePlanJob] = useState<CreatePlanJobResp | null>(null);
   const [createPlanTimeline, setCreatePlanTimeline] = useState<LlmCallsQueryResp["calls"]>([]);
-  const [viewMode, setViewMode] = useState<"TASK" | "WORKFLOW">("TASK");
+  const [viewMode, setViewMode] = useState<"TASK" | "WORKFLOW" | "ERROR_ANALYSIS" | "AUDIT_LOG">("TASK");
   const [workflow, setWorkflow] = useState<WorkflowResp | null>(null);
   const [selectedLlmCallId, setSelectedLlmCallId] = useState<string | null>(null);
   const [workflowScopes, setWorkflowScopes] = useState<string>("PLAN_GEN,PLAN_REVIEW");
@@ -66,10 +70,13 @@ export default function App() {
   useEffect(() => {
     if (viewMode !== "WORKFLOW") return;
     const t = setInterval(() => {
-      const pid = selectedPlanId ?? undefined;
+      // When create-plan is running, follow its workflow only if the user hasn't switched to a different plan.
+      const followJob = createPlanJob?.status === "RUNNING" && (!selectedPlanId || selectedPlanId === createPlanJob?.plan_id);
+      const pid = followJob ? createPlanJob?.plan_id ?? undefined : selectedPlanId ?? undefined;
       api
         .getWorkflow({
           plan_id: pid,
+          plan_id_missing: followJob && !pid,
           scopes: workflowScopes.trim() ? workflowScopes : undefined,
           agent: workflowAgent.trim() ? workflowAgent : undefined,
           only_errors: workflowOnlyErrors,
@@ -79,7 +86,7 @@ export default function App() {
         .catch(() => {});
     }, 1200);
     return () => clearInterval(t);
-  }, [viewMode, selectedPlanId, workflowScopes, workflowAgent, workflowOnlyErrors]);
+  }, [viewMode, selectedPlanId, createPlanJob?.status, createPlanJob?.plan_id, workflowScopes, workflowAgent, workflowOnlyErrors]);
 
   useEffect(() => {
     if (!createPlanJobId) return;
@@ -90,8 +97,9 @@ export default function App() {
         .then((j) => {
           setCreatePlanJob(j);
           // Auto switch to the plan when done and plan_id is known.
-          if (j.status !== "RUNNING" && j.plan_id) {
+          if (autoSelectPlanFromJob && j.status !== "RUNNING" && j.plan_id) {
             setSelectedPlanId(j.plan_id);
+            setAutoSelectPlanFromJob(false);
           }
           const havePlanId = Boolean(j.plan_id);
           const params = havePlanId
@@ -114,7 +122,7 @@ export default function App() {
         });
     }, 800);
     return () => clearInterval(t);
-  }, [createPlanJobId]);
+  }, [createPlanJobId, autoSelectPlanFromJob]);
 
   useEffect(() => {
     if (!selectedPlanId) return;
@@ -136,8 +144,20 @@ export default function App() {
           config={config}
           plans={plans}
           selectedPlanId={selectedPlanId}
-          onSelectPlanId={(v) => setSelectedPlanId(v)}
-          onCreatePlanJobId={(jobId) => setCreatePlanJobId(jobId)}
+          onSelectPlanId={(v) => {
+            setSelectedPlanId(v);
+            setAutoSelectPlanFromJob(false);
+          }}
+          onCreatePlanJobId={(jobId) => {
+            setCreatePlanJobId(jobId);
+            setAutoSelectPlanFromJob(true);
+          }}
+          onOpenErrorAnalysis={() => {
+            setViewMode("ERROR_ANALYSIS");
+          }}
+          onOpenAuditLog={() => {
+            setViewMode("AUDIT_LOG");
+          }}
           topTask={topTask}
           onTopTaskChange={setTopTask}
           onRefresh={() => refresh().catch((e) => log(String(e)))}
@@ -161,9 +181,45 @@ export default function App() {
             <button className={viewMode === "WORKFLOW" ? "pillBtn active" : "pillBtn"} onClick={() => setViewMode("WORKFLOW")}>
               LLM Workflow
             </button>
+            <button className={viewMode === "ERROR_ANALYSIS" ? "pillBtn active" : "pillBtn"} onClick={() => setViewMode("ERROR_ANALYSIS")}>
+              错误分析
+            </button>
+            <button className={viewMode === "AUDIT_LOG" ? "pillBtn active" : "pillBtn"} onClick={() => setViewMode("AUDIT_LOG")}>
+              动作日志
+            </button>
           </div>
         </div>
-        {viewMode === "WORKFLOW" ? (
+        {viewMode === "AUDIT_LOG" ? (
+          <AuditLogPage
+            selectedPlanId={selectedPlanId}
+            createPlanJobId={createPlanJobId}
+            onSelectPlanId={(pid) => setSelectedPlanId(pid)}
+            onSelectLlmCallId={(id) => {
+              setViewMode("WORKFLOW");
+              setSelectedLlmCallId(id);
+            }}
+            onSelectTaskId={(id) => {
+              setViewMode("TASK");
+              setSelectedTaskId(id);
+            }}
+            onSetViewMode={(m) => setViewMode(m)}
+          />
+        ) : viewMode === "ERROR_ANALYSIS" ? (
+          <ErrorAnalysisPage
+            jobId={createPlanJobId}
+            selectedPlanId={selectedPlanId}
+            onSelectPlanId={(pid) => setSelectedPlanId(pid)}
+            onSelectLlmCallId={(id) => {
+              setViewMode("WORKFLOW");
+              setSelectedLlmCallId(id);
+            }}
+            onSelectTaskId={(id) => {
+              setViewMode("TASK");
+              setSelectedTaskId(id);
+            }}
+            onSetViewMode={(m) => setViewMode(m)}
+          />
+        ) : viewMode === "WORKFLOW" ? (
           <div className="panel" style={{ padding: 12, display: "flex", flexDirection: "column", minHeight: 0 }}>
             <div className="row" style={{ gap: 8, marginBottom: 10 }}>
               <label className="inline">
@@ -213,7 +269,22 @@ export default function App() {
           timeline={createPlanTimeline}
           onSelectPlanId={(pid) => setSelectedPlanId(pid)}
         />
-        {viewMode === "WORKFLOW" ? <LLMCallDetails llmCallId={selectedLlmCallId} /> : <NodeDetails node={selectedNode} />}
+        <ErrorsPanel
+          title="Errors (Plan)"
+          planId={selectedPlanId}
+          followCreatePlanWithoutPlanId={createPlanJob?.status === "RUNNING" && !createPlanJob?.plan_id}
+          onSelectPlanId={(pid) => setSelectedPlanId(pid)}
+          onSetViewMode={(m) => setViewMode(m)}
+          onSelectLlmCallId={(id) => {
+            setViewMode("WORKFLOW");
+            setSelectedLlmCallId(id);
+          }}
+          onSelectTaskId={(id) => {
+            setViewMode("TASK");
+            setSelectedTaskId(id);
+          }}
+        />
+        {viewMode === "WORKFLOW" ? <LLMCallDetails llmCallId={selectedLlmCallId} /> : viewMode === "TASK" ? <NodeDetails node={selectedNode} /> : null}
         <div className="panel">
           <h3>Logs</h3>
           <textarea className="log" value={logText} readOnly rows={10} />

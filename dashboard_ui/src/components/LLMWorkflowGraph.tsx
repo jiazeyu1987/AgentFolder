@@ -22,6 +22,7 @@ function edgeColor(t: string) {
 
 function LlmNode(props: { id: string; data: { n: WorkflowResp["nodes"][number] } }) {
   const n = props.data.n;
+  const err = n.error_code ? `err=${n.error_code}` : n.validator_error ? "validator_error" : "";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 220 }}>
       <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
@@ -36,7 +37,7 @@ function LlmNode(props: { id: string; data: { n: WorkflowResp["nodes"][number] }
         </span>
         <span className="mono">a={n.attempt}</span>
         {n.scope === "PLAN_REVIEW" ? <span className="mono">r={n.review_attempt}</span> : null}
-        {n.error_code || n.validator_error ? <span className="mono">ERR</span> : <span className="mono">OK</span>}
+        {n.error_code || n.validator_error ? <span className="mono">{err || "ERR"}</span> : <span className="mono">OK</span>}
       </div>
     </div>
   );
@@ -91,4 +92,3 @@ export default function LLMWorkflowGraph(props: {
     </div>
   );
 }
-

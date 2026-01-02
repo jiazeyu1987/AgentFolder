@@ -31,12 +31,14 @@ export default function LLMCallDetails(props: { llmCallId: string | null }) {
   const [err, setErr] = useState<string>("");
   const [shared, setShared] = useState<PromptFileResp | null>(null);
   const [agentPrompt, setAgentPrompt] = useState<PromptFileResp | null>(null);
+  const [reviewNote, setReviewNote] = useState<PromptFileResp | null>(null);
 
   useEffect(() => {
     setCall(null);
     setErr("");
     setShared(null);
     setAgentPrompt(null);
+    setReviewNote(null);
     if (!props.llmCallId) return;
     api
       .getLlmCallsQuery({ llm_call_id: props.llmCallId, limit: 1 })
@@ -56,6 +58,12 @@ export default function LLMCallDetails(props: { llmCallId: string | null }) {
     if (!call?.agent_prompt_path) return;
     const r = await api.getPromptFile(call.agent_prompt_path);
     setAgentPrompt(r);
+  }
+
+  async function loadReviewNote() {
+    if (!call?.plan_review_attempt_path) return;
+    const r = await api.getPromptFile(call.plan_review_attempt_path);
+    setReviewNote(r);
   }
 
   if (!props.llmCallId) {
@@ -183,9 +191,36 @@ export default function LLMCallDetails(props: { llmCallId: string | null }) {
               ) : null}
             </>
           ) : null}
+
+          {call.scope === "PLAN_REVIEW" ? (
+            <>
+              <h4>plan_review_attempt.md</h4>
+              <div className="muted">
+                path: <span className="mono">{call.plan_review_attempt_path ?? "-"}</span>{" "}
+                {call.plan_review_attempt_path ? (
+                  <>
+                    <button onClick={loadReviewNote}>Load</button>{" "}
+                    <button onClick={() => copyText(call.plan_review_attempt_path!)}>Copy Path</button>
+                  </>
+                ) : (
+                  <span className="muted">(not generated yet)</span>
+                )}
+              </div>
+              {reviewNote ? (
+                <details open>
+                  <summary>整改说明（≤500字）</summary>
+                  <div className="row">
+                    <button onClick={() => copyText(reviewNote.content)}>Copy</button>
+                    <div className="spacer" />
+                    {reviewNote.truncated ? <span className="muted">TRUNCATED</span> : null}
+                  </div>
+                  <pre className="pre">{reviewNote.content}</pre>
+                </details>
+              ) : null}
+            </>
+          ) : null}
         </>
       ) : null}
     </div>
   );
 }
-

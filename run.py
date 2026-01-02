@@ -76,11 +76,30 @@ def _handle_error(conn, *, plan_id: str, task_id: Optional[str], error_code: str
 
 
 def _set_status(conn, *, plan_id: str, task_id: str, status: str, blocked_reason: Optional[str] = None) -> None:
+    row = conn.execute("SELECT status FROM task_nodes WHERE task_id = ?", (task_id,)).fetchone()
+    before = str(row["status"]) if row and row["status"] is not None else None
     conn.execute(
         "UPDATE task_nodes SET status = ?, blocked_reason = ?, updated_at = ? WHERE task_id = ?",
         (status, blocked_reason, utc_now_iso(), task_id),
     )
     emit_event(conn, plan_id=plan_id, task_id=task_id, event_type="STATUS_CHANGED", payload={"status": status, "blocked_reason": blocked_reason})
+    try:
+        from core.audit_log import log_audit
+
+        log_audit(
+            conn,
+            category="STATUS_CHANGED",
+            action="TASK_STATUS_CHANGED",
+            message=f"Task status changed: {before or '-'} -> {status}",
+            plan_id=plan_id,
+            task_id=task_id,
+            status_before=before,
+            status_after=status,
+            ok=True,
+            payload={"blocked_reason": blocked_reason},
+        )
+    except Exception:
+        pass
 
 
 def _apply_modify_or_escalate(conn, *, plan_id: str, task_id: str, suggestions: Any) -> None:

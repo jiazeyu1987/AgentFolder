@@ -43,6 +43,17 @@ export default function CreatePlanProgress(props: {
               </div>
               <div className="muted">{head}</div>
               <div className="muted">{props.job.hint}</div>
+              {props.job.status !== "RUNNING" && props.job.exit_code != null ? (
+                <div className="muted">
+                  exit_code: <span className="mono">{String(props.job.exit_code)}</span>
+                </div>
+              ) : null}
+              {props.job.status !== "RUNNING" && props.job.log_path ? (
+                <div className="muted">
+                  create-plan log: <span className="mono">{props.job.log_path}</span>
+                </div>
+              ) : null}
+              {props.job.retry_reason ? <div className="muted">retry_reason: {props.job.retry_reason}</div> : null}
             </div>
             <div className="spacer" />
             {planId ? (

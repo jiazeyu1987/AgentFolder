@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,6 +30,54 @@ class PlanNotApprovedError(PlanWorkflowError):
         self.plan_id = plan_id
         self.max_attempts = int(max_attempts)
         self.last_review = last_review
+
+
+def _limit_chars(text: str, *, max_chars: int) -> str:
+    s = (text or "").strip()
+    if max_chars <= 0 or len(s) <= max_chars:
+        return s
+    if max_chars < 16:
+        return s[:max_chars]
+    return s[: max_chars - 12] + "…[TRUNCATED]"
+
+
+def _build_plan_remediation_note(review: Dict[str, Any], *, max_chars: int = 500) -> str:
+    """
+    Build a concise remediation note for the generator (xiaobo) based on a non-approved plan review.
+    Hard cap: <= max_chars characters.
+    """
+    score = int(review.get("total_score") or 0)
+    action = str(review.get("action_required") or "MODIFY")
+    summary = str(review.get("summary") or "").strip()
+
+    lines: List[str] = []
+    lines.append(f"PLAN_REVIEW 未通过：score={score} action_required={action}")
+    if summary:
+        lines.append(f"问题：{summary}")
+
+    sugs = review.get("suggestions")
+    if isinstance(sugs, list) and sugs:
+        lines.append("整改要求：")
+        for s in sugs:
+            if not isinstance(s, dict):
+                continue
+            pr = str(s.get("priority") or "").strip() or "MED"
+            problem = str(s.get("problem") or "").strip()
+            change = str(s.get("change") or "").strip()
+            steps = s.get("steps")
+            ac = str(s.get("acceptance_criteria") or "").strip()
+
+            lines.append(f"- {pr}: {change or problem or '修改计划以满足评审要求'}")
+            if isinstance(steps, list) and steps:
+                for st in steps[:6]:
+                    st2 = str(st or "").strip()
+                    if st2:
+                        lines.append(f"  * {st2}")
+            if ac:
+                lines.append(f"  验收：{ac}")
+
+    note = "\n".join(lines).strip()
+    return _limit_chars(note, max_chars=max_chars)
 
 
 def _summarize_plan_review(review: Dict[str, Any]) -> str:
@@ -278,11 +327,13 @@ def generate_and_review_plan(
     constraints = constraints or {"deadline": None, "priority": "HIGH"}
     available_skills = available_skills or []
     rubric = _load_plan_rubric()
+    started_at_ts = time.time()
 
     # IMPORTANT: keep user intent stable. Retry feedback should not be appended into the "top_task" that
     # becomes plan title/root goal_statement, otherwise the plan can include embedded JSON feedback.
     user_top_task = top_task
-    retry_notes = ""
+    gen_notes = ""
+    review_notes = ""
 
     last_review: Dict[str, Any] = {}
     if max_total_attempts is None:
@@ -295,11 +346,14 @@ def generate_and_review_plan(
         if attempt > max_total_attempts:
             raise PlanNotApprovedError(plan_id=locals().get("plan_id"), max_attempts=max_total_attempts, last_review=last_review)
 
-        prompt_top_task = user_top_task
-        if retry_notes.strip():
-            prompt_top_task = user_top_task + "\n\n[RETRY_NOTES]\n" + retry_notes.strip()
-
-        plan_prompt = build_xiaobo_plan_prompt(prompts, top_task=prompt_top_task, constraints=constraints, skills=available_skills)
+        plan_prompt = build_xiaobo_plan_prompt(
+            prompts,
+            top_task=user_top_task,
+            constraints=constraints,
+            skills=available_skills,
+            review_notes=review_notes,
+            gen_notes=gen_notes,
+        )
         plan_res = llm.call_json(plan_prompt)
         # NOTE: plan_workflow doesn't track llm_calls budget, but we still record extra_calls in telemetry/logs via meta.
         plan_gen_call_id = record_llm_call(
@@ -345,7 +399,10 @@ def generate_and_review_plan(
             },
         )
         if plan_res.error or not plan_res.parsed_json:
-            retry_notes += "\nPlan generation failed (must return valid xiaobo_plan_v1 JSON). Error:\n" + str(plan_res.error or plan_res.error_code)
+            gen_notes = _limit_chars(
+                "Plan generation failed (must return valid xiaobo_plan_v1 JSON). Error:\n" + str(plan_res.error or plan_res.error_code),
+                max_chars=500,
+            )
             if keep_trying or attempt < max_plan_attempts:
                 continue
             raise PlanWorkflowError(f"plan generation failed: {plan_res.error}")
@@ -353,7 +410,7 @@ def generate_and_review_plan(
         outer = plan_res.parsed_json
         if outer.get("schema_version") != "xiaobo_plan_v1" or not isinstance(outer.get("plan_json"), dict):
             msg = "plan generation output must be JSON with schema_version=xiaobo_plan_v1 and plan_json object"
-            retry_notes += "\n" + msg
+            gen_notes = msg
             if keep_trying or attempt < max_plan_attempts:
                 continue
             raise PlanWorkflowError(msg)
@@ -370,7 +427,7 @@ def generate_and_review_plan(
                     event_type="ERROR",
                     payload={"error_code": "PLAN_INVALID", "message": msg, "context": {"validator_error": msg, "validator_error_obj": plan_err}},
                 )
-            retry_notes += "\nPlan JSON schema validation error (must fix):\n" + msg
+            gen_notes = _limit_chars("Plan JSON schema validation error (must fix):\n" + msg, max_chars=500)
             if keep_trying or attempt < max_plan_attempts:
                 continue
             raise PlanWorkflowError(f"PLAN_INVALID: {msg}")
@@ -418,8 +475,29 @@ def generate_and_review_plan(
         review_prompt_to_use = review_prompt
         review_json: Dict[str, Any] = {}
 
-        # Review output can be unstable; retry reviewer (do NOT leak mismatch strings into xiaobo retry notes).
-        for review_attempt in range(1, max(1, int(max_review_attempts_per_plan)) + 1):
+        # Review output can be unstable; retry reviewer until we get a valid `xiaojing_review_v1` JSON.
+        # IMPORTANT: if review is still invalid after retries, do NOT proceed to next PLAN_GEN attempt,
+        # otherwise we lose remediation info and just "self-soothe" by re-reviewing.
+        review_attempt = 0
+        while True:
+            review_attempt += 1
+            if time.time() - started_at_ts > float(config.MAX_PLAN_RUNTIME_SECONDS):
+                with transaction(conn):
+                    emit_event(
+                        conn,
+                        plan_id=plan_id,
+                        event_type="ERROR",
+                        payload={
+                            "error_code": "PLAN_REVIEW_TIMEOUT",
+                            "message": "PLAN_REVIEW timed out before producing a valid review JSON.",
+                            "context": {
+                                "attempt": attempt,
+                                "review_attempt": review_attempt,
+                                "hint": "Open UI -> LLM Workflow to inspect the last PLAN_GEN/PLAN_REVIEW calls; consider increasing MAX_PLAN_RUNTIME_SECONDS if LLM is slow.",
+                            },
+                        },
+                    )
+                raise PlanWorkflowError("plan review still invalid (timeout); see llm_calls/LLM Workflow for details")
             review_res = llm.call_json(review_prompt_to_use)
             record_llm_call(
                 conn,
@@ -474,6 +552,8 @@ def generate_and_review_plan(
             if review_res.error or not isinstance(review_res.parsed_json, dict):
                 reason = str(review_res.error or review_res.error_code or "review_unparseable")
                 review_prompt_to_use = _build_review_retry_prompt(original_prompt=review_prompt, invalid_response=review_res.raw_response_text, reason=reason)
+                if (not keep_trying) and review_attempt >= max(1, int(max_review_attempts_per_plan)):
+                    break
                 continue
 
             review_json, review_err = normalize_and_validate("PLAN_REVIEW", review_res.parsed_json, {"plan_id": plan_id, "task_id": plan_id})
@@ -502,13 +582,28 @@ def generate_and_review_plan(
 
             detailed = _review_invalid_reason(review_json=review_json, expected_target="PLAN")
             review_prompt_to_use = _build_review_retry_prompt(original_prompt=review_prompt, invalid_response=review_res.raw_response_text, reason=detailed)
+            if (not keep_trying) and review_attempt >= max(1, int(max_review_attempts_per_plan)):
+                break
 
-        # Still invalid after reviewer retries => regenerate plan (do not pollute retry_notes).
+        # Still invalid after reviewer retries => stop early; do NOT proceed to next PLAN_GEN.
         _, final_review_err = normalize_and_validate("PLAN_REVIEW", review_json, {"plan_id": plan_id, "task_id": plan_id})
         if final_review_err:
-            if keep_trying or attempt < max_plan_attempts:
-                continue
-            raise PlanWorkflowError("plan review invalid after retries (see llm_calls/LLM Explorer for details)")
+            with transaction(conn):
+                emit_event(
+                    conn,
+                    plan_id=plan_id,
+                    event_type="ERROR",
+                    payload={
+                        "error_code": "PLAN_REVIEW_INVALID",
+                        "message": "PLAN_REVIEW output remained contract-invalid after retries.",
+                        "context": {
+                            "attempt": attempt,
+                            "hint": "Open UI -> LLM Workflow and click the latest PLAN_REVIEW node to see validator_error and raw output.",
+                            "validator_error": format_contract_error_short(final_review_err),
+                        },
+                    },
+                )
+            raise PlanWorkflowError("plan review invalid after retries (see llm_calls/LLM Workflow for details)")
 
         total_score = int(review_json.get("total_score") or 0)
         action_required = str(review_json.get("action_required") or "")
@@ -540,8 +635,13 @@ def generate_and_review_plan(
         with transaction(conn):
             emit_event(conn, plan_id=plan_id, event_type="PLAN_REVIEWED", payload={"total_score": total_score, "action_required": action_required, "attempt": attempt})
 
-        # Feed reviewer suggestions back into the next attempt (without polluting the user top task).
-        suggestions = review_json.get("suggestions") or []
-        retry_notes += "\nReviewer feedback (must address):\n" + json.dumps(suggestions, ensure_ascii=False, indent=2)
+        # Feed reviewer conclusions back into the next PLAN_GEN attempt as a bounded remediation note.
+        review_notes = _build_plan_remediation_note(review_json, max_chars=500)
+        try:
+            ensure_dir(config.REVIEW_NOTES_DIR / plan_id)
+            (config.REVIEW_NOTES_DIR / plan_id / f"plan_review_attempt_{attempt}.md").write_text(review_notes, encoding="utf-8")
+        except Exception:
+            pass
+        gen_notes = ""
         if not keep_trying and attempt >= int(max_plan_attempts):
             raise PlanNotApprovedError(plan_id=locals().get("plan_id"), max_attempts=max_plan_attempts, last_review=last_review)

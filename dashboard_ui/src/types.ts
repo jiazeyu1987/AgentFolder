@@ -111,12 +111,15 @@ export interface CreatePlanJobResp {
   pid: number | null;
   started_at: string | null;
   finished_at: string | null;
+  exit_code?: number | string | null;
+  log_path?: string | null;
   plan_id: string | null;
   attempt: number;
   phase: CreatePlanPhase;
   review_attempt: number;
   last_llm_call: { created_at: string; scope: string; agent: string; error_code: string | null; validator_error: string | null } | null;
   hint: string;
+  retry_reason?: string;
   ts: string;
 }
 
@@ -147,6 +150,7 @@ export interface LlmCallsQueryResp {
     shared_prompt_path?: string | null;
     agent_prompt_path?: string | null;
     prompt_source_reason?: string | null;
+    plan_review_attempt_path?: string | null;
   }>;
   ts: string;
 }
@@ -199,5 +203,52 @@ export interface WorkflowResp {
   }>;
   edges: Array<{ from: string; to: string; edge_type: WorkflowEdgeType }>;
   groups: Array<{ group_type: "ATTEMPT"; id: string; attempt: number; node_ids: string[] }>;
+  ts: string;
+}
+
+export type ErrorSource = "TASK_EVENT" | "LLM_CALL";
+
+export interface ErrorsResp {
+  errors: Array<{
+    source: ErrorSource;
+    created_at: string;
+    plan_id: string | null;
+    task_id: string | null;
+    task_title: string | null;
+    llm_call_id: string | null;
+    scope: string | null;
+    agent: string | null;
+    error_code: string | null;
+    message: string | null;
+    hint: string | null;
+    validator_error?: string | null;
+    error_message?: string | null;
+  }>;
+  ts: string;
+}
+
+export interface TopTasksResp {
+  top_tasks: Array<{ top_task_hash: string; top_task_title: string | null; last_seen: string }>;
+  ts: string;
+}
+
+export interface AuditResp {
+  events: Array<{
+    audit_id: string;
+    created_at: string;
+    category: string;
+    action: string;
+    top_task_hash: string | null;
+    top_task_title: string | null;
+    plan_id: string | null;
+    task_id: string | null;
+    llm_call_id: string | null;
+    job_id: string | null;
+    status_before: string | null;
+    status_after: string | null;
+    ok: number;
+    message: string | null;
+    payload_json: string | null;
+  }>;
   ts: string;
 }
