@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/api.ts","./src/dagre.d.ts","./src/graphlayout.ts","./src/main.tsx","./src/types.ts","./src/components/controlpanel.tsx","./src/components/nodedetails.tsx","./src/components/taskgraph.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/api.ts","./src/dagre.d.ts","./src/graphlayout.ts","./src/main.tsx","./src/types.ts","./src/components/controlpanel.tsx","./src/components/createplanprogress.tsx","./src/components/nodedetails.tsx","./src/components/taskgraph.tsx"],"version":"5.9.3"}

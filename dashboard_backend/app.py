@@ -5,9 +5,11 @@ import os
 import sqlite3
 import subprocess
 import sys
+import uuid
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +25,7 @@ from core.util import ensure_dir, utc_now_iso
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RUN_STATE_PATH = config.STATE_DIR / "run_process.json"
+CREATE_PLAN_STATE_PATH = config.STATE_DIR / "create_plan_process.json"
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -106,6 +109,148 @@ def _stop_run_process() -> Dict[str, Any]:
     return {"stopped": True, "pid": pid}
 
 
+def _write_create_plan_state(obj: Dict[str, Any]) -> None:
+    ensure_dir(CREATE_PLAN_STATE_PATH.parent)
+    CREATE_PLAN_STATE_PATH.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _read_create_plan_state() -> Optional[Dict[str, Any]]:
+    if not CREATE_PLAN_STATE_PATH.exists():
+        return None
+    try:
+        return json.loads(CREATE_PLAN_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _hash_top_task(s: str) -> str:
+    return hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _start_create_plan_process(*, db_path: Path, top_task: str, max_attempts: int, keep_trying: bool, max_total_attempts: Optional[int]) -> Dict[str, Any]:
+    python_exe = _python_executable()
+    job_id = str(uuid.uuid4())
+    cmd = [
+        python_exe,
+        str(ROOT_DIR / "agent_cli.py"),
+        "--db",
+        str(db_path),
+        "create-plan",
+        "--top-task",
+        top_task,
+        "--max-attempts",
+        str(int(max_attempts)),
+    ]
+    if keep_trying:
+        cmd.append("--keep-trying")
+    if max_total_attempts is not None:
+        cmd += ["--max-total-attempts", str(int(max_total_attempts))]
+
+    creationflags = 0x00000008  # CREATE_NO_WINDOW
+    proc = subprocess.Popen(cmd, cwd=str(ROOT_DIR), creationflags=creationflags)
+    state = {
+        "job_id": job_id,
+        "pid": int(proc.pid),
+        "started_at": utc_now_iso(),
+        "finished_at": None,
+        "cmd": cmd,
+        "plan_id": None,
+        "status": "RUNNING",
+        "last_error": None,
+        "top_task_hash": _hash_top_task(top_task),
+    }
+    _write_create_plan_state(state)
+    return state
+
+
+def _coerce_int(v: Any, default: int) -> int:
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+
+def _parse_meta_json(meta_json: Any) -> Dict[str, Any]:
+    if meta_json is None:
+        return {}
+    if isinstance(meta_json, dict):
+        return meta_json
+    if isinstance(meta_json, str) and meta_json.strip():
+        try:
+            obj = json.loads(meta_json)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def infer_create_plan_progress(
+    conn: sqlite3.Connection,
+    *,
+    plan_id: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Infer create-plan progress from llm_calls (PLAN_GEN/PLAN_REVIEW).
+    Returns: {attempt, phase, review_attempt, last_llm_call, inferred_plan_id}
+    """
+    inferred_plan_id: Optional[str] = None
+    if plan_id:
+        inferred_plan_id = str(plan_id)
+        rows = conn.execute(
+            """
+            SELECT created_at, plan_id, task_id, agent, scope, validator_error, error_code, error_message, meta_json
+            FROM llm_calls
+            WHERE plan_id = ? AND scope IN ('PLAN_GEN','PLAN_REVIEW')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (str(plan_id),),
+        ).fetchall()
+    else:
+        # MVP assumption (single-machine serial): most recent PLAN_GEN with plan_id NULL is the current attempt.
+        rows = conn.execute(
+            """
+            SELECT created_at, plan_id, task_id, agent, scope, validator_error, error_code, error_message, meta_json
+            FROM llm_calls
+            WHERE plan_id IS NULL AND agent = 'xiaobo' AND scope = 'PLAN_GEN'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ).fetchall()
+        # Best-effort: if any PLAN_REVIEW exists, infer plan_id from it.
+        row2 = conn.execute(
+            """
+            SELECT plan_id
+            FROM llm_calls
+            WHERE plan_id IS NOT NULL AND scope = 'PLAN_REVIEW'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row2 and row2["plan_id"]:
+            inferred_plan_id = str(row2["plan_id"])
+
+    last = dict(rows[0]) if rows else None
+    if not last:
+        return {"attempt": 1, "phase": "UNKNOWN", "review_attempt": 1, "last_llm_call": None, "inferred_plan_id": inferred_plan_id}
+
+    meta = _parse_meta_json(last.get("meta_json"))
+    attempt = _coerce_int(meta.get("attempt"), 1)
+    review_attempt = _coerce_int(meta.get("review_attempt"), 1)
+    phase = str(last.get("scope") or "UNKNOWN")
+    if phase not in {"PLAN_GEN", "PLAN_REVIEW"}:
+        phase = "UNKNOWN"
+
+    last_llm_call = {
+        "created_at": last.get("created_at"),
+        "scope": last.get("scope"),
+        "agent": last.get("agent"),
+        "error_code": last.get("error_code"),
+        "validator_error": last.get("validator_error"),
+    }
+    return {"attempt": attempt, "phase": phase, "review_attempt": review_attempt, "last_llm_call": last_llm_call, "inferred_plan_id": inferred_plan_id}
+
+
 app = FastAPI(title="Agent Dashboard Backend", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -171,7 +316,35 @@ def get_config() -> Dict[str, Any]:
 @app.get("/api/plans")
 def get_plans() -> Dict[str, Any]:
     conn = _connect(config.DB_PATH_DEFAULT)
-    rows = conn.execute("SELECT plan_id, title, root_task_id, created_at FROM plans ORDER BY created_at DESC").fetchall()
+    # Infer workflow version from stored nodes. v2 plans include CHECK nodes.
+    rows = conn.execute(
+        """
+        SELECT
+          p.plan_id,
+          p.title,
+          p.root_task_id,
+          p.created_at,
+          CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM task_nodes tn
+              WHERE tn.plan_id = p.plan_id
+                AND (
+                  tn.node_type = 'CHECK'
+                  OR tn.review_target_task_id IS NOT NULL
+                  OR tn.deliverable_spec_json IS NOT NULL
+                  OR tn.acceptance_criteria_json IS NOT NULL
+                  OR tn.estimated_person_days IS NOT NULL
+                  OR tn.approved_artifact_id IS NOT NULL
+                )
+              LIMIT 1
+            ) THEN 2
+            ELSE 1
+          END AS workflow_version
+        FROM plans p
+        ORDER BY p.created_at DESC
+        """
+    ).fetchall()
     return {"plans": [dict(r) for r in rows], "ts": utc_now_iso()}
 
 
@@ -210,6 +383,81 @@ def update_runtime_config(body: RuntimeConfigUpdateIn) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"invalid runtime_config update: {exc}")
 
     return {"ok": True, "runtime_config": _read_runtime_config(), "ts": utc_now_iso()}
+
+
+@app.post("/api/plan/create_async")
+def create_plan_async(body: CreatePlanIn) -> Dict[str, Any]:
+    state = _read_create_plan_state()
+    if state and isinstance(state.get("pid"), int) and _is_process_alive(int(state["pid"])):
+        return {"started": False, "reason": "already running", "job_id": state.get("job_id"), "pid": state.get("pid")}
+    state = _start_create_plan_process(
+        db_path=config.DB_PATH_DEFAULT,
+        top_task=body.top_task,
+        max_attempts=int(body.max_attempts),
+        keep_trying=bool(body.keep_trying),
+        max_total_attempts=body.max_total_attempts,
+    )
+    return {"started": True, "job_id": state.get("job_id"), "pid": state.get("pid"), "ts": utc_now_iso()}
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str) -> Dict[str, Any]:
+    state = _read_create_plan_state()
+    if not state or str(state.get("job_id") or "") != str(job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+
+    pid = state.get("pid")
+    alive = bool(isinstance(pid, int) and _is_process_alive(int(pid)))
+    status = "RUNNING" if alive else str(state.get("status") or "DONE")
+    if status not in {"RUNNING", "DONE", "FAILED"}:
+        status = "DONE" if not alive else "RUNNING"
+
+    conn = _connect(config.DB_PATH_DEFAULT)
+    plan_id = state.get("plan_id")
+    prog = infer_create_plan_progress(conn, plan_id=str(plan_id) if isinstance(plan_id, str) and plan_id.strip() else None)
+    inferred_plan_id = prog.get("inferred_plan_id")
+    if not plan_id and isinstance(inferred_plan_id, str) and inferred_plan_id.strip():
+        plan_id = inferred_plan_id.strip()
+        state["plan_id"] = plan_id
+        _write_create_plan_state(state)
+
+    phase = prog.get("phase") or "UNKNOWN"
+    attempt = int(prog.get("attempt") or 1)
+    review_attempt = int(prog.get("review_attempt") or 1)
+
+    hint = ""
+    last_call = prog.get("last_llm_call")
+    if status == "RUNNING":
+        if phase == "PLAN_GEN":
+            hint = "当前在 PLAN_GEN 生成计划。"
+        elif phase == "PLAN_REVIEW":
+            hint = "当前在 PLAN_REVIEW 审核计划。"
+        else:
+            hint = "正在运行（等待新的 LLM 调用记录）。"
+    else:
+        hint = "已结束。若未生成 plan_id，请查看 LLM Timeline 或 DB 的 llm_calls。"
+
+    if isinstance(last_call, dict):
+        ve = str(last_call.get("validator_error") or "").strip()
+        ec = str(last_call.get("error_code") or "").strip()
+        if ve or ec:
+            hint = f"{hint} 建议打开 LLM Timeline 查看 validator_error/error_code。"
+
+    return {
+        "job_id": str(state.get("job_id")),
+        "kind": "CREATE_PLAN",
+        "status": status,
+        "pid": pid,
+        "started_at": state.get("started_at"),
+        "finished_at": state.get("finished_at"),
+        "plan_id": plan_id,
+        "attempt": attempt,
+        "phase": phase,
+        "review_attempt": review_attempt,
+        "last_llm_call": last_call,
+        "hint": hint,
+        "ts": utc_now_iso(),
+    }
 
 
 @app.get("/api/plan/{plan_id}/graph")
@@ -283,6 +531,86 @@ def get_task_llm_calls(
             }
         )
     return {"task_id": task_id, "calls": calls, "ts": utc_now_iso()}
+
+
+@app.get("/api/llm_calls")
+def get_llm_calls(
+    plan_id: Optional[str] = Query(default=None),
+    scopes: Optional[str] = Query(default=None),
+    agent: Optional[str] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+    plan_id_missing: bool = Query(default=False),
+    max_chars: int = Query(default=200_000, ge=0, le=500_000),
+) -> Dict[str, Any]:
+    conn = _connect(config.DB_PATH_DEFAULT)
+    where: List[str] = []
+    params: List[Any] = []
+
+    if plan_id_missing:
+        where.append("plan_id IS NULL")
+    elif plan_id is not None and str(plan_id).strip():
+        where.append("plan_id = ?")
+        params.append(str(plan_id).strip())
+
+    if agent is not None and str(agent).strip():
+        where.append("agent = ?")
+        params.append(str(agent).strip())
+
+    scope_list: List[str] = []
+    if scopes:
+        for s in str(scopes).split(","):
+            s2 = s.strip()
+            if s2:
+                scope_list.append(s2)
+    if scope_list:
+        where.append("scope IN (" + ",".join(["?"] * len(scope_list)) + ")")
+        params.extend(scope_list)
+
+    sql = """
+        SELECT
+          llm_call_id,
+          created_at,
+          plan_id,
+          task_id,
+          agent,
+          scope,
+          prompt_text,
+          response_text,
+          parsed_json,
+          normalized_json,
+          validator_error,
+          error_code,
+          error_message,
+          meta_json
+        FROM llm_calls
+    """
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(int(limit))
+
+    rows = conn.execute(sql, tuple(params)).fetchall()
+    calls = []
+    for r in rows:
+        calls.append(
+            {
+                "llm_call_id": r["llm_call_id"],
+                "created_at": r["created_at"],
+                "plan_id": r["plan_id"],
+                "task_id": r["task_id"],
+                "agent": r["agent"],
+                "scope": r["scope"],
+                "prompt_text": _truncate(r["prompt_text"], max_chars=max_chars),
+                "response_text": _truncate(r["response_text"], max_chars=max_chars),
+                "parsed_json": _truncate(r["parsed_json"], max_chars=max_chars),
+                "normalized_json": _truncate(r["normalized_json"], max_chars=max_chars),
+                "validator_error": r["validator_error"],
+                "error_code": r["error_code"],
+                "error_message": r["error_message"],
+                "meta_json": _truncate(r["meta_json"], max_chars=max_chars),
+            }
+        )
+    return {"calls": calls, "ts": utc_now_iso()}
 
 
 @app.get("/api/task/{task_id}/details")

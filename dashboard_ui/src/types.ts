@@ -67,7 +67,7 @@ export interface GraphEdge {
 }
 
 export interface PlansResp {
-  plans: Array<{ plan_id: string; title: string; root_task_id: string; created_at: string }>;
+  plans: Array<{ plan_id: string; title: string; root_task_id: string; created_at: string; workflow_version: 1 | 2 }>;
   ts: string;
 }
 
@@ -97,6 +97,53 @@ export interface TaskLlmCallsResp {
     validator_error: string | null;
     error_code: string | null;
     error_message: string | null;
+  }>;
+  ts: string;
+}
+
+export type CreatePlanJobStatus = "RUNNING" | "DONE" | "FAILED";
+export type CreatePlanPhase = "PLAN_GEN" | "PLAN_REVIEW" | "UNKNOWN";
+
+export interface CreatePlanJobResp {
+  job_id: string;
+  kind: "CREATE_PLAN";
+  status: CreatePlanJobStatus;
+  pid: number | null;
+  started_at: string | null;
+  finished_at: string | null;
+  plan_id: string | null;
+  attempt: number;
+  phase: CreatePlanPhase;
+  review_attempt: number;
+  last_llm_call: { created_at: string; scope: string; agent: string; error_code: string | null; validator_error: string | null } | null;
+  hint: string;
+  ts: string;
+}
+
+export interface CreatePlanAsyncResp {
+  started: boolean;
+  reason?: string;
+  job_id?: string;
+  pid?: number;
+  ts?: string;
+}
+
+export interface LlmCallsQueryResp {
+  calls: Array<{
+    llm_call_id: string;
+    created_at: string;
+    plan_id: string | null;
+    task_id: string | null;
+    agent: string;
+    scope: string;
+    prompt_text: string | null;
+    response_text: string | null;
+    parsed_json: string | null;
+    normalized_json: string | null;
+    validator_error: string | null;
+    error_code: string | null;
+    error_message: string | null;
+    meta_json: string | null;
   }>;
   ts: string;
 }

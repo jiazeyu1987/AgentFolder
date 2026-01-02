@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
-import type { ConfigResp, GraphNode, GraphV1, PlansResp } from "./types";
+import type { ConfigResp, CreatePlanJobResp, GraphNode, GraphV1, LlmCallsQueryResp, PlansResp } from "./types";
 import ControlPanel from "./components/ControlPanel";
 import TaskGraph from "./components/TaskGraph";
 import NodeDetails from "./components/NodeDetails";
+import CreatePlanProgress from "./components/CreatePlanProgress";
 
 export default function App() {
   const [config, setConfig] = useState<ConfigResp | null>(null);
@@ -13,6 +14,9 @@ export default function App() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [topTask, setTopTask] = useState<string>("");
   const [logText, setLogText] = useState<string>("");
+  const [createPlanJobId, setCreatePlanJobId] = useState<string | null>(() => localStorage.getItem("create_plan_job_id"));
+  const [createPlanJob, setCreatePlanJob] = useState<CreatePlanJobResp | null>(null);
+  const [createPlanTimeline, setCreatePlanTimeline] = useState<LlmCallsQueryResp["calls"]>([]);
 
   function log(s: string) {
     setLogText((prev) => (prev ? prev + "\n\n" + s : s));
@@ -51,6 +55,41 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!createPlanJobId) return;
+    localStorage.setItem("create_plan_job_id", createPlanJobId);
+    const t = setInterval(() => {
+      api
+        .getJob(createPlanJobId)
+        .then((j) => {
+          setCreatePlanJob(j);
+          // Auto switch to the plan when done and plan_id is known.
+          if (j.status !== "RUNNING" && j.plan_id) {
+            setSelectedPlanId(j.plan_id);
+          }
+          const havePlanId = Boolean(j.plan_id);
+          const params = havePlanId
+            ? { plan_id: j.plan_id!, scopes: "PLAN_GEN,PLAN_REVIEW", limit: 200 }
+            : { plan_id_missing: true, scopes: "PLAN_GEN", limit: 50 };
+          api
+            .getLlmCallsQuery(params)
+            .then((resp) => setCreatePlanTimeline(resp.calls))
+            .catch(() => {});
+        })
+        .catch((e) => {
+          const msg = String(e);
+          log(msg);
+          setCreatePlanJob(null);
+          // If backend says job not found (state overwritten / cleared), stop polling and let user start again.
+          if (msg.includes("404") || msg.toLowerCase().includes("job not found")) {
+            setCreatePlanJobId(null);
+            localStorage.removeItem("create_plan_job_id");
+          }
+        });
+    }, 800);
+    return () => clearInterval(t);
+  }, [createPlanJobId]);
+
+  useEffect(() => {
     if (!selectedPlanId) return;
     api
       .getGraph(selectedPlanId)
@@ -71,6 +110,7 @@ export default function App() {
           plans={plans}
           selectedPlanId={selectedPlanId}
           onSelectPlanId={(v) => setSelectedPlanId(v)}
+          onCreatePlanJobId={(jobId) => setCreatePlanJobId(jobId)}
           topTask={topTask}
           onTopTaskChange={setTopTask}
           onRefresh={() => refresh().catch((e) => log(String(e)))}
@@ -90,6 +130,11 @@ export default function App() {
         <div className="panel graphWrap">{graph ? <TaskGraph nodes={graph.nodes} edges={graph.edges} onSelectNode={(id) => setSelectedTaskId(id)} /> : <div className="muted">no graph</div>}</div>
       </div>
       <div className="right">
+        <CreatePlanProgress
+          job={createPlanJob}
+          timeline={createPlanTimeline}
+          onSelectPlanId={(pid) => setSelectedPlanId(pid)}
+        />
         <NodeDetails node={selectedNode} />
         <div className="panel">
           <h3>Logs</h3>

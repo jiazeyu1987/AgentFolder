@@ -1,4 +1,4 @@
-import type { ConfigResp, GraphV1, PlansResp, TaskDetailsResp, TaskLlmCallsResp } from "./types";
+import type { ConfigResp, CreatePlanAsyncResp, CreatePlanJobResp, GraphV1, LlmCallsQueryResp, PlansResp, TaskDetailsResp, TaskLlmCallsResp } from "./types";
 
 async function httpJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -45,6 +45,33 @@ export function runOnce(): Promise<unknown> {
 
 export function createPlan(topTask: string, maxAttempts: number): Promise<unknown> {
   return httpJson("/api/plan/create", { method: "POST", body: JSON.stringify({ top_task: topTask, max_attempts: maxAttempts }) });
+}
+
+export function createPlanAsync(topTask: string, maxAttempts: number, keepTrying = false, maxTotalAttempts?: number): Promise<CreatePlanAsyncResp> {
+  return httpJson<CreatePlanAsyncResp>("/api/plan/create_async", {
+    method: "POST",
+    body: JSON.stringify({ top_task: topTask, max_attempts: maxAttempts, keep_trying: keepTrying, max_total_attempts: maxTotalAttempts }),
+  });
+}
+
+export function getJob(jobId: string): Promise<CreatePlanJobResp> {
+  return httpJson<CreatePlanJobResp>(`/api/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export function getLlmCallsQuery(params: {
+  plan_id?: string;
+  scopes?: string;
+  agent?: string;
+  limit?: number;
+  plan_id_missing?: boolean;
+}): Promise<LlmCallsQueryResp> {
+  const usp = new URLSearchParams();
+  if (params.plan_id) usp.set("plan_id", params.plan_id);
+  if (params.scopes) usp.set("scopes", params.scopes);
+  if (params.agent) usp.set("agent", params.agent);
+  if (params.limit) usp.set("limit", String(params.limit));
+  if (params.plan_id_missing) usp.set("plan_id_missing", "true");
+  return httpJson<LlmCallsQueryResp>(`/api/llm_calls?${usp.toString()}`);
 }
 
 export function resetDb(purgeAll: boolean): Promise<unknown> {
