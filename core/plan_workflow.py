@@ -635,7 +635,7 @@ def generate_and_review_plan(
         action_required = str(review_json.get("action_required") or "")
 
         cfg = get_runtime_config()
-        if total_score >= int(cfg.plan_review_pass_score) and action_required == "APPROVE":
+        if total_score >= int(cfg.plan_review_pass_score):
             ensure_dir(plan_output_path.parent)
             plan_output_path.write_text(json.dumps(plan_json, ensure_ascii=False, indent=2), encoding="utf-8")
             with transaction(conn):

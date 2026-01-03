@@ -107,8 +107,7 @@ def _start_run_process(*, db_path: Path, plan_path: Path, max_iterations: int) -
     python_exe = _python_executable()
     cmd = [python_exe, str(ROOT_DIR / "agent_cli.py"), "--db", str(db_path), "run", "--plan", str(plan_path), "--max-iterations", str(int(max_iterations))]
     # Start detached so UI can close and run continues.
-    creationflags = 0x00000008  # CREATE_NO_WINDOW
-    proc = subprocess.Popen(cmd, cwd=str(ROOT_DIR), creationflags=creationflags)
+    proc = _popen_hidden(cmd, cwd=str(ROOT_DIR))
     state = {"pid": int(proc.pid), "cmd": cmd, "started_at": utc_now_iso(), "db_path": str(db_path), "plan_path": str(plan_path)}
     _write_run_state(state)
     return state
@@ -152,6 +151,38 @@ def _hash_top_task(s: str) -> str:
     return stable_hash_text(s or "")
 
 
+def _resolve_top_task_from_request(top_task: str) -> str:
+    """
+    If top_task is blank, fallback to workspace/inputs/current_task.txt (UTF-8).
+    This avoids Windows cmd encoding issues and allows UI to omit the input.
+    """
+    s = str(top_task or "").strip()
+    if s:
+        return s
+    p = config.INPUTS_DIR / "current_task.txt"
+    if not p.exists():
+        raise HTTPException(status_code=400, detail=f"top_task is empty and {p} not found")
+    try:
+        txt = p.read_text(encoding="utf-8").strip()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"failed to read {p}: {exc}") from exc
+    if not txt:
+        raise HTTPException(status_code=400, detail=f"{p} is empty")
+    return txt
+
+
+def _popen_hidden(cmd: List[str], *, cwd: str) -> subprocess.Popen:
+    # Windows-only: hide console window explicitly.
+    creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    try:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW  # type: ignore[attr-defined]
+        si.wShowWindow = 0  # SW_HIDE
+        return subprocess.Popen(cmd, cwd=cwd, creationflags=creationflags, startupinfo=si)
+    except Exception:
+        return subprocess.Popen(cmd, cwd=cwd, creationflags=creationflags)
+
+
 def _start_create_plan_process(*, db_path: Path, top_task: str, max_attempts: int, keep_trying: bool, max_total_attempts: Optional[int]) -> Dict[str, Any]:
     python_exe = _python_executable()
     job_id = str(uuid.uuid4())
@@ -159,14 +190,16 @@ def _start_create_plan_process(*, db_path: Path, top_task: str, max_attempts: in
     ensure_dir(job_dir)
     log_path = job_dir / "create_plan.log"
     exit_path = job_dir / "exit.json"
+    top_task_file = job_dir / "top_task.txt"
+    top_task_file.write_text(str(top_task), encoding="utf-8")
     cmd = [
         python_exe,
         str(ROOT_DIR / "agent_cli.py"),
         "--db",
         str(db_path),
         "create-plan",
-        "--top-task",
-        top_task,
+        "--top-task-file",
+        str(top_task_file),
         "--max-attempts",
         str(int(max_attempts)),
     ]
@@ -175,32 +208,31 @@ def _start_create_plan_process(*, db_path: Path, top_task: str, max_attempts: in
     if max_total_attempts is not None:
         cmd += ["--max-total-attempts", str(int(max_total_attempts))]
 
-    # Use a tiny wrapper .cmd to persist stdout/stderr + exit_code for observability.
-    wrapper_cmd = job_dir / "run_create_plan.cmd"
-    cmd_quoted = " ".join([f"\"{c}\"" if " " in str(c) or "\t" in str(c) else str(c) for c in cmd])
-    # Note: use cmd.exe redirection so we capture Python tracebacks too.
-    wrapper_cmd.write_text(
+    # Use a tiny Python wrapper (ASCII-only) to persist stdout/stderr + exit_code without cmd.exe encoding issues.
+    wrapper_py = job_dir / "run_create_plan_wrapper.py"
+    wrapper_py.write_text(
         "\n".join(
             [
-                "@echo off",
-                "setlocal",
-                f"cd /d \"{ROOT_DIR}\"",
-                f"{cmd_quoted} > \"{log_path}\" 2>&1",
-                "set EC=%ERRORLEVEL%",
-                # Write exit.json with exit_code; include file mtime as finished_at via backend.
-                (
-                    "powershell -NoProfile -Command "
-                    f"\"$ec=%ERRORLEVEL%; $obj=@{{job_id='{job_id}'; exit_code=$ec}}; "
-                    f"$obj|ConvertTo-Json -Compress | Out-File -Encoding utf8 '{exit_path}'\""
-                ),
-                "exit /b %EC%",
+                "import json, subprocess, sys",
+                "from pathlib import Path",
+                f"ROOT = Path(r\"{str(ROOT_DIR)}\")",
+                f"LOG = Path(r\"{str(log_path)}\")",
+                f"EXIT = Path(r\"{str(exit_path)}\")",
+                f"CMD = {json.dumps([str(x) for x in cmd], ensure_ascii=True)}",
+                "LOG.parent.mkdir(parents=True, exist_ok=True)",
+                "EXIT.parent.mkdir(parents=True, exist_ok=True)",
+                "with open(LOG, 'wb') as f:",
+                "  p = subprocess.run(CMD, cwd=str(ROOT), stdout=f, stderr=f)",
+                "ec = int(getattr(p, 'returncode', 1) or 0)",
+                "EXIT.write_text(json.dumps({'job_id': " + json.dumps(job_id) + ", 'exit_code': ec}, ensure_ascii=False), encoding='utf-8')",
+                "sys.exit(ec)",
+                "",
             ]
         ),
         encoding="utf-8",
     )
 
-    creationflags = 0x00000008  # CREATE_NO_WINDOW
-    proc = subprocess.Popen(["cmd.exe", "/c", str(wrapper_cmd)], cwd=str(ROOT_DIR), creationflags=creationflags)
+    proc = _popen_hidden([python_exe, str(wrapper_py)], cwd=str(ROOT_DIR))
     state = {
         "job_id": job_id,
         "pid": int(proc.pid),
@@ -213,6 +245,7 @@ def _start_create_plan_process(*, db_path: Path, top_task: str, max_attempts: in
         "top_task_hash": _hash_top_task(top_task),
         "log_path": str(log_path),
         "exit_path": str(exit_path),
+        "top_task_file": str(top_task_file),
     }
     _write_create_plan_state(state)
     return state
@@ -697,9 +730,11 @@ def create_plan_async(body: CreatePlanIn) -> Dict[str, Any]:
     state = _read_create_plan_state()
     if state and isinstance(state.get("pid"), int) and _is_process_alive(int(state["pid"])):
         return {"started": False, "reason": "already running", "job_id": state.get("job_id"), "pid": state.get("pid")}
+
+    resolved_top_task = _resolve_top_task_from_request(body.top_task)
     state = _start_create_plan_process(
         db_path=config.DB_PATH_DEFAULT,
-        top_task=body.top_task,
+        top_task=resolved_top_task,
         max_attempts=int(body.max_attempts),
         keep_trying=bool(body.keep_trying),
         max_total_attempts=body.max_total_attempts,
@@ -711,8 +746,8 @@ def create_plan_async(body: CreatePlanIn) -> Dict[str, Any]:
                 category="API_CALL",
                 action="CREATE_PLAN_START",
                 message="create-plan start",
-                top_task_hash=_hash_top_task(body.top_task),
-                top_task_title=str(body.top_task).strip()[:200],
+                top_task_hash=_hash_top_task(resolved_top_task),
+                top_task_title=str(resolved_top_task).strip()[:200],
                 job_id=str(state.get("job_id") or ""),
                 payload={
                     "max_attempts": int(body.max_attempts),
@@ -1122,7 +1157,7 @@ def get_task_details(task_id: str) -> Dict[str, Any]:
             from core.runtime_config import get_runtime_config
 
             cfg = get_runtime_config()
-            acceptance = [f"xiaojing reviewer passed: total_score >= {cfg.plan_review_pass_score} and action_required = APPROVE"]
+            acceptance = [f"xiaojing reviewer passed: total_score >= {cfg.plan_review_pass_score}"]
 
         required_docs_path = str(config.REQUIRED_DOCS_DIR / f"{task_id}.md")
 

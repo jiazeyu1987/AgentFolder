@@ -81,6 +81,13 @@ def test_plan_review_generates_bounded_notes_and_feeds_next_gen(tmp_path: Path, 
     # isolate workspace review notes
     monkeypatch.setattr(config, "REVIEW_NOTES_DIR", tmp_path / "review_notes")
     monkeypatch.setattr(config, "PLAN_PATH_DEFAULT", tmp_path / "plan.json")
+    # Isolate runtime_config so external local changes (e.g., plan_review_pass_score) don't affect this test.
+    rc_path = tmp_path / "runtime_config.json"
+    rc_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(config, "RUNTIME_CONFIG_PATH", rc_path)
+    from core.runtime_config import reset_runtime_config_cache
+
+    reset_runtime_config_cache()
 
     db_path = tmp_path / "state.db"
     conn = connect(db_path)

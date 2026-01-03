@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import ast
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -200,15 +201,16 @@ def _infer_running_task(conn: sqlite3.Connection, *, plan_id: str) -> Tuple[Opti
     if row:
         return row["task_id"], row["updated_at"], "status"
 
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=2)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     row = conn.execute(
         """
         SELECT task_id, created_at
         FROM llm_calls
-        WHERE plan_id = ? AND task_id IS NOT NULL
+        WHERE plan_id = ? AND task_id IS NOT NULL AND created_at >= ?
         ORDER BY created_at DESC
         LIMIT 1
         """,
-        (plan_id,),
+        (plan_id, cutoff),
     ).fetchone()
     if row and row["task_id"]:
         return row["task_id"], row["created_at"], "llm_calls"

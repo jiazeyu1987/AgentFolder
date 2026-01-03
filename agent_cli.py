@@ -1273,8 +1273,25 @@ def main(argv: Optional[List[str]] = None) -> int:
                     pass
 
         if bool(getattr(args, "purge_workspace", False)):
-            purge_dir_contents(config.WORKSPACE_DIR)
-            deleted.append(str(config.WORKSPACE_DIR / "*"))
+            # Keep workspace/inputs by default (user baseline inputs should survive resets).
+            if config.WORKSPACE_DIR.exists() and config.WORKSPACE_DIR.is_dir():
+                for child in config.WORKSPACE_DIR.iterdir():
+                    try:
+                        if child.resolve() == config.INPUTS_DIR.resolve():
+                            continue
+                    except Exception:
+                        pass
+                    try:
+                        if child.is_dir():
+                            shutil.rmtree(child, ignore_errors=True)
+                        else:
+                            try:
+                                child.unlink()
+                            except FileNotFoundError:
+                                pass
+                    except Exception:
+                        pass
+            deleted.append(str(config.WORKSPACE_DIR / "* (except inputs)"))
             for p in (config.INPUTS_DIR, config.ARTIFACTS_DIR, config.REVIEWS_DIR, config.REQUIRED_DOCS_DIR):
                 try:
                     p.mkdir(parents=True, exist_ok=True)

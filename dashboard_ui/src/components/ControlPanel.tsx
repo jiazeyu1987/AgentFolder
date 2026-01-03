@@ -31,6 +31,12 @@ export default function ControlPanel(props: {
   const [maxDepth, setMaxDepth] = useState<number>(5);
   const [oneShotDays, setOneShotDays] = useState<number>(10);
   const [planPassScore, setPlanPassScore] = useState<number>(90);
+  const [createPlanPending, setCreatePlanPending] = useState(false);
+  const [createPlanCooldown, setCreatePlanCooldown] = useState(false);
+  const [createPlanAck, setCreatePlanAck] = useState<string | null>(null);
+  const [runPending, setRunPending] = useState(false);
+  const [runCooldown, setRunCooldown] = useState(false);
+  const [runAck, setRunAck] = useState<string | null>(null);
 
   const planOptions = useMemo(() => props.plans, [props.plans]);
   const planTitleCounts = useMemo(() => {
@@ -61,6 +67,14 @@ export default function ControlPanel(props: {
   async function onCopy(text: string) {
     await navigator.clipboard.writeText(text);
     props.onLog("copied to clipboard");
+  }
+
+  function startCooldown(setter: (v: boolean) => void, ackSetter: (v: string | null) => void) {
+    setter(true);
+    setTimeout(() => {
+      setter(false);
+      ackSetter(null);
+    }, 1000);
   }
 
   // Initialize config fields once config arrives.
@@ -118,18 +132,25 @@ export default function ControlPanel(props: {
         <button
           className="success"
           onClick={async () => {
-            props.onLog("create-plan (async)...");
-            const res = await api.createPlanAsync(props.topTask, maxAttempts, keepTrying, maxTotalAttempts === "" ? undefined : maxTotalAttempts);
-            props.onLog(JSON.stringify(res, null, 2));
-            // If a job is already running, backend returns started=false but includes job_id.
-            if (res.job_id) {
-              props.onCreatePlanJobId(res.job_id);
+            if (createPlanPending || createPlanCooldown) return;
+            setCreatePlanPending(true);
+            setCreatePlanAck("sending…");
+            try {
+              const res = await api.createPlanAsync(props.topTask, maxAttempts, keepTrying, maxTotalAttempts === "" ? undefined : maxTotalAttempts);
+              if (res.job_id) props.onCreatePlanJobId(res.job_id);
+              setCreatePlanAck(res.started ? "started" : "already running");
+              props.onRefresh();
+            } catch (e) {
+              setCreatePlanAck("failed");
+              props.onLog(String(e));
+            } finally {
+              setCreatePlanPending(false);
+              startCooldown(setCreatePlanCooldown, setCreatePlanAck);
             }
-            props.onRefresh();
           }}
-          disabled={!props.topTask.trim()}
+          disabled={createPlanPending || createPlanCooldown}
         >
-          Create Plan
+          {createPlanPending ? "Create Plan…" : "Create Plan"}
         </button>
         <button
           onClick={() => {
@@ -146,6 +167,7 @@ export default function ControlPanel(props: {
           动作日志
         </button>
       </div>
+      {createPlanAck ? <div className="muted">Create Plan: {createPlanAck}</div> : null}
 
       <div className="field">
         <label className="inline">
@@ -170,12 +192,23 @@ export default function ControlPanel(props: {
         <button
           className="success"
           onClick={async () => {
-            props.onLog("run start...");
-            const res = await api.runStart(maxIterations);
-            props.onLog(JSON.stringify(res, null, 2));
+            if (runPending || runCooldown) return;
+            setRunPending(true);
+            setRunAck("sending…");
+            try {
+              await api.runStart(maxIterations);
+              setRunAck("started");
+            } catch (e) {
+              setRunAck("failed");
+              props.onLog(String(e));
+            } finally {
+              setRunPending(false);
+              startCooldown(setRunCooldown, setRunAck);
+            }
           }}
+          disabled={runPending || runCooldown}
         >
-          Run
+          {runPending ? "Run…" : "Run"}
         </button>
         <button
           onClick={async () => {
@@ -186,6 +219,7 @@ export default function ControlPanel(props: {
           Status
         </button>
       </div>
+      {runAck ? <div className="muted">Run: {runAck}</div> : null}
 
       <div className="row">
         <button
