@@ -1,118 +1,91 @@
 {
-  "title": "HTML5 Canvas 弹幕射击游戏 (STG)",
-  "description": "实现一个包含玩家控制、敌机波次、BOSS弹幕、道具系统和粒子特效的单文件 Web 游戏。",
+  "title": "Canvas 弹幕射击小游戏开发",
+  "description": "基于 HTML5 Canvas 和原生 JS 实现的单文件弹幕射击游戏，包含完整游戏循环、对象池、多种弹幕算法及道具系统。",
   "nodes": [
     {
       "id": "1",
-      "type": "code_gen",
-      "title": "生成游戏主体 HTML",
-      "content": "生成包含 HTML结构、Canvas初始化、游戏主循环、状态管理的单文件框架。",
+      "type": "dev",
+      "title": "核心架构与游戏循环",
+      "content": "构建 HTML 结构与 CSS 样式（自适应、隐藏滚动条）。实现 Game 主类：初始化 Canvas、requestAnimationFrame 循环、输入监听（键盘）、状态管理。实现对象池基类（用于 Bullet 和 Particle）。",
       "status": "pending",
-      "task_id": "504b635a-11be-4e07-acad-a420a3726f7a",
+      "dependencies": [],
+      "task_id": "a9eca626-e502-4cb8-b168-b259c16c5476",
       "node_type": "ACTION",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
       "id": "2",
-      "type": "code_gen",
-      "title": "实现玩家与基础射击",
-      "content": "实现玩家飞机类，包含键盘移动、边界检测、默认射击逻辑和无敌帧处理。",
+      "type": "dev",
+      "title": "玩家与武器系统",
+      "content": "实现 Player 类：移动逻辑（边界限制）、自动射击计时器。实现武器系统：默认单发、三连发（苹果）、散射（鸡腿）、穿透弹（葡萄）、激光（柠檬）。包含武器计时器与状态切换。",
       "status": "pending",
-      "task_id": "e85b9686-6032-41be-80f5-2a8578eecf73",
+      "dependencies": [
+        "1"
+      ],
+      "task_id": "5af1bb26-8f97-40c0-acbf-284ebb43cbcb",
       "node_type": "ACTION",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
       "id": "3",
-      "type": "code_gen",
-      "title": "实现敌人系统与难度曲线",
-      "content": "实现普通敌机工厂、生成算法、随时间/分数提高的难度控制逻辑。",
+      "type": "dev",
+      "title": "敌人、BOSS与碰撞检测",
+      "content": "实现 Enemy 类（普通下落）、Boss 类（复杂移动、血条）。实现 Boss 的多种弹幕模式：散射、环形、螺旋、追踪。实现 AABB 或圆形碰撞检测系统（玩家vs敌人/子弹，敌人vs玩家子弹）。",
       "status": "pending",
-      "task_id": "7bfafc11-8b95-49d7-8bd3-77ad2f587e09",
+      "dependencies": [
+        "2"
+      ],
+      "task_id": "2f45f0a4-a942-4d31-8cba-84469648c965",
       "node_type": "ACTION",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
       "id": "4",
-      "type": "code_gen",
-      "title": "实现 BOSS 与弹幕模式",
-      "content": "实现 BOSS 类，包含多阶段血量、移动逻辑及配置化的弹幕发射器（散射、螺旋、追踪等）。",
+      "type": "dev",
+      "title": "道具、特效与UI整合",
+      "content": "实现 PowerUp 类（掉落、拾取、效果应用）。实现爆炸粒子系统（使用对象池）。整合 UI：得分、生命值、武器倒计时、开始/结束界面。联调数值平衡。",
       "status": "pending",
-      "task_id": "de9eda99-d7f4-4689-944c-dd7ec326a058",
+      "dependencies": [
+        "3"
+      ],
+      "task_id": "f4ad0110-fa97-4dee-ac88-84a51fa08060",
       "node_type": "ACTION",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
       "id": "5",
-      "type": "code_gen",
-      "title": "实现道具与武器切换",
-      "content": "实现道具掉落、拾取判定、4种武器模式（三连发、霰弹、穿透、激光）及计时器。",
+      "type": "dev",
+      "title": "单文件打包与交付",
+      "content": "将所有代码整合到一个 HTML 文件中。确保无依赖、无报错。添加玩法说明与参数配置区域。",
       "status": "pending",
-      "task_id": "b7a5a016-fcde-4d77-954c-6fe9e4341773",
+      "dependencies": [
+        "4"
+      ],
+      "task_id": "2f632058-7d87-4829-8e50-81da65d49e01",
       "node_type": "ACTION",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": []
     },
     {
-      "id": "6",
-      "type": "code_gen",
-      "title": "实现碰撞与粒子特效",
-      "content": "实现基于距离/矩形的碰撞检测，以及爆炸粒子效果系统。",
-      "status": "pending",
-      "task_id": "b1d5e7b3-ccc8-4449-b8f2-e768ba359b97",
-      "node_type": "ACTION",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
-      "owner_agent_id": "xiaobo",
-      "priority": 0,
-      "tags": []
-    },
-    {
-      "id": "7",
-      "type": "code_gen",
-      "title": "完善 UI 与游戏循环",
-      "content": "完善 HUD (得分/血量/BOSS条)、开始/结束界面逻辑，确保单文件可运行。",
-      "status": "pending",
-      "task_id": "2683e872-fa67-4f31-91c7-a489d03a81a9",
-      "node_type": "ACTION",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
-      "owner_agent_id": "xiaobo",
-      "priority": 0,
-      "tags": []
-    },
-    {
-      "task_id": "e733e38c-d47b-4b5b-9c3e-2490304e183c",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
+      "task_id": "f963e8be-8189-4c80-acce-cd4cf378d3c3",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
       "node_type": "GOAL",
       "title": "Root Task",
       "goal_statement": "请你用 HTML5 Canvas + 原生 JavaScript 实现一个“打飞机 / 弹幕射击”小游戏，要求一个 HTML 文件即可运行，复制到浏览器就能玩。",
-      "rationale": "Autocreated placeholder node for referential integrity.",
-      "owner_agent_id": "xiaobo",
-      "priority": 0,
-      "tags": [
-        "autofix",
-        "placeholder"
-      ]
-    },
-    {
-      "task_id": "d9148fb8-4006-442e-95cf-cdf68fbcffc2",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
-      "node_type": "ACTION",
-      "title": "AUTO: missing node d9148fb8",
-      "goal_statement": null,
       "rationale": "Autocreated placeholder node for referential integrity.",
       "owner_agent_id": "xiaobo",
       "priority": 0,
@@ -124,108 +97,102 @@
   ],
   "edges": [
     {
-      "edge_id": "161efa2f-123b-412e-872f-53f4f098fa19",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
-      "from_task_id": "e733e38c-d47b-4b5b-9c3e-2490304e183c",
-      "to_task_id": "504b635a-11be-4e07-acad-a420a3726f7a",
+      "from": "1",
+      "to": "2",
+      "from_task_id": "a9eca626-e502-4cb8-b168-b259c16c5476",
+      "to_task_id": "5af1bb26-8f97-40c0-acbf-284ebb43cbcb",
+      "edge_id": "40184724-dde0-4ec4-b4fc-99a7d1107670",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "from": "2",
+      "to": "3",
+      "from_task_id": "5af1bb26-8f97-40c0-acbf-284ebb43cbcb",
+      "to_task_id": "2f45f0a4-a942-4d31-8cba-84469648c965",
+      "edge_id": "30c53941-a003-4fef-a126-62583ec558ba",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "from": "3",
+      "to": "4",
+      "from_task_id": "2f45f0a4-a942-4d31-8cba-84469648c965",
+      "to_task_id": "f4ad0110-fa97-4dee-ac88-84a51fa08060",
+      "edge_id": "78ce041e-c691-4101-a33a-978961798cbd",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "from": "4",
+      "to": "5",
+      "from_task_id": "f4ad0110-fa97-4dee-ac88-84a51fa08060",
+      "to_task_id": "2f632058-7d87-4829-8e50-81da65d49e01",
+      "edge_id": "24a87035-68d3-4893-9aee-f2d5d2262dbc",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {}
+    },
+    {
+      "edge_id": "c6b7a1fa-a965-4066-9e89-6985dd25a017",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
+      "from_task_id": "f963e8be-8189-4c80-acce-cd4cf378d3c3",
+      "to_task_id": "a9eca626-e502-4cb8-b168-b259c16c5476",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "99bca9ec-8d7a-41ad-947a-f5f4fb6715c1",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
-      "from_task_id": "e733e38c-d47b-4b5b-9c3e-2490304e183c",
-      "to_task_id": "e85b9686-6032-41be-80f5-2a8578eecf73",
+      "edge_id": "5e1213bd-eccc-4bd6-a5e6-3cec54fe4e11",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
+      "from_task_id": "f963e8be-8189-4c80-acce-cd4cf378d3c3",
+      "to_task_id": "5af1bb26-8f97-40c0-acbf-284ebb43cbcb",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "1e333c1e-7b6d-4848-8c6f-a99a7b3bfe28",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
-      "from_task_id": "e733e38c-d47b-4b5b-9c3e-2490304e183c",
-      "to_task_id": "7bfafc11-8b95-49d7-8bd3-77ad2f587e09",
+      "edge_id": "f583a7bd-dfcf-4b02-beb5-8e05765b35b5",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
+      "from_task_id": "f963e8be-8189-4c80-acce-cd4cf378d3c3",
+      "to_task_id": "2f45f0a4-a942-4d31-8cba-84469648c965",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "3756d85d-b110-4aee-a796-e9bb53a6d300",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
-      "from_task_id": "e733e38c-d47b-4b5b-9c3e-2490304e183c",
-      "to_task_id": "de9eda99-d7f4-4689-944c-dd7ec326a058",
+      "edge_id": "0ba27127-2453-4070-87f0-1d916c07d54e",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
+      "from_task_id": "f963e8be-8189-4c80-acce-cd4cf378d3c3",
+      "to_task_id": "f4ad0110-fa97-4dee-ac88-84a51fa08060",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "f256f37e-2fda-4458-9c00-9b800184e14d",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
-      "from_task_id": "e733e38c-d47b-4b5b-9c3e-2490304e183c",
-      "to_task_id": "b7a5a016-fcde-4d77-954c-6fe9e4341773",
-      "edge_type": "DECOMPOSE",
-      "metadata": {
-        "and_or": "AND"
-      }
-    },
-    {
-      "edge_id": "c1294a65-85bb-47d9-8ed7-1213a7e9ee08",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
-      "from_task_id": "e733e38c-d47b-4b5b-9c3e-2490304e183c",
-      "to_task_id": "b1d5e7b3-ccc8-4449-b8f2-e768ba359b97",
-      "edge_type": "DECOMPOSE",
-      "metadata": {
-        "and_or": "AND"
-      }
-    },
-    {
-      "edge_id": "3d79ab9b-e18e-49ec-a223-27b1dd60ada4",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
-      "from_task_id": "e733e38c-d47b-4b5b-9c3e-2490304e183c",
-      "to_task_id": "2683e872-fa67-4f31-91c7-a489d03a81a9",
-      "edge_type": "DECOMPOSE",
-      "metadata": {
-        "and_or": "AND"
-      }
-    },
-    {
-      "edge_id": "00f56405-4a68-427d-9589-a9bd12247ce5",
-      "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
-      "from_task_id": "e733e38c-d47b-4b5b-9c3e-2490304e183c",
-      "to_task_id": "d9148fb8-4006-442e-95cf-cdf68fbcffc2",
+      "edge_id": "bdc7024f-7728-4109-9c9c-6984267859c7",
+      "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
+      "from_task_id": "f963e8be-8189-4c80-acce-cd4cf378d3c3",
+      "to_task_id": "2f632058-7d87-4829-8e50-81da65d49e01",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     }
   ],
-  "requirements": [
-    {
-      "name": "game_config",
-      "description": "可调参数配置表 (BOSS间隔, 弹幕密度等)",
-      "accepted_types": [
-        "json"
-      ],
-      "suggested_path": "workspace/inputs/game_config.json",
-      "requirement_id": "31e56a99-f2c4-4cc5-8913-04b9b12054d9",
-      "task_id": "d9148fb8-4006-442e-95cf-cdf68fbcffc2",
-      "kind": "FILE",
-      "source": "USER",
-      "required": 1,
-      "min_count": 1,
-      "allowed_types": []
-    }
-  ],
+  "requirements": [],
   "plan": {
     "title": "请你用 HTML5 Canvas + 原生 JavaScript 实现一个“打飞机 / 弹幕射击”小游戏，要求一个 HTML 文件即可运行，复制到浏览器就能玩。",
-    "plan_id": "e2e90eea-f0ef-4bf1-a1df-6baa6483207b",
-    "root_task_id": "e733e38c-d47b-4b5b-9c3e-2490304e183c",
-    "created_at": "2026-01-03T07:16:15Z",
+    "plan_id": "8fb1928c-08bb-492e-8ea0-78421f027a48",
+    "root_task_id": "f963e8be-8189-4c80-acce-cd4cf378d3c3",
+    "created_at": "2026-01-03T11:13:43Z",
     "owner_agent_id": "xiaobo",
     "constraints": {
       "deadline": null,

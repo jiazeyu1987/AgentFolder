@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any
 
 from core.events import emit_event
 from core.util import utc_now_iso
@@ -30,6 +31,89 @@ def _requirements_satisfied(conn: sqlite3.Connection, task_id: str) -> Tuple[boo
                 }
             )
     return (len(missing) == 0), missing
+
+
+def _parse_allowed_types(raw: Optional[str]) -> List[str]:
+    if not raw:
+        return []
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, list):
+            return [str(x).lower() for x in obj if isinstance(x, str) and str(x).strip()]
+    except Exception:
+        return []
+    return []
+
+
+def _write_required_docs(task_id: str, required_docs: List[Dict[str, Any]]) -> Path:
+    """
+    Mirror run.py required_docs format so UI + parsers can reuse it.
+    """
+    from core.util import ensure_dir
+
+    ensure_dir(config.REQUIRED_DOCS_DIR)
+    path = config.REQUIRED_DOCS_DIR / f"{task_id}.md"
+    lines = [
+        f"# Required Docs for {task_id}",
+        "",
+        f"> NOTE: System will auto-search `{config.BASELINE_INPUTS_DIR.as_posix()}/` first. If not found, place files under `{config.INPUTS_DIR.as_posix()}/` as suggested below.",
+        "",
+    ]
+    for doc in required_docs:
+        lines.append(f"- {doc.get('name','')}: {doc.get('description','')}")
+        if doc.get("accepted_types") is not None:
+            lines.append(f"  - accepted_types: {doc.get('accepted_types')}")
+        if doc.get("suggested_path"):
+            lines.append(f"  - suggested_path: {doc.get('suggested_path')}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _required_docs_from_missing_requirements(conn: sqlite3.Connection, *, task_id: str, missing: List[Dict[str, object]]) -> List[Dict[str, Any]]:
+    by_id: Dict[str, Dict[str, Any]] = {}
+    rows = conn.execute(
+        """
+        SELECT requirement_id, name, allowed_types_json, source, validation_json
+        FROM input_requirements
+        WHERE task_id = ? AND required = 1
+        """,
+        (task_id,),
+    ).fetchall()
+    for r in rows:
+        by_id[str(r["requirement_id"])] = {
+            "name": str(r["name"] or "").strip(),
+            "accepted_types": _parse_allowed_types(r["allowed_types_json"]),
+            "source": str(r["source"] or "").strip(),
+            "validation_json": r["validation_json"],
+        }
+
+    out: List[Dict[str, Any]] = []
+    for m in missing:
+        rid = str(m.get("requirement_id") or "").strip()
+        meta = by_id.get(rid) or {}
+        name = str(meta.get("name") or m.get("name") or "").strip() or "unknown"
+        desc = ""
+        vraw = meta.get("validation_json")
+        if isinstance(vraw, str) and vraw.strip():
+            try:
+                vobj = json.loads(vraw)
+            except Exception:
+                vobj = None
+            if isinstance(vobj, dict):
+                desc = str(vobj.get("description") or vobj.get("prompt") or "").strip()
+        if not desc:
+            src = str(meta.get("source") or "").strip()
+            desc = f"Provide input for `{name}`" + (f" (source={src})" if src else "")
+
+        out.append(
+            {
+                "name": name,
+                "description": desc,
+                "accepted_types": meta.get("accepted_types") or [],
+                "suggested_path": f"workspace/inputs/{name}/",
+            }
+        )
+    return out
 
 
 def _deps_satisfied(conn: sqlite3.Connection, plan_id: str, task_id: str) -> bool:
@@ -350,8 +434,41 @@ def recompute_readiness_for_plan(conn: sqlite3.Connection, *, plan_id: str) -> i
             if status == "BLOCKED" and blocked_reason == "WAITING_INPUT" and req_ok:
                 _set_status(conn, plan_id=plan_id, task_id=task_id, status="READY", blocked_reason=None)
                 changed += 1
-            if not req_ok:
-                emit_event(conn, plan_id=plan_id, task_id=task_id, event_type="WAITING_INPUT", payload={"missing_requirements": missing})
+            if deps_ok and (not req_ok):
+                # Persist an actionable required_docs file derived from plan input_requirements so users can fill inputs.
+                required_docs = _required_docs_from_missing_requirements(conn, task_id=task_id, missing=missing)
+                req_path = _write_required_docs(task_id, required_docs)
+                payload = {"missing_requirements": missing, "required_docs_path": str(req_path), "required_docs": required_docs}
+
+                # Deduplicate repeated events (readiness recompute can run often).
+                try:
+                    last = conn.execute(
+                        "SELECT payload_json FROM task_events WHERE plan_id=? AND task_id=? AND event_type='WAITING_INPUT' ORDER BY created_at DESC LIMIT 1",
+                        (plan_id, task_id),
+                    ).fetchone()
+                    if last and last["payload_json"]:
+                        prev = json.loads(last["payload_json"] or "{}")
+                        if isinstance(prev, dict) and prev.get("missing_requirements") == missing:
+                            continue
+                except Exception:
+                    pass
+
+                emit_event(conn, plan_id=plan_id, task_id=task_id, event_type="WAITING_INPUT", payload=payload)
+                try:
+                    from core.audit_log import log_audit
+
+                    log_audit(
+                        conn,
+                        category="INPUTS",
+                        action="INPUT_REQUIRED_SET",
+                        message="missing required inputs",
+                        plan_id=plan_id,
+                        task_id=task_id,
+                        ok=True,
+                        payload={"required_docs_path": str(req_path), "names": [d.get("name") for d in required_docs]},
+                    )
+                except Exception:
+                    pass
 
     # Aggregate goal completion: parent GOAL becomes DONE when all DECOMPOSE children are DONE.
     parents = conn.execute(

@@ -37,6 +37,7 @@ export default function ControlPanel(props: {
   const [runPending, setRunPending] = useState(false);
   const [runCooldown, setRunCooldown] = useState(false);
   const [runAck, setRunAck] = useState<string | null>(null);
+  const [resetToPlanAck, setResetToPlanAck] = useState<string | null>(null);
 
   const planOptions = useMemo(() => props.plans, [props.plans]);
   const planTitleCounts = useMemo(() => {
@@ -236,6 +237,29 @@ export default function ControlPanel(props: {
           Reset DB
         </button>
         <button
+          className="danger"
+          onClick={async () => {
+            if (!props.selectedPlanId) return;
+            const ok = confirm("Delete all Run results for this plan and restore it to the post-create-plan state?");
+            if (!ok) return;
+            setResetToPlanAck("sending...");
+            try {
+              const res = await api.resetToPlan(props.selectedPlanId);
+              setResetToPlanAck(res.exit_code === 0 ? "done" : "failed");
+              props.onLog(res.stdout || res.stderr || "");
+              props.onRefresh();
+            } catch (e) {
+              setResetToPlanAck("failed");
+              props.onLog(String(e));
+            } finally {
+              setTimeout(() => setResetToPlanAck(null), 1000);
+            }
+          }}
+          disabled={!props.selectedPlanId}
+        >
+          Reset Run
+        </button>
+        <button
           onClick={async () => {
             if (!props.selectedPlanId) return;
             props.onLog("export...");
@@ -247,6 +271,7 @@ export default function ControlPanel(props: {
           Export
         </button>
       </div>
+      {resetToPlanAck ? <div className="muted">Reset Run: {resetToPlanAck}</div> : null}
 
       <div className="field">
         <label className="inline">

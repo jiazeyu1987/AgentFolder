@@ -45,6 +45,8 @@ function LlmNode(props: { id: string; data: { n: WorkflowResp["nodes"][number] }
   );
 }
 
+const NODE_TYPES = { llm: LlmNode } as const;
+
 export default function LLMWorkflowGraph(props: {
   workflow: WorkflowResp;
   onSelectCall: (llmCallId: string) => void;
@@ -85,7 +87,8 @@ export default function LLMWorkflowGraph(props: {
         edges={laidEdges}
         fitView
         onNodeClick={(_, node) => props.onSelectCall(node.id)}
-        nodeTypes={{ llm: LlmNode }}
+        nodeTypes={NODE_TYPES}
+        preventScrolling={false}
       >
         <MiniMap nodeColor={(n) => (props.workflow.nodes.find((x) => x.llm_call_id === n.id) ? nodeColor(props.workflow.nodes.find((x) => x.llm_call_id === n.id)!) : "#94a3b8")} maskColor="rgba(2,6,23,0.7)" />
         <Controls />

@@ -292,7 +292,11 @@ export default function App() {
       </div>
       <div className="right">
         <ReviewSuggestionsPanel llmCallId={viewMode === "WORKFLOW" ? selectedLlmCallId : null} />
-        {viewMode === "WORKFLOW" ? <LLMCallDetails llmCallId={selectedLlmCallId} /> : viewMode === "TASK" ? <NodeDetails node={selectedNode} /> : null}
+        {viewMode === "WORKFLOW" ? (
+          <LLMCallDetails llmCallId={selectedLlmCallId} />
+        ) : viewMode === "TASK" ? (
+          <NodeDetails node={selectedNode} planId={selectedPlanId} onRefresh={() => refresh().catch((e) => log(String(e)))} />
+        ) : null}
       </div>
     </div>
   );

@@ -120,12 +120,15 @@ def _apply_modify_or_escalate(conn, *, plan_id: str, task_id: str, suggestions: 
     )
 
 
-def _retry_review_or_escalate(conn, *, plan_id: str, task_id: str, reason: str, reviewer: str) -> None:
+def _retry_review_or_escalate(conn, *, plan_id: str, task_id: str, reason: str, reviewer: str, llm_call_id: Optional[str] = None, scope: str = "TASK_REVIEW") -> None:
     """
     Review LLM returned invalid contract. Unlike executor failures, we keep the task in READY_TO_CHECK
     (so the reviewer can retry) until MAX_TASK_ATTEMPTS is exceeded.
     """
-    record_error(conn, plan_id=plan_id, task_id=task_id, error_code="LLM_UNPARSEABLE", message=reason, context={"validator_error": reason, "reviewer": reviewer})
+    ctx: Dict[str, Any] = {"validator_error": reason, "reviewer": reviewer, "agent": reviewer, "scope": scope}
+    if llm_call_id:
+        ctx["llm_call_id"] = str(llm_call_id)
+    record_error(conn, plan_id=plan_id, task_id=task_id, error_code="LLM_UNPARSEABLE", message=reason, context=ctx)
     _inc_attempt(conn, task_id)
     if _attempt_exceeded(conn, task_id):
         _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="MAX_ATTEMPTS_EXCEEDED", message="Max review attempts exceeded")
@@ -458,7 +461,7 @@ def xiaojing_round(
                 normalized_obj = normalized
             if err:
                 validator_error = format_contract_error_short(err)
-        record_llm_call(
+        llm_call_id = record_llm_call(
             conn,
             plan_id=plan_id,
             task_id=task_id,
@@ -488,7 +491,15 @@ def xiaojing_round(
         obj = normalized_obj or res.parsed_json
         obj, err = normalize_and_validate("TASK_CHECK", obj, {"task_id": task_id})
         if err:
-            _retry_review_or_escalate(conn, plan_id=plan_id, task_id=task_id, reason=format_contract_error_short(err), reviewer="xiaojing")
+            _retry_review_or_escalate(
+                conn,
+                plan_id=plan_id,
+                task_id=task_id,
+                reason=format_contract_error_short(err),
+                reviewer="xiaojing",
+                llm_call_id=llm_call_id,
+                scope="TASK_REVIEW",
+            )
             continue
 
         write_review_json(config.REVIEWS_DIR, task_id=task_id, review=obj)
@@ -780,7 +791,7 @@ def xiaojing_check_round(
                 normalized_obj = normalized
             if err:
                 validator_error = format_contract_error_short(err)
-        record_llm_call(
+        llm_call_id = record_llm_call(
             conn,
             plan_id=plan_id,
             task_id=check_task_id,
@@ -811,7 +822,15 @@ def xiaojing_check_round(
         obj = normalized_obj or res.parsed_json
         obj, err = normalize_and_validate("TASK_CHECK", obj, {"task_id": check_task_id})
         if err:
-            _retry_review_or_escalate(conn, plan_id=plan_id, task_id=check_task_id, reason=format_contract_error_short(err), reviewer="xiaojing")
+            _retry_review_or_escalate(
+                conn,
+                plan_id=plan_id,
+                task_id=check_task_id,
+                reason=format_contract_error_short(err),
+                reviewer="xiaojing",
+                llm_call_id=llm_call_id,
+                scope="CHECK_NODE_REVIEW",
+            )
             continue
 
         write_review_json(config.REVIEWS_DIR, task_id=check_task_id, review=obj)
@@ -925,7 +944,7 @@ def xiaoxie_check_round(
                 normalized_obj = normalized
             if err:
                 validator_error = format_contract_error_short(err)
-        record_llm_call(
+        llm_call_id = record_llm_call(
             conn,
             plan_id=plan_id,
             task_id=check_task_id,
@@ -956,7 +975,15 @@ def xiaoxie_check_round(
         obj = normalized_obj or res.parsed_json
         obj, err = normalize_and_validate("TASK_CHECK", obj, {"task_id": check_task_id})
         if err:
-            _retry_review_or_escalate(conn, plan_id=plan_id, task_id=check_task_id, reason=format_contract_error_short(err), reviewer="xiaoxie")
+            _retry_review_or_escalate(
+                conn,
+                plan_id=plan_id,
+                task_id=check_task_id,
+                reason=format_contract_error_short(err),
+                reviewer="xiaoxie",
+                llm_call_id=llm_call_id,
+                scope="CHECK_NODE_REVIEW",
+            )
             continue
 
         write_review_json(config.REVIEWS_DIR, task_id=check_task_id, review=obj)

@@ -12,6 +12,7 @@ import type {
   ErrorsResp,
   TopTasksResp,
   AuditResp,
+  ResetToPlanResp,
 } from "./types";
 
 async function httpJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -118,10 +119,12 @@ export function getPromptFile(path: string, maxChars = 200_000): Promise<PromptF
   return httpJson<PromptFileResp>(`/api/prompt_file?${usp.toString()}`);
 }
 
-export function getErrors(params: { plan_id?: string; plan_id_missing?: boolean; limit?: number }): Promise<ErrorsResp> {
+export function getErrors(params: { plan_id?: string; plan_id_missing?: boolean; task_id?: string; include_related?: boolean; limit?: number }): Promise<ErrorsResp> {
   const usp = new URLSearchParams();
   if (params.plan_id) usp.set("plan_id", params.plan_id);
   if (params.plan_id_missing) usp.set("plan_id_missing", "true");
+  if (params.task_id) usp.set("task_id", params.task_id);
+  if (params.include_related) usp.set("include_related", "true");
   if (params.limit) usp.set("limit", String(params.limit));
   return httpJson<ErrorsResp>(`/api/errors?${usp.toString()}`);
 }
@@ -144,6 +147,21 @@ export function getAudit(params: { top_task_hash?: string; plan_id?: string; job
 export function resetDb(purgeAll: boolean): Promise<unknown> {
   const payload = purgeAll ? { purge_workspace: true, purge_tasks: true, purge_logs: true } : {};
   return httpJson("/api/reset-db", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function resetFailed(planId: string, opts?: { include_blocked?: boolean; reset_attempts?: boolean }): Promise<{ exit_code: number; stdout: string; stderr: string }> {
+  return httpJson("/api/reset-failed", {
+    method: "POST",
+    body: JSON.stringify({
+      plan_id: planId,
+      include_blocked: Boolean(opts?.include_blocked),
+      reset_attempts: Boolean(opts?.reset_attempts),
+    }),
+  });
+}
+
+export function resetToPlan(planId: string): Promise<ResetToPlanResp> {
+  return httpJson<ResetToPlanResp>("/api/reset-to-plan", { method: "POST", body: JSON.stringify({ plan_id: planId }) });
 }
 
 export function exportDeliverables(planId: string, includeReviews: boolean): Promise<unknown> {

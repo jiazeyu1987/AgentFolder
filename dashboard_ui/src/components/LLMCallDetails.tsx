@@ -119,29 +119,12 @@ export default function LLMCallDetails(props: { llmCallId: string | null }) {
                 action={review ? String((review as any).action_required ?? "-") : "-"}
               </span>
             </div>
-            <div className="muted" style={{ marginTop: 6 }}>
-              Suggestion: <span className="mono">{suggestionSummary}</span>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 6, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 16, fontWeight: 900, color: "#a3e635" }}>Suggestion</span>
+              <span className="mono" style={{ fontSize: 16, fontWeight: 900, color: "#a3e635" }}>
+                {suggestionSummary}
+              </span>
             </div>
-            <div className="muted" style={{ marginTop: 6 }}>
-              Final Prompt: <span className="mono">{preview(call.prompt_text)}</span>
-            </div>
-            <details style={{ marginTop: 6 }}>
-              <summary>Final Prompt (expand)</summary>
-              <div className="row">
-                <button onClick={() => copyText(call.prompt_text ?? "")}>Copy</button>
-              </div>
-              <pre className="pre">{call.prompt_text ?? ""}</pre>
-            </details>
-            <div className="muted" style={{ marginTop: 6 }}>
-              Raw Response: <span className="mono">{preview(call.response_text)}</span>
-            </div>
-            <details style={{ marginTop: 6 }}>
-              <summary>Raw Response (expand)</summary>
-              <div className="row">
-                <button onClick={() => copyText(call.response_text ?? "")}>Copy</button>
-              </div>
-              <pre className="pre">{call.response_text ?? ""}</pre>
-            </details>
             {call.validator_error ? <div className="muted" style={{ marginTop: 6 }}>validator_error: {String(call.validator_error).slice(0, 400)}</div> : null}
           </div>
 

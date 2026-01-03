@@ -1068,6 +1068,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_reset.add_argument("--include-blocked", action="store_true", help="Also reset BLOCKED tasks to READY")
     p_reset.add_argument("--reset-attempts", action="store_true", help="Also reset attempt_count to 0")
 
+    p_reset_to_plan = sub.add_parser("reset-to-plan", help="Delete run outputs and restore a plan to post-create-plan, pre-run state.")
+    p_reset_to_plan.add_argument("--plan-id", type=str, default=None, help="Plan id (defaults to current plan in tasks/plan.json)")
+
     p_reset_db = sub.add_parser("reset-db", help="Delete ALL state.db data (removes the DB file).")
     p_reset_db.add_argument("--purge-workspace", action="store_true", help="Also delete workspace/* contents (inputs/artifacts/reviews/required_docs).")
     p_reset_db.add_argument("--purge-tasks", action="store_true", help="Also delete tasks/* contents (e.g. tasks/plan.json).")
@@ -1241,6 +1244,50 @@ def main(argv: Optional[List[str]] = None) -> int:
             emit_event(conn, plan_id=plan_id, task_id=r["task_id"], event_type="STATUS_CHANGED", payload={"status": "READY", "blocked_reason": None})
         conn.commit()
         print(f"reset_failed: {len(rows)}")
+        return 0
+    if args.cmd == "reset-to-plan":
+        conn = connect(args.db)
+        apply_migrations(conn, config.MIGRATIONS_DIR)
+        plan_id = args.plan_id
+        if not plan_id:
+            # Best-effort: read from tasks/plan.json
+            try:
+                import json as _json
+
+                plan_id = _json.loads(config.PLAN_PATH_DEFAULT.read_text(encoding="utf-8"))["plan"]["plan_id"]
+            except Exception:
+                plan_id = None
+        if not plan_id:
+            print("Provide --plan-id or ensure tasks/plan.json exists", file=sys.stderr)
+            return 2
+        from core.reset_to_plan import reset_plan_to_pre_run
+
+        try:
+            res = reset_plan_to_pre_run(conn, plan_id=str(plan_id))
+        except Exception as exc:
+            print(f"reset-to-plan failed: {exc}", file=sys.stderr)
+            return 1
+        print(
+            json.dumps(
+                {
+                    "plan_id": res.plan_id,
+                    "task_count": res.task_count,
+                    "deleted": {
+                        "artifacts": res.deleted_artifacts,
+                        "approvals": res.deleted_approvals,
+                        "reviews": res.deleted_reviews,
+                        "skill_runs": res.deleted_skill_runs,
+                        "llm_calls": res.deleted_llm_calls,
+                        "task_events": res.deleted_task_events,
+                        "evidences": res.deleted_evidences,
+                        "audit_events": res.deleted_audit_events,
+                        "files": res.deleted_files,
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
     if args.cmd == "reset-db":
         db_path = Path(args.db)

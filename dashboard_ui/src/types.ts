@@ -255,3 +255,5 @@ export interface AuditResp {
   }>;
   ts: string;
 }
+
+export type ResetToPlanResp = { exit_code: number; stdout: string; stderr: string };

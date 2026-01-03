@@ -397,6 +397,16 @@ class RuntimeConfigUpdateIn(BaseModel):
     plan_review_pass_score: Optional[int] = None
 
 
+class ResetFailedIn(BaseModel):
+    plan_id: str
+    include_blocked: bool = False
+    reset_attempts: bool = False
+
+
+class ResetToPlanIn(BaseModel):
+    plan_id: str
+
+
 def _job_status_from_state(*, alive: bool, state_status: Optional[str], last_error: Any) -> str:
     if alive:
         return "RUNNING"
@@ -465,6 +475,8 @@ def query_plan_errors(
     *,
     plan_id: Optional[str],
     plan_id_missing: bool,
+    task_id: Optional[str] = None,
+    include_related: bool = False,
     limit: int,
 ) -> List[Dict[str, Any]]:
     """
@@ -475,26 +487,66 @@ def query_plan_errors(
     """
     out: List[Dict[str, Any]] = []
     limit = max(1, min(int(limit), 500))
+    task_id_norm = str(task_id).strip() if task_id and str(task_id).strip() else None
+    task_ids: List[str] | None = None
+    if task_id_norm:
+        task_ids = [task_id_norm]
+        if include_related and plan_id and str(plan_id).strip():
+            # Include related CHECK nodes that review this task (v2 workflow).
+            rows_rel = conn.execute(
+                """
+                SELECT task_id
+                FROM task_nodes
+                WHERE plan_id = ?
+                  AND active_branch = 1
+                  AND review_target_task_id = ?
+                """,
+                (str(plan_id).strip(), task_id_norm),
+            ).fetchall()
+            for r in rows_rel:
+                tid = str(r["task_id"]) if r and r["task_id"] is not None else ""
+                if tid and tid not in task_ids:
+                    task_ids.append(tid)
 
     # 1) task_events ERROR
     if plan_id and str(plan_id).strip():
-        rows = conn.execute(
-            """
-            SELECT
-              e.event_id,
-              e.created_at,
-              e.plan_id,
-              e.task_id,
-              tn.title AS task_title,
-              e.payload_json
-            FROM task_events e
-            LEFT JOIN task_nodes tn ON tn.task_id = e.task_id
-            WHERE e.plan_id = ? AND e.event_type = 'ERROR'
-            ORDER BY e.created_at DESC
-            LIMIT ?
-            """,
-            (str(plan_id).strip(), limit),
-        ).fetchall()
+        if task_ids:
+            placeholders = ",".join(["?"] * len(task_ids))
+            rows = conn.execute(
+                """
+                SELECT
+                  e.event_id,
+                  e.created_at,
+                  e.plan_id,
+                  e.task_id,
+                  tn.title AS task_title,
+                  e.payload_json
+                FROM task_events e
+                LEFT JOIN task_nodes tn ON tn.task_id = e.task_id
+                WHERE e.plan_id = ? AND e.event_type = 'ERROR' AND e.task_id IN (PLACEHOLDERS)
+                ORDER BY e.created_at DESC
+                LIMIT ?
+                """.replace("PLACEHOLDERS", placeholders),
+                (str(plan_id).strip(), *task_ids, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                  e.event_id,
+                  e.created_at,
+                  e.plan_id,
+                  e.task_id,
+                  tn.title AS task_title,
+                  e.payload_json
+                FROM task_events e
+                LEFT JOIN task_nodes tn ON tn.task_id = e.task_id
+                WHERE e.plan_id = ? AND e.event_type = 'ERROR'
+                ORDER BY e.created_at DESC
+                LIMIT ?
+                """,
+                (str(plan_id).strip(), limit),
+            ).fetchall()
         for r in rows:
             payload: Dict[str, Any] = {}
             try:
@@ -536,6 +588,9 @@ def query_plan_errors(
     elif plan_id and str(plan_id).strip():
         where.append("plan_id = ?")
         params.append(str(plan_id).strip())
+    if task_ids:
+        where.append("task_id IN (" + ",".join(["?"] * len(task_ids)) + ")")
+        params.extend(task_ids)
     rows = conn.execute(
         f"""
         SELECT
@@ -640,9 +695,18 @@ def get_errors(
     plan_id: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
     plan_id_missing: bool = Query(default=False),
+    task_id: Optional[str] = Query(default=None),
+    include_related: bool = Query(default=False),
 ) -> Dict[str, Any]:
     with _db_conn() as conn:
-        items = query_plan_errors(conn, plan_id=str(plan_id).strip() if plan_id and str(plan_id).strip() else None, plan_id_missing=bool(plan_id_missing), limit=int(limit))
+        items = query_plan_errors(
+            conn,
+            plan_id=str(plan_id).strip() if plan_id and str(plan_id).strip() else None,
+            plan_id_missing=bool(plan_id_missing),
+            task_id=str(task_id).strip() if task_id and str(task_id).strip() else None,
+            include_related=bool(include_related),
+            limit=int(limit),
+        )
         return {"errors": items, "ts": utc_now_iso()}
 
 
@@ -1209,6 +1273,51 @@ def run_once() -> Dict[str, Any]:
             log_audit(conn, category="API_CALL", action="RUN_ONCE", message="run once", payload={"exit_code": int(proc.returncode)})
     except Exception:
         pass
+    return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
+
+
+@app.post("/api/reset-failed")
+def reset_failed(body: ResetFailedIn) -> Dict[str, Any]:
+    python_exe = _python_executable()
+    cmd = [python_exe, str(ROOT_DIR / "agent_cli.py"), "--db", str(config.DB_PATH_DEFAULT), "reset-failed", "--plan-id", str(body.plan_id)]
+    if bool(body.include_blocked):
+        cmd.append("--include-blocked")
+    if bool(body.reset_attempts):
+        cmd.append("--reset-attempts")
+    try:
+        with _db_conn() as conn:
+            log_audit(
+                conn,
+                category="API_CALL",
+                action="RESET_FAILED",
+                message="reset failed tasks",
+                plan_id=str(body.plan_id),
+                payload={"include_blocked": bool(body.include_blocked), "reset_attempts": bool(body.reset_attempts)},
+            )
+    except Exception:
+        pass
+    creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    proc = subprocess.run(cmd, cwd=str(ROOT_DIR), capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=creationflags)
+    return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
+
+
+@app.post("/api/reset-to-plan")
+def reset_to_plan(body: ResetToPlanIn) -> Dict[str, Any]:
+    python_exe = _python_executable()
+    cmd = [python_exe, str(ROOT_DIR / "agent_cli.py"), "--db", str(config.DB_PATH_DEFAULT), "reset-to-plan", "--plan-id", str(body.plan_id)]
+    try:
+        with _db_conn() as conn:
+            log_audit(
+                conn,
+                category="API_CALL",
+                action="RESET_TO_PLAN",
+                message="reset-to-plan (delete run outputs, keep plan)",
+                plan_id=str(body.plan_id),
+            )
+    except Exception:
+        pass
+    creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    proc = subprocess.run(cmd, cwd=str(ROOT_DIR), capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=creationflags)
     return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
 
 

@@ -61,6 +61,8 @@ function TaskNode(props: { id: string; data: { label: string; status: string; co
   );
 }
 
+const NODE_TYPES = { task: TaskNode } as const;
+
 export default function TaskGraph(props: {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -116,7 +118,8 @@ export default function TaskGraph(props: {
         edges={laidEdges}
         fitView
         onNodeClick={(_, node) => props.onSelectNode(node.id)}
-        nodeTypes={{ task: TaskNode }}
+        nodeTypes={NODE_TYPES}
+        preventScrolling={false}
       >
         <MiniMap nodeColor={(n) => (nodeById.get(n.id) ? statusColor(nodeById.get(n.id)!.status) : "#94a3b8")} maskColor="rgba(2,6,23,0.7)" />
         <Controls />
