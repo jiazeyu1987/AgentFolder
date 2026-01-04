@@ -100,6 +100,10 @@ def test_plan_review_generates_bounded_notes_and_feeds_next_gen(tmp_path: Path, 
             _plan_review_modify(),
             _plan_gen_payload("p2"),
             _plan_review_approve(),
+            # Stage 2 (BINDINGS) review
+            _plan_review_approve(),
+            # Stage 3 (EXECUTION) review
+            _plan_review_approve(),
         ]
     )
 

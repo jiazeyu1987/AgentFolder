@@ -67,7 +67,7 @@ export interface GraphEdge {
 }
 
 export interface PlansResp {
-  plans: Array<{ plan_id: string; title: string; root_task_id: string; created_at: string; workflow_version: 1 | 2 }>;
+  plans: Array<{ plan_id: string; title: string; root_task_id: string; created_at: string; workflow_version: 1 | 2; top_task_hash: string | null }>;
   ts: string;
 }
 
@@ -117,6 +117,8 @@ export interface CreatePlanJobResp {
   plan_id: string | null;
   attempt: number;
   phase: CreatePlanPhase;
+  stage?: string;
+  stage_attempt?: number;
   review_attempt: number;
   last_llm_call: { created_at: string; scope: string; agent: string; error_code: string | null; validator_error: string | null } | null;
   hint: string;
@@ -170,6 +172,14 @@ export interface TaskDetailsResp {
   };
   active_artifact: { artifact_id: string; name: string; format: string; path: string; sha256: string; created_at: string } | null;
   artifacts: Array<{ artifact_id: string; name: string; format: string; path: string; sha256: string; created_at: string }>;
+  depends_on: Array<{
+    task_id: string;
+    title: string;
+    node_type: string;
+    status: string;
+    approved_artifact: { artifact_id: string; name: string; format: string; path: string; sha256: string; created_at: string } | null;
+    active_artifact: { artifact_id: string; name: string; format: string; path: string; sha256: string; created_at: string } | null;
+  }>;
   acceptance_criteria: string[];
   required_docs_path: string;
   artifact_dir: string;
@@ -184,13 +194,14 @@ export interface PromptFileResp {
   ts: string;
 }
 
-export type WorkflowEdgeType = "NEXT" | "PAIR";
+export type WorkflowEdgeType = "NEXT" | "PAIR" | "STAGE_NEXT";
 
 export interface WorkflowResp {
   schema_version: "workflow_v1";
   plan: { plan_id: string | null; title: string | null; workflow_mode: string };
   nodes: Array<{
     llm_call_id: string;
+    source_llm_call_id?: string | null;
     created_at: string;
     plan_id: string | null;
     task_id: string | null;
@@ -199,13 +210,18 @@ export interface WorkflowResp {
     scope: string;
     attempt: number;
     review_attempt: number;
+    stage?: string | null;
+    stage_attempt?: number | null;
+    node_kind?: string | null;
     error_code: string | null;
     validator_error: string | null;
     total_score?: number | null;
     action_required?: string | null;
   }>;
-  edges: Array<{ from: string; to: string; edge_type: WorkflowEdgeType }>;
+  edges: Array<{ from: string; to: string; edge_type: WorkflowEdgeType; stage?: string | null }>;
   groups: Array<{ group_type: "ATTEMPT"; id: string; attempt: number; node_ids: string[] }>;
+  total_rows?: number;
+  returned_rows?: number;
   ts: string;
 }
 

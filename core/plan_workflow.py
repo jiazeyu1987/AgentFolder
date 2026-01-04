@@ -15,6 +15,7 @@ from core.llm_calls import record_llm_call
 from core.llm_client import LLMClient
 from core.models import validate_plan_dict
 from core.plan_loader import upsert_plan
+from core.plan_bindings import add_default_upstream_bindings
 from core.prompts import PromptBundle, build_xiaobo_plan_prompt, build_xiaojing_plan_review_prompt
 from core.runtime_config import get_runtime_config
 from core.reviews import insert_review, write_review_json
@@ -348,6 +349,163 @@ def generate_and_review_plan(
         if attempt > max_total_attempts:
             raise PlanNotApprovedError(plan_id=locals().get("plan_id"), max_attempts=max_total_attempts, last_review=last_review)
 
+        from core.util import normalize_title
+
+        top_task_hash = stable_hash_text(normalize_title(user_top_task))
+
+        def _review_stage(*, stage: str, plan_id: str, plan_json: Dict[str, Any], stage_checklist: Optional[List[str]] = None) -> Dict[str, Any]:
+            review_prompt = build_xiaojing_plan_review_prompt(
+                prompts,
+                plan_id=plan_id,
+                rubric_json=rubric,
+                plan_json=plan_json,
+                stage=stage,
+                stage_checklist=stage_checklist or [],
+            )
+            review_prompt_to_use = review_prompt
+            review_json: Dict[str, Any] = {}
+
+            review_attempt = 0
+            while True:
+                review_attempt += 1
+                if time.time() - started_at_ts > float(config.MAX_PLAN_RUNTIME_SECONDS):
+                    with transaction(conn):
+                        emit_event(
+                            conn,
+                            plan_id=plan_id,
+                            event_type="ERROR",
+                            payload={
+                                "error_code": "PLAN_REVIEW_TIMEOUT",
+                                "message": "PLAN_REVIEW timed out before producing a valid review JSON.",
+                                "context": {
+                                    "attempt": attempt,
+                                    "review_attempt": review_attempt,
+                                    "stage": stage,
+                                    "hint": "Open UI -> LLM Workflow to inspect the last PLAN_GEN/PLAN_REVIEW calls; consider increasing MAX_PLAN_RUNTIME_SECONDS if LLM is slow.",
+                                },
+                            },
+                        )
+                    raise PlanWorkflowError("plan review still invalid (timeout); see llm_calls/LLM Workflow for details")
+
+                review_res = llm.call_json(review_prompt_to_use)
+                review_call_id = record_llm_call(
+                    conn,
+                    plan_id=plan_id,
+                    task_id=None,
+                    top_task_hash=top_task_hash,
+                    agent="xiaojing",
+                    scope="PLAN_REVIEW",
+                    provider=review_res.provider,
+                    prompt_text=review_prompt_to_use,
+                    response_text=review_res.raw_response_text,
+                    started_at_ts=review_res.started_at_ts,
+                    finished_at_ts=review_res.finished_at_ts,
+                    runtime_context_hash=stable_hash_text(review_prompt_to_use),
+                    shared_prompt_version=prompts.shared.version,
+                    shared_prompt_hash=prompts.shared.sha256,
+                    agent_prompt_version=prompts.xiaojing.version,
+                    agent_prompt_hash=prompts.xiaojing.sha256,
+                    parsed_json=review_res.parsed_json,
+                    normalized_json=None,
+                    validator_error=None,
+                    error_code=review_res.error_code,
+                    error_message=review_res.error,
+                    meta={
+                        "attempt": attempt,
+                        "review_attempt": review_attempt,
+                        "scope": "PLAN_REVIEW",
+                        "stage": stage,
+                        "extra_calls": int(getattr(review_res, "extra_calls", 0)),
+                        "repair_used": bool(getattr(review_res, "repair_used", False)),
+                    },
+                )
+                _append_llm_run(
+                    config.LLM_RUNS_LOG_PATH,
+                    {
+                        "ts": utc_now_iso(),
+                        "plan_id": plan_id,
+                        "task_id": None,
+                        "agent": "xiaojing",
+                        "shared_prompt_version": prompts.shared.version,
+                        "shared_prompt_hash": prompts.shared.sha256,
+                        "agent_prompt_version": prompts.xiaojing.version,
+                        "agent_prompt_hash": prompts.xiaojing.sha256,
+                        "runtime_context_hash": stable_hash_text(review_prompt_to_use),
+                        "final_prompt": review_prompt_to_use,
+                        "response": review_res.parsed_json or review_res.raw_response_text,
+                        "error": {"code": review_res.error_code, "message": review_res.error} if review_res.error else None,
+                        "scope": "PLAN_REVIEW",
+                        "attempt": attempt,
+                        "review_attempt": review_attempt,
+                        "stage": stage,
+                    },
+                )
+
+                if review_res.error or not isinstance(review_res.parsed_json, dict):
+                    reason = str(review_res.error or review_res.error_code or "review_unparseable")
+                    try:
+                        conn.execute("UPDATE llm_calls SET validator_error=? WHERE llm_call_id=?", (_limit_chars(reason, max_chars=500), review_call_id))
+                        from core.audit_log import annotate_llm_output_for_retry
+
+                        annotate_llm_output_for_retry(conn, llm_call_id=review_call_id, retry_kind="PARSE_ERROR", retry_reason=reason)
+                    except Exception:
+                        pass
+                    review_prompt_to_use = _build_review_retry_prompt(original_prompt=review_prompt, invalid_response=review_res.raw_response_text, reason=reason)
+                    if (not keep_trying) and review_attempt >= max(1, int(max_review_attempts_per_plan)):
+                        break
+                    continue
+
+                review_json, review_err = normalize_and_validate("PLAN_REVIEW", review_res.parsed_json, {"plan_id": plan_id, "task_id": plan_id})
+                if not isinstance(review_json, dict):
+                    review_json = {}
+                if not review_err:
+                    try:
+                        conn.execute(
+                            """
+                            UPDATE llm_calls
+                            SET normalized_json = ?, validator_error = NULL
+                            WHERE llm_call_id = ?
+                            """,
+                            (json.dumps(review_json, ensure_ascii=False), review_call_id),
+                        )
+                    except Exception:
+                        pass
+                    break
+
+                detailed = _review_invalid_reason(review_json=review_json, expected_target="PLAN")
+                try:
+                    conn.execute("UPDATE llm_calls SET validator_error=? WHERE llm_call_id=?", (_limit_chars(detailed, max_chars=500), review_call_id))
+                    from core.audit_log import annotate_llm_output_for_retry
+
+                    annotate_llm_output_for_retry(conn, llm_call_id=review_call_id, retry_kind="CONTRACT_MISMATCH", retry_reason=detailed)
+                except Exception:
+                    pass
+                review_prompt_to_use = _build_review_retry_prompt(original_prompt=review_prompt, invalid_response=review_res.raw_response_text, reason=detailed)
+                if (not keep_trying) and review_attempt >= max(1, int(max_review_attempts_per_plan)):
+                    break
+
+            _, final_review_err = normalize_and_validate("PLAN_REVIEW", review_json, {"plan_id": plan_id, "task_id": plan_id})
+            if final_review_err:
+                with transaction(conn):
+                    emit_event(
+                        conn,
+                        plan_id=plan_id,
+                        event_type="ERROR",
+                        payload={
+                            "error_code": "PLAN_REVIEW_INVALID",
+                            "message": "PLAN_REVIEW output remained contract-invalid after retries.",
+                            "context": {
+                                "attempt": attempt,
+                                "stage": stage,
+                                "hint": "Open UI -> LLM Workflow and click the latest PLAN_REVIEW node to see validator_error and raw output.",
+                                "validator_error": format_contract_error_short(final_review_err),
+                            },
+                        },
+                    )
+                raise PlanWorkflowError("plan review invalid after retries (see llm_calls/LLM Workflow for details)")
+
+            return review_json
+
         plan_prompt = build_xiaobo_plan_prompt(
             prompts,
             top_task=user_top_task,
@@ -362,6 +520,7 @@ def generate_and_review_plan(
             conn,
             plan_id=None,
             task_id=None,
+            top_task_hash=top_task_hash,
             agent="xiaobo",
             scope="PLAN_GEN",
             provider=plan_res.provider,
@@ -379,7 +538,7 @@ def generate_and_review_plan(
             validator_error=None,
             error_code=plan_res.error_code,
             error_message=plan_res.error,
-            meta={"attempt": attempt, "extra_calls": int(getattr(plan_res, "extra_calls", 0)), "repair_used": bool(getattr(plan_res, "repair_used", False))},
+            meta={"attempt": attempt, "stage": "STRUCTURE", "extra_calls": int(getattr(plan_res, "extra_calls", 0)), "repair_used": bool(getattr(plan_res, "repair_used", False))},
         )
         _append_llm_run(
             config.LLM_RUNS_LOG_PATH,
@@ -398,6 +557,7 @@ def generate_and_review_plan(
                 "error": {"code": plan_res.error_code, "message": plan_res.error} if plan_res.error else None,
                 "scope": "PLAN_GENERATION",
                 "attempt": attempt,
+                "stage": "STRUCTURE",
             },
         )
         if plan_res.error or not plan_res.parsed_json:
@@ -481,166 +641,153 @@ def generate_and_review_plan(
         except Exception:
             pass
 
-        review_prompt = build_xiaojing_plan_review_prompt(prompts, plan_id=plan_id, rubric_json=rubric, plan_json=plan_json)
-        review_prompt_to_use = review_prompt
-        review_json: Dict[str, Any] = {}
-
-        # Review output can be unstable; retry reviewer until we get a valid `xiaojing_review_v1` JSON.
-        # IMPORTANT: if review is still invalid after retries, do NOT proceed to next PLAN_GEN attempt,
-        # otherwise we lose remediation info and just "self-soothe" by re-reviewing.
-        review_attempt = 0
-        while True:
-            review_attempt += 1
-            if time.time() - started_at_ts > float(config.MAX_PLAN_RUNTIME_SECONDS):
-                with transaction(conn):
-                    emit_event(
-                        conn,
-                        plan_id=plan_id,
-                        event_type="ERROR",
-                        payload={
-                            "error_code": "PLAN_REVIEW_TIMEOUT",
-                            "message": "PLAN_REVIEW timed out before producing a valid review JSON.",
-                            "context": {
-                                "attempt": attempt,
-                                "review_attempt": review_attempt,
-                                "hint": "Open UI -> LLM Workflow to inspect the last PLAN_GEN/PLAN_REVIEW calls; consider increasing MAX_PLAN_RUNTIME_SECONDS if LLM is slow.",
-                            },
-                        },
-                    )
-                raise PlanWorkflowError("plan review still invalid (timeout); see llm_calls/LLM Workflow for details")
-            review_res = llm.call_json(review_prompt_to_use)
-            review_call_id = record_llm_call(
-                conn,
-                plan_id=plan_id,
-                task_id=None,
-                agent="xiaojing",
-                scope="PLAN_REVIEW",
-                provider=review_res.provider,
-                prompt_text=review_prompt_to_use,
-                response_text=review_res.raw_response_text,
-                started_at_ts=review_res.started_at_ts,
-                finished_at_ts=review_res.finished_at_ts,
-                runtime_context_hash=stable_hash_text(review_prompt_to_use),
-                shared_prompt_version=prompts.shared.version,
-                shared_prompt_hash=prompts.shared.sha256,
-                agent_prompt_version=prompts.xiaojing.version,
-                agent_prompt_hash=prompts.xiaojing.sha256,
-                parsed_json=review_res.parsed_json,
-                normalized_json=None,
-                validator_error=None,
-                error_code=review_res.error_code,
-                error_message=review_res.error,
-                meta={
-                    "attempt": attempt,
-                    "review_attempt": review_attempt,
-                    "scope": "PLAN_REVIEW",
-                    "extra_calls": int(getattr(review_res, "extra_calls", 0)),
-                    "repair_used": bool(getattr(review_res, "repair_used", False)),
-                },
-            )
-            _append_llm_run(
-                config.LLM_RUNS_LOG_PATH,
-                {
-                    "ts": utc_now_iso(),
-                    "plan_id": plan_id,
-                    "task_id": None,
-                    "agent": "xiaojing",
-                    "shared_prompt_version": prompts.shared.version,
-                    "shared_prompt_hash": prompts.shared.sha256,
-                    "agent_prompt_version": prompts.xiaojing.version,
-                    "agent_prompt_hash": prompts.xiaojing.sha256,
-                    "runtime_context_hash": stable_hash_text(review_prompt_to_use),
-                    "final_prompt": review_prompt_to_use,
-                    "response": review_res.parsed_json or review_res.raw_response_text,
-                    "error": {"code": review_res.error_code, "message": review_res.error} if review_res.error else None,
-                    "scope": "PLAN_REVIEW",
-                    "attempt": attempt,
-                    "review_attempt": review_attempt,
-                },
-            )
-
-            if review_res.error or not isinstance(review_res.parsed_json, dict):
-                reason = str(review_res.error or review_res.error_code or "review_unparseable")
-                # Persist why we are retrying in telemetry for observability.
-                try:
-                    conn.execute("UPDATE llm_calls SET validator_error=? WHERE llm_call_id=?", (_limit_chars(reason, max_chars=500), review_call_id))
-                    from core.audit_log import annotate_llm_output_for_retry
-
-                    annotate_llm_output_for_retry(conn, llm_call_id=review_call_id, retry_kind="PARSE_ERROR", retry_reason=reason)
-                except Exception:
-                    pass
-                review_prompt_to_use = _build_review_retry_prompt(original_prompt=review_prompt, invalid_response=review_res.raw_response_text, reason=reason)
-                if (not keep_trying) and review_attempt >= max(1, int(max_review_attempts_per_plan)):
-                    break
-                continue
-
-            review_json, review_err = normalize_and_validate("PLAN_REVIEW", review_res.parsed_json, {"plan_id": plan_id, "task_id": plan_id})
-            if not isinstance(review_json, dict):
-                review_json = {}
-            last_review = review_json
-            if not review_err:
-                # Update latest PLAN_REVIEW telemetry row with normalized_json (best-effort).
-                try:
-                    conn.execute(
-                        """
-                        UPDATE llm_calls
-                        SET normalized_json = ?, validator_error = NULL
-                        WHERE llm_call_id = (
-                          SELECT llm_call_id FROM llm_calls
-                          WHERE scope='PLAN_REVIEW' AND plan_id = ?
-                          ORDER BY created_at DESC
-                          LIMIT 1
-                        )
-                        """,
-                        (json.dumps(review_json, ensure_ascii=False), plan_id),
-                    )
-                except Exception:
-                    pass
-                break
-
-            detailed = _review_invalid_reason(review_json=review_json, expected_target="PLAN")
-            try:
-                # Attach concrete contract mismatch detail to the llm_calls + audit timeline.
-                conn.execute("UPDATE llm_calls SET validator_error=? WHERE llm_call_id=?", (_limit_chars(detailed, max_chars=500), review_call_id))
-                from core.audit_log import annotate_llm_output_for_retry
-
-                annotate_llm_output_for_retry(conn, llm_call_id=review_call_id, retry_kind="CONTRACT_MISMATCH", retry_reason=detailed)
-            except Exception:
-                pass
-            review_prompt_to_use = _build_review_retry_prompt(original_prompt=review_prompt, invalid_response=review_res.raw_response_text, reason=detailed)
-            if (not keep_trying) and review_attempt >= max(1, int(max_review_attempts_per_plan)):
-                break
-
-        # Still invalid after reviewer retries => stop early; do NOT proceed to next PLAN_GEN.
-        _, final_review_err = normalize_and_validate("PLAN_REVIEW", review_json, {"plan_id": plan_id, "task_id": plan_id})
-        if final_review_err:
-            with transaction(conn):
-                emit_event(
-                    conn,
-                    plan_id=plan_id,
-                    event_type="ERROR",
-                    payload={
-                        "error_code": "PLAN_REVIEW_INVALID",
-                        "message": "PLAN_REVIEW output remained contract-invalid after retries.",
-                        "context": {
-                            "attempt": attempt,
-                            "hint": "Open UI -> LLM Workflow and click the latest PLAN_REVIEW node to see validator_error and raw output.",
-                            "validator_error": format_contract_error_short(final_review_err),
-                        },
-                    },
-                )
-            raise PlanWorkflowError("plan review invalid after retries (see llm_calls/LLM Workflow for details)")
-
+        review_json = _review_stage(stage="STRUCTURE", plan_id=plan_id, plan_json=plan_json)
+        last_review = review_json
         total_score = int(review_json.get("total_score") or 0)
         action_required = str(review_json.get("action_required") or "")
 
         cfg = get_runtime_config()
         if total_score >= int(cfg.plan_review_pass_score):
+            # Stage 2: deterministic artifact bindings based on DEPENDS_ON edges, then review again.
+            plan_json = add_default_upstream_bindings(plan_json)
+            # Record a stage-specific GEN node so the workflow view shows distinct lanes
+            # (STRUCTURE/BINDINGS/EXECUTION) rather than cloning the same STRUCTURE PLAN_GEN.
+            try:
+                now = time.time()
+                record_llm_call(
+                    conn,
+                    plan_id=plan_id,
+                    task_id=None,
+                    top_task_hash=top_task_hash,
+                    agent="xiaobo",
+                    scope="PLAN_GEN",
+                    provider="SYSTEM",
+                    prompt_text="AUTO(BINDINGS): add default upstream artifact bindings based on DEPENDS_ON edges",
+                    response_text="AUTO(BINDINGS): bindings applied; see normalized_json for the updated plan_json",
+                    started_at_ts=now,
+                    finished_at_ts=now,
+                    runtime_context_hash=stable_hash_text("AUTO_STAGE_GEN:BINDINGS"),
+                    shared_prompt_version=None,
+                    shared_prompt_hash=None,
+                    agent_prompt_version=None,
+                    agent_prompt_hash=None,
+                    parsed_json=None,
+                    normalized_json=json.dumps(plan_json, ensure_ascii=False),
+                    validator_error=None,
+                    error_code=None,
+                    error_message=None,
+                    meta={"attempt": attempt, "stage": "BINDINGS", "stage_attempt": 1, "kind": "AUTO_STAGE_GEN"},
+                )
+            except Exception:
+                pass
+            try:
+                validate_plan_dict(plan_json)
+            except Exception as exc:
+                msg = f"PLAN_INVALID after adding bindings: {exc}"
+                with transaction(conn):
+                    emit_event(conn, plan_id=plan_id, event_type="ERROR", payload={"error_code": "PLAN_INVALID", "message": msg, "context": {"stage": "BINDINGS"}})
+                gen_notes = _limit_chars(msg, max_chars=500)
+                if keep_trying or attempt < max_plan_attempts:
+                    continue
+                raise PlanWorkflowError(msg)
+
+            bindings_review = _review_stage(
+                stage="BINDINGS",
+                plan_id=plan_id,
+                plan_json=plan_json,
+                stage_checklist=[
+                    "Each ACTION clearly lists required upstream artifacts (bindings) for its DEPENDS_ON edges.",
+                    "If a binding references an upstream task, the graph contains a corresponding DEPENDS_ON edge.",
+                ],
+            )
+            last_review = bindings_review
+            if int(bindings_review.get("total_score") or 0) < int(cfg.plan_review_pass_score):
+                with transaction(conn):
+                    emit_event(conn, plan_id=plan_id, event_type="PLAN_REVIEWED", payload={"total_score": int(bindings_review.get("total_score") or 0), "action_required": str(bindings_review.get("action_required") or ""), "attempt": attempt, "stage": "BINDINGS"})
+                review_notes = _build_plan_remediation_note(bindings_review, max_chars=500)
+                try:
+                    ensure_dir(config.REVIEW_NOTES_DIR / plan_id)
+                    (config.REVIEW_NOTES_DIR / plan_id / f"stage_bindings_attempt_{attempt}.md").write_text(review_notes, encoding="utf-8")
+                except Exception:
+                    pass
+                gen_notes = ""
+                if not keep_trying and attempt >= int(max_plan_attempts):
+                    raise PlanNotApprovedError(plan_id=locals().get("plan_id"), max_attempts=max_plan_attempts, last_review=last_review)
+                continue
+
+            # Stage 3: record a distinct EXECUTION GEN node for workflow visibility (even if no plan_json change).
+            try:
+                now = time.time()
+                record_llm_call(
+                    conn,
+                    plan_id=plan_id,
+                    task_id=None,
+                    top_task_hash=top_task_hash,
+                    agent="xiaobo",
+                    scope="PLAN_GEN",
+                    provider="SYSTEM",
+                    prompt_text="AUTO(EXECUTION): stage gate precheck snapshot (no plan_json mutations)",
+                    response_text="AUTO(EXECUTION): snapshot captured; see normalized_json for plan_json used in EXECUTION review",
+                    started_at_ts=now,
+                    finished_at_ts=now,
+                    runtime_context_hash=stable_hash_text("AUTO_STAGE_GEN:EXECUTION"),
+                    shared_prompt_version=None,
+                    shared_prompt_hash=None,
+                    agent_prompt_version=None,
+                    agent_prompt_hash=None,
+                    parsed_json=None,
+                    normalized_json=json.dumps(plan_json, ensure_ascii=False),
+                    validator_error=None,
+                    error_code=None,
+                    error_message=None,
+                    meta={"attempt": attempt, "stage": "EXECUTION", "stage_attempt": 1, "kind": "AUTO_STAGE_GEN"},
+                )
+            except Exception:
+                pass
+
+            exec_review = _review_stage(
+                stage="EXECUTION",
+                plan_id=plan_id,
+                plan_json=plan_json,
+                stage_checklist=[
+                    "Execution is feasible using only local file paths (Claude Code reads files by path).",
+                    "Missing inputs should lead to BLOCKED(WAITING_INPUT) with a generated required_docs guide.",
+                    "Final deliverable can be located via export final.json/manifest.json rules.",
+                ],
+            )
+            last_review = exec_review
+            if int(exec_review.get("total_score") or 0) < int(cfg.plan_review_pass_score):
+                with transaction(conn):
+                    emit_event(conn, plan_id=plan_id, event_type="PLAN_REVIEWED", payload={"total_score": int(exec_review.get("total_score") or 0), "action_required": str(exec_review.get("action_required") or ""), "attempt": attempt, "stage": "EXECUTION"})
+                review_notes = _build_plan_remediation_note(exec_review, max_chars=500)
+                try:
+                    ensure_dir(config.REVIEW_NOTES_DIR / plan_id)
+                    (config.REVIEW_NOTES_DIR / plan_id / f"stage_execution_attempt_{attempt}.md").write_text(review_notes, encoding="utf-8")
+                except Exception:
+                    pass
+                gen_notes = ""
+                if not keep_trying and attempt >= int(max_plan_attempts):
+                    raise PlanNotApprovedError(plan_id=locals().get("plan_id"), max_attempts=max_plan_attempts, last_review=last_review)
+                continue
+
+            # All stages passed.
             ensure_dir(plan_output_path.parent)
             plan_output_path.write_text(json.dumps(plan_json, ensure_ascii=False, indent=2), encoding="utf-8")
             with transaction(conn):
                 upsert_plan(conn, plan_json)
-                emit_event(conn, plan_id=plan_id, event_type="PLAN_APPROVED", payload={"total_score": total_score})
+                emit_event(
+                    conn,
+                    plan_id=plan_id,
+                    event_type="PLAN_APPROVED",
+                    payload={
+                        "total_score": total_score,
+                        "stages": {
+                            "STRUCTURE": int(review_json.get("total_score") or 0),
+                            "BINDINGS": int(bindings_review.get("total_score") or 0),
+                            "EXECUTION": int(exec_review.get("total_score") or 0),
+                        },
+                    },
+                )
                 # If the plan contains a dedicated CHECK node for plan review, mark it DONE and store the review there.
                 for n in plan_json.get("nodes") or []:
                     if not isinstance(n, dict):
@@ -655,12 +802,21 @@ def generate_and_review_plan(
                                 "UPDATE task_nodes SET status='DONE', blocked_reason=NULL, updated_at=? WHERE task_id=?",
                                 (utc_now_iso(), check_task_id),
                             )
-                            write_review_json(config.REVIEWS_DIR, task_id=check_task_id, review=review_json)
-                            insert_review(conn, plan_id=plan_id, task_id=check_task_id, reviewer_agent_id="xiaojing", review=review_json)
-            return PlanWorkflowResult(plan_json=plan_json, review_json=review_json, plan_path=plan_output_path)
+                            # Store the final stage review as the plan review artifact for this CHECK task.
+                            write_review_json(config.REVIEWS_DIR, task_id=check_task_id, review=exec_review)
+                            insert_review(conn, plan_id=plan_id, task_id=check_task_id, reviewer_agent_id="xiaojing", review=exec_review)
+                # Also persist per-stage reviews for traceability (best-effort, file-only).
+                try:
+                    ensure_dir(config.REVIEW_NOTES_DIR / plan_id)
+                    (config.REVIEW_NOTES_DIR / plan_id / "plan_stage_structure_review.json").write_text(json.dumps(review_json, ensure_ascii=False, indent=2), encoding="utf-8")
+                    (config.REVIEW_NOTES_DIR / plan_id / "plan_stage_bindings_review.json").write_text(json.dumps(bindings_review, ensure_ascii=False, indent=2), encoding="utf-8")
+                    (config.REVIEW_NOTES_DIR / plan_id / "plan_stage_execution_review.json").write_text(json.dumps(exec_review, ensure_ascii=False, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+            return PlanWorkflowResult(plan_json=plan_json, review_json=exec_review, plan_path=plan_output_path)
 
         with transaction(conn):
-            emit_event(conn, plan_id=plan_id, event_type="PLAN_REVIEWED", payload={"total_score": total_score, "action_required": action_required, "attempt": attempt})
+            emit_event(conn, plan_id=plan_id, event_type="PLAN_REVIEWED", payload={"total_score": total_score, "action_required": action_required, "attempt": attempt, "stage": "STRUCTURE"})
 
         # Feed reviewer conclusions back into the next PLAN_GEN attempt as a bounded remediation note.
         review_notes = _build_plan_remediation_note(review_json, max_chars=500)

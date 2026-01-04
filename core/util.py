@@ -48,6 +48,20 @@ def stable_hash_parts(parts: Iterable[str]) -> str:
     return h.hexdigest()
 
 
+def normalize_title(text: str) -> str:
+    """
+    Normalize a human-entered title/top_task for display grouping and stable hashing.
+    - Collapse whitespace (including newlines) to single spaces
+    - Strip a trailing "(<id>)" suffix commonly appended by UIs
+    """
+    import re
+
+    s = (text or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\s*\([0-9a-fA-F-]{6,}\)\s*$", "", s).strip()
+    return s
+
+
 def safe_read_text(path: Path, *, max_chars: int = 200_000) -> str:
     data = path.read_text(encoding="utf-8", errors="replace")
     if len(data) <= max_chars:

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import * as api from "../api";
-import type { AuditResp, TopTasksResp } from "../types";
+import type { AuditResp, LlmCallsQueryResp, TopTasksResp } from "../types";
 
 type Props = {
   selectedPlanId: string | null;
@@ -36,6 +36,11 @@ export default function AuditLogPage(props: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [err, setErr] = useState<string>("");
 
+  const [ioOpen, setIoOpen] = useState(false);
+  const [ioLoading, setIoLoading] = useState(false);
+  const [ioErr, setIoErr] = useState<string>("");
+  const [ioCall, setIoCall] = useState<LlmCallsQueryResp["calls"][number] | null>(null);
+
   useEffect(() => {
     api
       .getTopTasks(50)
@@ -66,7 +71,12 @@ export default function AuditLogPage(props: Props) {
           if (!stopped) setEvents(r.events);
         })
         .catch((e) => {
-          if (!stopped) setErr(String(e));
+          if (stopped) return;
+          const msg = String(e);
+          // During reset-db, backend intentionally returns 503 for DB reads.
+          // Don't treat it as a user-facing error; keep polling until it recovers.
+          if (msg.includes("503") && msg.toLowerCase().includes("db reset in progress")) return;
+          setErr(msg);
         });
     tick();
     const t = setInterval(tick, 1500);
@@ -85,6 +95,30 @@ export default function AuditLogPage(props: Props) {
     if (!selected) return null;
     return parsePayload(selected.payload_json);
   }, [selected]);
+
+  const canShowLlmIo = useMemo(() => {
+    if (!selected) return false;
+    if (!selected.llm_call_id) return false;
+    return selected.category === "LLM_INPUT" || selected.category === "LLM_OUTPUT";
+  }, [selected]);
+
+  async function openLlmIo() {
+    if (!selected?.llm_call_id) return;
+    setIoErr("");
+    setIoCall(null);
+    setIoOpen(true);
+    setIoLoading(true);
+    try {
+      const res = await api.getLlmCallsQuery({ llm_call_id: selected.llm_call_id, limit: 1 });
+      const c = res.calls && res.calls.length ? res.calls[0] : null;
+      setIoCall(c);
+      if (!c) setIoErr("LLM call not found in DB.");
+    } catch (e) {
+      setIoErr(String(e));
+    } finally {
+      setIoLoading(false);
+    }
+  }
 
   return (
     <div className="panel" style={{ padding: 12, display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -237,6 +271,11 @@ export default function AuditLogPage(props: Props) {
                     Open In Workflow
                   </button>
                 ) : null}
+                {canShowLlmIo ? (
+                  <button onClick={openLlmIo} title="Show prompt + output for this LLM call (from llm_calls)">
+                    查看提示词/返回值
+                  </button>
+                ) : null}
                 {selected.task_id ? (
                   <button
                     onClick={() => {
@@ -252,6 +291,71 @@ export default function AuditLogPage(props: Props) {
           )}
         </div>
       </div>
+
+      {ioOpen ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+            zIndex: 50,
+          }}
+          onClick={() => setIoOpen(false)}
+        >
+          <div
+            className="panel"
+            style={{ width: "min(1100px, 96vw)", maxHeight: "90vh", overflow: "auto", padding: 12 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="row" style={{ marginBottom: 10 }}>
+              <div className="title">LLM 提示词/返回值</div>
+              <div className="spacer" />
+              <button className="pillBtn" onClick={() => setIoOpen(false)}>
+                Close
+              </button>
+            </div>
+
+            {ioLoading ? <div className="muted">loading...</div> : null}
+            {ioErr ? <div className="muted">error: {ioErr}</div> : null}
+
+            {ioCall ? (
+              <>
+                <div className="kv">
+                  <div className="k">time</div>
+                  <div className="v mono">{ioCall.created_at}</div>
+                  <div className="k">agent</div>
+                  <div className="v mono">{ioCall.agent}</div>
+                  <div className="k">scope</div>
+                  <div className="v mono">{ioCall.scope}</div>
+                  <div className="k">error</div>
+                  <div className="v mono">{ioCall.error_code ?? "-"}</div>
+                </div>
+
+                <details open style={{ marginTop: 10 }}>
+                  <summary className="muted">Final Prompt</summary>
+                  <pre className="pre">{ioCall.prompt_text ?? ""}</pre>
+                </details>
+
+                <details open style={{ marginTop: 10 }}>
+                  <summary className="muted">Raw Response</summary>
+                  <pre className="pre">{ioCall.response_text ?? ""}</pre>
+                </details>
+
+                {ioCall.validator_error ? (
+                  <details open style={{ marginTop: 10 }}>
+                    <summary className="muted">validator_error</summary>
+                    <pre className="pre">{String(ioCall.validator_error)}</pre>
+                  </details>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

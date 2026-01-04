@@ -98,6 +98,8 @@ export function getLlmCallsQuery(params: {
 
 export function getWorkflow(params: {
   plan_id?: string;
+  job_id?: string;
+  top_task_hash?: string;
   scopes?: string;
   agent?: string;
   only_errors?: boolean;
@@ -106,6 +108,8 @@ export function getWorkflow(params: {
 }): Promise<WorkflowResp> {
   const usp = new URLSearchParams();
   if (params.plan_id) usp.set("plan_id", params.plan_id);
+  if (params.job_id) usp.set("job_id", params.job_id);
+  if (params.top_task_hash) usp.set("top_task_hash", params.top_task_hash);
   if (params.scopes) usp.set("scopes", params.scopes);
   if (params.agent) usp.set("agent", params.agent);
   if (params.only_errors) usp.set("only_errors", "true");

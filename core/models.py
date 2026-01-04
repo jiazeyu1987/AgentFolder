@@ -152,10 +152,27 @@ def validate_plan_dict(plan_dict: Dict[str, Any]) -> None:
             raise PlanValidationError("requirement.task_id must be a UUID string")
         if req["task_id"] not in seen_task_ids:
             raise PlanValidationError("requirement.task_id must reference an existing node.task_id")
-        if req.get("kind") not in {"FILE", "CONFIRMATION", "SKILL_OUTPUT"}:
-            raise PlanValidationError("requirement.kind must be FILE|CONFIRMATION|SKILL_OUTPUT")
-        if req.get("source") not in {"USER", "AGENT", "ANY"}:
-            raise PlanValidationError("requirement.source must be USER|AGENT|ANY")
+        kind = req.get("kind")
+        if kind not in {"FILE", "CONFIRMATION", "SKILL_OUTPUT", "UPSTREAM_ARTIFACT"}:
+            raise PlanValidationError("requirement.kind must be FILE|CONFIRMATION|SKILL_OUTPUT|UPSTREAM_ARTIFACT")
+        src = req.get("source")
+        if kind == "UPSTREAM_ARTIFACT":
+            # For upstream artifact bindings, allow referencing an upstream node.task_id, optionally with a prefix.
+            # Examples:
+            # - source = "<from_task_id>"
+            # - source = "artifact:<from_task_id>"
+            if not isinstance(src, str) or not src.strip():
+                raise PlanValidationError("requirement.source must be a non-empty string for UPSTREAM_ARTIFACT")
+            src2 = src.strip()
+            if src2.startswith("artifact:"):
+                src2 = src2.split("artifact:", 1)[1].strip()
+            if not _is_uuid(src2):
+                raise PlanValidationError("requirement.source must be an upstream node.task_id for UPSTREAM_ARTIFACT")
+            if src2 not in seen_task_ids:
+                raise PlanValidationError("requirement.source must reference an existing node.task_id for UPSTREAM_ARTIFACT")
+        else:
+            if src not in {"USER", "AGENT", "ANY"}:
+                raise PlanValidationError("requirement.source must be USER|AGENT|ANY")
         allowed_types = req.get("allowed_types")
         if not isinstance(allowed_types, list) or any(not isinstance(x, str) for x in allowed_types):
             raise PlanValidationError("requirement.allowed_types must be a string array")

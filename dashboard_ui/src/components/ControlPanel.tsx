@@ -40,30 +40,6 @@ export default function ControlPanel(props: {
   const [resetToPlanAck, setResetToPlanAck] = useState<string | null>(null);
 
   const planOptions = useMemo(() => props.plans, [props.plans]);
-  const planTitleCounts = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const p of props.plans) m.set(p.title, (m.get(p.title) ?? 0) + 1);
-    return m;
-  }, [props.plans]);
-  const planTitleVersion = useMemo(() => {
-    // Version numbering is per-title and based on creation time:
-    // earliest is v1 (hidden), second is v2, third is v3, ...
-    const byTitle = new Map<string, Array<{ plan_id: string; created_at: string }>>();
-    for (const p of props.plans) {
-      const arr = byTitle.get(p.title) ?? [];
-      arr.push({ plan_id: p.plan_id, created_at: p.created_at });
-      byTitle.set(p.title, arr);
-    }
-    const version = new Map<string, number>();
-    for (const [title, arr] of byTitle.entries()) {
-      if (arr.length <= 1) continue;
-      arr.sort((a, b) => a.created_at.localeCompare(b.created_at)); // asc
-      for (let i = 0; i < arr.length; i++) {
-        version.set(arr[i].plan_id, i + 1);
-      }
-    }
-    return version;
-  }, [props.plans]);
 
   async function onCopy(text: string) {
     await navigator.clipboard.writeText(text);
@@ -105,11 +81,6 @@ export default function ControlPanel(props: {
           {planOptions.length === 0 ? <option value="">(no plans)</option> : null}
           {planOptions.map((p) => (
             <option key={p.plan_id} value={p.plan_id}>
-              {planTitleCounts.get(p.title) && (planTitleCounts.get(p.title) ?? 0) > 1
-                ? planTitleVersion.get(p.plan_id) && (planTitleVersion.get(p.plan_id) ?? 1) > 1
-                  ? `(v${planTitleVersion.get(p.plan_id)}) `
-                  : ""
-                : ""}
               {p.title} ({p.plan_id.slice(0, 8)})
             </option>
           ))}
@@ -135,7 +106,7 @@ export default function ControlPanel(props: {
           onClick={async () => {
             if (createPlanPending || createPlanCooldown) return;
             setCreatePlanPending(true);
-            setCreatePlanAck("sending…");
+            setCreatePlanAck("sending...");
             try {
               const res = await api.createPlanAsync(props.topTask, maxAttempts, keepTrying, maxTotalAttempts === "" ? undefined : maxTotalAttempts);
               if (res.job_id) props.onCreatePlanJobId(res.job_id);
@@ -151,7 +122,7 @@ export default function ControlPanel(props: {
           }}
           disabled={createPlanPending || createPlanCooldown}
         >
-          {createPlanPending ? "Create Plan…" : "Create Plan"}
+          {createPlanPending ? "Create Plan..." : "Create Plan"}
         </button>
         <button
           onClick={() => {
@@ -195,7 +166,7 @@ export default function ControlPanel(props: {
           onClick={async () => {
             if (runPending || runCooldown) return;
             setRunPending(true);
-            setRunAck("sending…");
+            setRunAck("sending...");
             try {
               await api.runStart(maxIterations);
               setRunAck("started");
@@ -209,7 +180,7 @@ export default function ControlPanel(props: {
           }}
           disabled={runPending || runCooldown}
         >
-          {runPending ? "Run…" : "Run"}
+          {runPending ? "Run..." : "Run"}
         </button>
         <button
           onClick={async () => {

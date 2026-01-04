@@ -29,6 +29,7 @@ def record_llm_call(
     *,
     plan_id: Optional[str],
     task_id: Optional[str],
+    top_task_hash: Optional[str] = None,
     agent: str,
     scope: str,
     provider: Optional[str],
@@ -74,6 +75,7 @@ def record_llm_call(
               llm_call_id, created_at,
               started_at_ts, finished_at_ts,
               plan_id, task_id, agent, scope, provider,
+              top_task_hash,
               runtime_context_hash,
               shared_prompt_version, shared_prompt_hash,
               agent_prompt_version, agent_prompt_hash,
@@ -83,7 +85,7 @@ def record_llm_call(
               validator_error, error_code, error_message,
               meta_json
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 llm_call_id,
@@ -95,6 +97,7 @@ def record_llm_call(
                 agent,
                 scope,
                 provider,
+                top_task_hash,
                 runtime_context_hash,
                 shared_prompt_version,
                 shared_prompt_hash,
@@ -113,7 +116,7 @@ def record_llm_call(
             ),
         )
     except Exception:
-        # Backward compatibility: if DB has not applied the truncation columns yet, retry old schema insert.
+        # Backward compatibility: retry without truncation flags (older DB) but keep top_task_hash if supported.
         try:
             conn.execute(
                 """
@@ -121,6 +124,7 @@ def record_llm_call(
                   llm_call_id, created_at,
                   started_at_ts, finished_at_ts,
                   plan_id, task_id, agent, scope, provider,
+                  top_task_hash,
                   runtime_context_hash,
                   shared_prompt_version, shared_prompt_hash,
                   agent_prompt_version, agent_prompt_hash,
@@ -129,7 +133,7 @@ def record_llm_call(
                   validator_error, error_code, error_message,
                   meta_json
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     llm_call_id,
@@ -141,6 +145,7 @@ def record_llm_call(
                     agent,
                     scope,
                     provider,
+                    top_task_hash,
                     runtime_context_hash,
                     shared_prompt_version,
                     shared_prompt_hash,
@@ -157,7 +162,51 @@ def record_llm_call(
                 ),
             )
         except Exception:
-            return "UNKNOWN"
+            # Final fallback: old schema with neither truncation flags nor top_task_hash.
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO llm_calls(
+                      llm_call_id, created_at,
+                      started_at_ts, finished_at_ts,
+                      plan_id, task_id, agent, scope, provider,
+                      runtime_context_hash,
+                      shared_prompt_version, shared_prompt_hash,
+                      agent_prompt_version, agent_prompt_hash,
+                      prompt_text, response_text,
+                      parsed_json, normalized_json,
+                      validator_error, error_code, error_message,
+                      meta_json
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        llm_call_id,
+                        utc_now_iso(),
+                        started_at_ts,
+                        finished_at_ts,
+                        plan_id,
+                        task_id,
+                        agent,
+                        scope,
+                        provider,
+                        runtime_context_hash,
+                        shared_prompt_version,
+                        shared_prompt_hash,
+                        agent_prompt_version,
+                        agent_prompt_hash,
+                        prompt_text2,
+                        response_text2,
+                        json.dumps(parsed_json, ensure_ascii=False) if parsed_json is not None else None,
+                        json.dumps(normalized_json, ensure_ascii=False) if normalized_json is not None else None,
+                        validator_error,
+                        error_code,
+                        error_message,
+                        json.dumps(meta2, ensure_ascii=False) if meta2 is not None else None,
+                    ),
+                )
+            except Exception:
+                return "UNKNOWN"
 
     # Best-effort audit: record input/output actions without storing prompt/response content.
     try:
@@ -166,11 +215,15 @@ def record_llm_call(
         meta3 = meta2 if isinstance(meta2, dict) else {}
         attempt = meta3.get("attempt")
         review_attempt = meta3.get("review_attempt")
+        stage = meta3.get("stage")
+        stage_attempt = meta3.get("stage_attempt")
         payload = {
             "agent": agent,
             "scope": scope,
             "attempt": attempt,
             "review_attempt": review_attempt,
+            "stage": stage,
+            "stage_attempt": stage_attempt,
             "started_at_ts": started_at_ts,
             "finished_at_ts": finished_at_ts,
         }

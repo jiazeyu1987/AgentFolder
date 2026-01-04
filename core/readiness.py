@@ -11,7 +11,81 @@ from core.util import utc_now_iso
 import config
 
 
+def _auto_satisfy_upstream_artifacts(conn: sqlite3.Connection, task_id: str) -> None:
+    """
+    For requirements of kind UPSTREAM_ARTIFACT, automatically attach evidence when the upstream task
+    has an approved (preferred) or active artifact available.
+
+    This keeps the existing "requirements are satisfied if evidences exist" model while allowing
+    deterministic artifact bindings without manual file copying.
+    """
+    rows = conn.execute(
+        """
+        SELECT requirement_id, min_count, source
+        FROM input_requirements
+        WHERE task_id = ? AND required = 1 AND kind = 'UPSTREAM_ARTIFACT'
+        """,
+        (task_id,),
+    ).fetchall()
+    if not rows:
+        return
+
+    now = utc_now_iso()
+    for r in rows:
+        rid = str(r["requirement_id"])
+        have = conn.execute("SELECT COUNT(1) FROM evidences WHERE requirement_id = ?", (rid,)).fetchone()[0]
+        need = int(r["min_count"] or 1)
+        if int(have) >= need:
+            continue
+        src = str(r["source"] or "").strip()
+        if src.startswith("artifact:"):
+            src = src.split("artifact:", 1)[1].strip()
+        if not src:
+            continue
+
+        upstream = conn.execute(
+            "SELECT status, approved_artifact_id, active_artifact_id FROM task_nodes WHERE task_id = ?",
+            (src,),
+        ).fetchone()
+        if not upstream:
+            continue
+        # Only auto-bind after upstream is DONE (so it is stable).
+        if str(upstream["status"] or "").upper() != "DONE":
+            continue
+        artifact_id = str(upstream["approved_artifact_id"] or upstream["active_artifact_id"] or "").strip()
+        if not artifact_id:
+            continue
+        art = conn.execute("SELECT artifact_id, path, sha256 FROM artifacts WHERE artifact_id = ?", (artifact_id,)).fetchone()
+        if not art:
+            continue
+        ref_path = str(art["path"] or "").strip()
+        if not ref_path:
+            continue
+
+        # Insert evidence (idempotent due to UNIQUE(requirement_id, ref_id)).
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO evidences(evidence_id, requirement_id, evidence_type, ref_id, ref_path, sha256, added_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"evidence:{rid}:{artifact_id}",
+                rid,
+                "ARTIFACT",
+                artifact_id,
+                ref_path,
+                art["sha256"],
+                now,
+            ),
+        )
+
+
 def _requirements_satisfied(conn: sqlite3.Connection, task_id: str) -> Tuple[bool, List[Dict[str, object]]]:
+    # Best-effort: auto-bind upstream artifacts before evaluating "missing inputs".
+    try:
+        _auto_satisfy_upstream_artifacts(conn, task_id)
+    except Exception:
+        pass
     req_rows = conn.execute(
         "SELECT requirement_id, name, required, min_count FROM input_requirements WHERE task_id = ?",
         (task_id,),

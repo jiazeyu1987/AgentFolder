@@ -113,6 +113,24 @@ export default function NodeDetails(props: NodeDetailsProps) {
     return m;
   }, [errors]);
 
+  function parseReviewOutcome(c: TaskLlmCallsResp["calls"][number]): { score?: number; action_required?: string; summary?: string } | null {
+    // Prefer normalized_json if present.
+    const candidates = [c.normalized_json, c.parsed_json].filter((x) => typeof x === "string" && String(x).trim());
+    for (const raw of candidates) {
+      try {
+        const obj = JSON.parse(String(raw));
+        if (!obj || typeof obj !== "object") continue;
+        const score = typeof (obj as any).total_score === "number" ? (obj as any).total_score : undefined;
+        const action_required = typeof (obj as any).action_required === "string" ? (obj as any).action_required : undefined;
+        const summary = typeof (obj as any).summary === "string" ? (obj as any).summary : undefined;
+        if (score !== undefined || action_required || summary) return { score, action_required, summary };
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  }
+
   if (!n) {
     return (
       <div className="panel">
@@ -188,6 +206,36 @@ export default function NodeDetails(props: NodeDetailsProps) {
         ) : (
           <div className="muted">none</div>
         )
+      ) : null}
+
+      {details && details.depends_on && details.depends_on.length ? (
+        <>
+          <h4>Depends On</h4>
+          <ul className="list">
+            {details.depends_on.slice(0, 20).map((d) => (
+              <li key={d.task_id}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span className="pill" style={{ background: "#334155" }}>
+                    {d.node_type}:{d.status}
+                  </span>
+                  <div>{d.title}</div>
+                </div>
+                {d.approved_artifact ? (
+                  <div className="muted">
+                    approved: <span className="mono">{d.approved_artifact.path}</span> ({d.approved_artifact.format})
+                  </div>
+                ) : null}
+                {d.active_artifact ? (
+                  <div className="muted">
+                    active: <span className="mono">{d.active_artifact.path}</span> ({d.active_artifact.format})
+                  </div>
+                ) : (
+                  <div className="muted">no artifact yet</div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
       ) : null}
 
       {n.missing_inputs && n.missing_inputs.length ? (
@@ -313,15 +361,27 @@ export default function NodeDetails(props: NodeDetailsProps) {
                 const isReviewCall = String(c.scope || "").includes("REVIEW");
                 const extraDirect = errorsByLlmCallId.get(c.llm_call_id) ?? [];
                 const extra = extraDirect;
-                const hasErr = Boolean(c.error_code || c.validator_error || c.error_message || extra.length);
+                const parsed = isReviewCall ? parseReviewOutcome(c) : null;
+                const rejected = isReviewCall && ((parsed?.action_required && parsed.action_required !== "APPROVE") || (typeof parsed?.score === "number" && parsed.score < 90));
+                const hasErr = Boolean(c.error_code || c.validator_error || c.error_message || extra.length || rejected);
                 const shouldShow = isReviewCall && hasErr;
                 if (!shouldShow) return null;
                 return (
                   <div style={{ marginTop: 8, padding: 8, border: "1px solid #7f1d1d", borderRadius: 8, background: "rgba(239,68,68,0.08)" }}>
-                    <div style={{ color: "#ef4444", fontWeight: 900 }}>Error</div>
+                    <div style={{ color: "#ef4444", fontWeight: 900 }}>{rejected ? "Review Failed" : "Error"}</div>
+                    {typeof parsed?.score === "number" || parsed?.action_required ? (
+                      <div style={{ color: "#ef4444" }}>
+                        {typeof parsed?.score === "number" ? `score=${parsed.score}` : ""} {parsed?.action_required ? `action=${parsed.action_required}` : ""}
+                      </div>
+                    ) : null}
+                    {parsed?.summary ? <div className="muted">{parsed.summary}</div> : null}
                     {c.error_code ? <div style={{ color: "#ef4444" }}>{c.error_code}</div> : null}
                     {c.error_message ? <div style={{ color: "#ef4444" }}>{c.error_message}</div> : null}
-                    {c.validator_error ? <div className="mono" style={{ color: "#fca5a5" }}>{c.validator_error}</div> : null}
+                    {c.validator_error ? (
+                      <div className="mono" style={{ color: "#fca5a5" }}>
+                        {c.validator_error}
+                      </div>
+                    ) : null}
                     {extra.length ? (
                       <ul className="list" style={{ marginTop: 8 }}>
                         {extra.slice(0, 10).map((e, idx) => (

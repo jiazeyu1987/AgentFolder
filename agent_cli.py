@@ -1290,19 +1290,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         return 0
     if args.cmd == "reset-db":
-        db_path = Path(args.db)
-        wal_path = Path(str(db_path) + "-wal")
-        shm_path = Path(str(db_path) + "-shm")
+        from core.reset_db import reset_db_file_or_wipe
 
-        deleted: List[str] = []
-        for p in (wal_path, shm_path, db_path):
-            try:
-                if p.exists():
-                    os.remove(str(p))
-                    deleted.append(str(p))
-            except Exception as exc:  # noqa: BLE001
-                print(f"Failed to delete {p}: {type(exc).__name__}: {exc}", file=sys.stderr)
-                return 1
+        db_path = Path(args.db)
+        res = reset_db_file_or_wipe(db_path)
+        deleted: List[str] = list(res.get("deleted_files") or [])
 
         def purge_dir_contents(dir_path: Path) -> None:
             if not dir_path.exists() or not dir_path.is_dir():
@@ -1359,7 +1351,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             except Exception:
                 pass
 
-        print(json.dumps({"deleted": deleted}, ensure_ascii=False))
+        print(json.dumps({"deleted": deleted, "mode": res.get("mode"), "delete_error": res.get("delete_error")}, ensure_ascii=False))
         return 0
     return 2
 

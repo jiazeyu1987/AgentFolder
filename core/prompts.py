@@ -125,6 +125,38 @@ def build_xiaobo_prompt(
         (task_id,),
     ).fetchone()
     requirements, evidences = _load_requirements_and_evidence(conn, task_id)
+
+    upstream: List[Dict[str, Any]] = []
+    upstream_paths_text = ""
+    try:
+        ev_by_req: Dict[str, List[str]] = {}
+        for e in evidences:
+            rid = str(e.get("requirement_id") or "").strip()
+            p = str(e.get("path") or "").strip()
+            if rid and p:
+                ev_by_req.setdefault(rid, []).append(p)
+        for r in requirements:
+            if str(r.get("kind") or "").strip().upper() != "UPSTREAM_ARTIFACT":
+                continue
+            rid = str(r.get("requirement_id") or "").strip()
+            upstream.append({"artifact_role": r.get("name"), "source": r.get("source"), "paths": ev_by_req.get(rid, [])})
+
+        if upstream:
+            lines = ["UPSTREAM_ARTIFACTS (local paths; read these files if needed):"]
+            for item in upstream:
+                role = str(item.get("artifact_role") or "").strip() or "upstream_artifact"
+                paths = item.get("paths") if isinstance(item.get("paths"), list) else []
+                if not paths:
+                    continue
+                lines.append(f"- {role}:")
+                for p in paths[:8]:
+                    p2 = str(p or "").strip()
+                    if p2:
+                        lines.append(f"  - {p2}")
+            upstream_paths_text = "\n".join(lines).strip()
+    except Exception:
+        upstream = []
+        upstream_paths_text = ""
     context = {
         "plan_id": plan_id,
         "plan": {
@@ -142,6 +174,8 @@ def build_xiaobo_prompt(
         },
         "requirements": requirements,
         "evidences": evidences,
+        "upstream_artifacts": upstream,
+        "upstream_artifacts_paths_text": upstream_paths_text,
         "suggestions": suggestions_text or "",
         "extracted_text_snippets": artifact_text_snippets or [],
     }
@@ -229,11 +263,21 @@ def build_xiaojing_plan_review_prompt(
     plan_id: str,
     rubric_json: Dict[str, Any],
     plan_json: Dict[str, Any],
+    stage: Optional[str] = None,
+    stage_checklist: Optional[List[str]] = None,
 ) -> str:
     from core.runtime_config import get_runtime_config
 
     cfg = get_runtime_config()
-    context = {"plan_id": plan_id, "review_target": "PLAN", "pass_score": int(cfg.plan_review_pass_score), "rubric": rubric_json, "plan_json": plan_json}
+    context = {
+        "plan_id": plan_id,
+        "review_target": "PLAN",
+        "stage": (str(stage or "").strip().upper() or "STRUCTURE"),
+        "pass_score": int(cfg.plan_review_pass_score),
+        "rubric": rubric_json,
+        "stage_checklist": stage_checklist or [],
+        "plan_json": plan_json,
+    }
     return "\n\n".join(
         [
             bundle.shared.content.strip(),

@@ -280,7 +280,7 @@ def infer_create_plan_progress(
 ) -> Dict[str, Any]:
     """
     Infer create-plan progress from llm_calls (PLAN_GEN/PLAN_REVIEW).
-    Returns: {attempt, phase, review_attempt, last_llm_call, inferred_plan_id}
+    Returns: {attempt, phase, stage, stage_attempt, review_attempt, last_llm_call, inferred_plan_id}
     """
     inferred_plan_id: Optional[str] = None
 
@@ -345,6 +345,8 @@ def infer_create_plan_progress(
     meta = _parse_meta_json(last.get("meta_json"))
     attempt = _coerce_int(meta.get("attempt"), 1)
     review_attempt = _coerce_int(meta.get("review_attempt"), 1)
+    stage = str(meta.get("stage") or "").strip().upper() or "UNKNOWN"
+    stage_attempt = _coerce_int(meta.get("stage_attempt"), 1)
     phase = str(last.get("scope") or "UNKNOWN")
     if phase not in {"PLAN_GEN", "PLAN_REVIEW"}:
         phase = "UNKNOWN"
@@ -356,7 +358,15 @@ def infer_create_plan_progress(
         "error_code": last.get("error_code"),
         "validator_error": last.get("validator_error"),
     }
-    return {"attempt": attempt, "phase": phase, "review_attempt": review_attempt, "last_llm_call": last_llm_call, "inferred_plan_id": inferred_plan_id}
+    return {
+        "attempt": attempt,
+        "phase": phase,
+        "stage": stage,
+        "stage_attempt": stage_attempt,
+        "review_attempt": review_attempt,
+        "last_llm_call": last_llm_call,
+        "inferred_plan_id": inferred_plan_id,
+    }
 
 
 app = FastAPI(title="Agent Dashboard Backend", version="0.1.0")
@@ -658,7 +668,9 @@ def get_config() -> Dict[str, Any]:
 @app.get("/api/plans")
 def get_plans() -> Dict[str, Any]:
     with _db_conn() as conn:
-        # Infer workflow version from stored nodes. v2 plans include CHECK nodes.
+        # Only return the latest plan per *normalized* title (hide historical versions).
+        # Normalization intentionally ignores a trailing "(...)" id-like suffix and collapses whitespace.
+        # (We do not delete history here; this is a display/listing policy.)
         rows = conn.execute(
             """
             SELECT
@@ -687,7 +699,48 @@ def get_plans() -> Dict[str, Any]:
             ORDER BY p.created_at DESC
             """
         ).fetchall()
-        return {"plans": [dict(r) for r in rows], "ts": utc_now_iso()}
+
+        from core.util import normalize_title, stable_hash_text
+
+        seen: set[str] = set()
+        out = []
+        for r in rows:
+            d = dict(r)
+            key = normalize_title(d.get("title") or "")
+            if not key:
+                # Keep untitled plans, but dedupe by plan_id naturally.
+                d["top_task_hash"] = None
+                out.append(d)
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            # Prefer the real top_task_hash recorded during create-plan (llm_calls), because plan.title
+            # may differ from the user's top_task (e.g. English titles, extra descriptors).
+            h = None
+            try:
+                rr = conn.execute(
+                    """
+                    SELECT top_task_hash
+                    FROM llm_calls
+                    WHERE plan_id = ?
+                      AND top_task_hash IS NOT NULL
+                      AND top_task_hash != ''
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (d.get("plan_id"),),
+                ).fetchone()
+                if rr and rr[0]:
+                    h = str(rr[0])
+            except Exception:
+                h = None
+            # For legacy data (llm_calls.top_task_hash missing), fall back to a stable hash of the
+            # normalized plan title, so UI can still group multiple versions by title.
+            d["top_task_hash"] = h or stable_hash_text(key)
+            out.append(d)
+
+        return {"plans": out, "ts": utc_now_iso()}
 
 
 @app.get("/api/errors")
@@ -881,15 +934,17 @@ def get_job(job_id: str) -> Dict[str, Any]:
     phase = prog.get("phase") or "UNKNOWN"
     attempt = int(prog.get("attempt") or 1)
     review_attempt = int(prog.get("review_attempt") or 1)
+    stage = prog.get("stage") or "UNKNOWN"
+    stage_attempt = int(prog.get("stage_attempt") or 1)
 
     hint = ""
     last_call = prog.get("last_llm_call")
     retry_reason = ""
     if status == "RUNNING":
         if phase == "PLAN_GEN":
-            hint = "当前在 PLAN_GEN 生成计划。"
+            hint = f"当前在 PLAN_GEN（stage={stage}, stage_attempt={stage_attempt}）生成计划。"
         elif phase == "PLAN_REVIEW":
-            hint = "当前在 PLAN_REVIEW 审核计划。"
+            hint = f"当前在 PLAN_REVIEW（stage={stage}, review_attempt={review_attempt}）审核计划。"
         else:
             hint = "正在运行（等待新的 LLM 调用记录）。"
     else:
@@ -915,6 +970,8 @@ def get_job(job_id: str) -> Dict[str, Any]:
         "plan_id": plan_id,
         "attempt": attempt,
         "phase": phase,
+        "stage": stage,
+        "stage_attempt": stage_attempt,
         "review_attempt": review_attempt,
         "last_llm_call": last_call,
         "hint": hint,
@@ -1126,6 +1183,8 @@ def get_prompt_file(
 @app.get("/api/workflow")
 def get_workflow(
     plan_id: Optional[str] = Query(default=None),
+    job_id: Optional[str] = Query(default=None),
+    top_task_hash: Optional[str] = Query(default=None),
     scopes: Optional[str] = Query(default=None),
     agent: Optional[str] = Query(default=None),
     only_errors: bool = Query(default=False),
@@ -1133,6 +1192,13 @@ def get_workflow(
     plan_id_missing: bool = Query(default=False),
 ) -> Dict[str, Any]:
     with _db_conn() as conn:
+        started_at = None
+        if job_id is not None and str(job_id).strip():
+            st = _read_create_plan_state()
+            if st and str(st.get("job_id") or "") == str(job_id).strip():
+                sa = st.get("started_at")
+                if isinstance(sa, str) and sa.strip():
+                    started_at = sa.strip()
         scope_list: List[str] = []
         if scopes:
             for s in str(scopes).split(","):
@@ -1142,6 +1208,8 @@ def get_workflow(
         q = WorkflowQuery(
             plan_id=str(plan_id).strip() if plan_id and str(plan_id).strip() else None,
             plan_id_missing=bool(plan_id_missing),
+            started_at=started_at,
+            top_task_hash=str(top_task_hash).strip() if top_task_hash and str(top_task_hash).strip() else None,
             scopes=scope_list,
             agent=str(agent).strip() if agent and str(agent).strip() else None,
             only_errors=bool(only_errors),
@@ -1225,11 +1293,55 @@ def get_task_details(task_id: str) -> Dict[str, Any]:
 
         required_docs_path = str(config.REQUIRED_DOCS_DIR / f"{task_id}.md")
 
+        # Show runtime dependencies (DEPENDS_ON) so users can see which upstream tasks provide inputs.
+        deps_rows = conn.execute(
+            """
+            SELECT
+              e.from_task_id AS task_id,
+              tn.title,
+              tn.node_type,
+              tn.status,
+              tn.active_artifact_id,
+              tn.approved_artifact_id
+            FROM task_edges e
+            JOIN task_nodes tn ON tn.task_id = e.from_task_id
+            WHERE e.plan_id = ?
+              AND e.to_task_id = ?
+              AND e.edge_type = 'DEPENDS_ON'
+              AND tn.active_branch = 1
+            ORDER BY tn.priority DESC, tn.created_at ASC
+            """,
+            (node["plan_id"], task_id),
+        ).fetchall()
+
+        def _artifact_brief(artifact_id: Optional[str]) -> Optional[Dict[str, Any]]:
+            if not artifact_id:
+                return None
+            a = conn.execute(
+                "SELECT artifact_id, name, format, path, sha256, created_at FROM artifacts WHERE artifact_id=?",
+                (artifact_id,),
+            ).fetchone()
+            return dict(a) if a else None
+
+        depends_on = []
+        for r in deps_rows:
+            depends_on.append(
+                {
+                    "task_id": r["task_id"],
+                    "title": r["title"],
+                    "node_type": r["node_type"],
+                    "status": r["status"],
+                    "approved_artifact": _artifact_brief(r["approved_artifact_id"]) if "approved_artifact_id" in r.keys() else None,
+                    "active_artifact": _artifact_brief(r["active_artifact_id"]),
+                }
+            )
+
         return {
             "task": dict(node),
             "active_artifact": active,
             "artifacts": [dict(a) for a in arts],
             "acceptance_criteria": acceptance[:10],
+            "depends_on": depends_on,
             "required_docs_path": required_docs_path,
             "artifact_dir": str(config.ARTIFACTS_DIR / task_id),
             "review_dir": str(config.REVIEWS_DIR / task_id),

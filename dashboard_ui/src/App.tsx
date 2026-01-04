@@ -29,41 +29,17 @@ export default function App() {
   const [workflowAgent, setWorkflowAgent] = useState<string>("");
   const [workflowOnlyErrors, setWorkflowOnlyErrors] = useState<boolean>(false);
 
-  const planVersionLabelById = useMemo(() => {
-    function normalizeTitle(t: string): string {
-      const s = (t ?? "").trim();
-      // Ignore a trailing "(...)" suffix often used to show a short id in the UI.
-      return s.replace(/\s*\([0-9a-f]{6,}\)\s*$/i, "").trim();
-    }
-
-    const byTitle = new Map<string, Array<{ plan_id: string; created_at: string; title: string }>>();
-    for (const p of plans) {
-      const key = normalizeTitle(p.title ?? "");
-      if (!key) continue;
-      const arr = byTitle.get(key) ?? [];
-      arr.push({ plan_id: p.plan_id, created_at: p.created_at, title: p.title });
-      byTitle.set(key, arr);
-    }
-
-    const out = new Map<string, string>();
-    for (const [key, arr] of byTitle.entries()) {
-      arr.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-      if (arr.length <= 1) {
-        out.set(arr[0].plan_id, key);
-        continue;
-      }
-      for (let i = 0; i < arr.length; i++) {
-        const v = i + 1;
-        out.set(arr[i].plan_id, `(v${v}) ${key}`);
-      }
-    }
-    return out;
-  }, [plans]);
-
-  const selectedPlanLabel = useMemo(() => {
+  const selectedPlanTitle = useMemo(() => {
     if (!selectedPlanId) return null;
-    return planVersionLabelById.get(selectedPlanId) ?? null;
-  }, [planVersionLabelById, selectedPlanId]);
+    const p = plans.find((x) => x.plan_id === selectedPlanId);
+    return p?.title ?? null;
+  }, [plans, selectedPlanId]);
+
+  const selectedTopTaskHash = useMemo(() => {
+    if (!selectedPlanId) return null;
+    const p = plans.find((x) => x.plan_id === selectedPlanId);
+    return p?.top_task_hash ?? null;
+  }, [plans, selectedPlanId]);
 
   function log(s: string) {
     setLogText((prev) => (prev ? prev + "\n\n" + s : s));
@@ -73,7 +49,12 @@ export default function App() {
     const [cfg, pls] = await Promise.all([api.getConfig(), api.getPlans()]);
     setConfig(cfg);
     setPlans(pls.plans);
-    const pid = selectedPlanId ?? (pls.plans.length ? pls.plans[0].plan_id : null);
+    const pid =
+      selectedPlanId && pls.plans.some((p) => p.plan_id === selectedPlanId)
+        ? selectedPlanId
+        : pls.plans.length
+          ? pls.plans[0].plan_id
+          : null;
     setSelectedPlanId(pid);
     if (pid) {
       const g = await api.getGraph(pid);
@@ -106,18 +87,53 @@ export default function App() {
     const t = setInterval(() => {
       // When create-plan is running, follow its workflow only if the user hasn't switched to a different plan.
       const followJob = createPlanJob?.status === "RUNNING" && (!selectedPlanId || selectedPlanId === createPlanJob?.plan_id);
-      const pid = followJob ? createPlanJob?.plan_id ?? undefined : selectedPlanId ?? undefined;
-      api
-        .getWorkflow({
-          plan_id: pid,
-          plan_id_missing: followJob && !pid,
-          scopes: workflowScopes.trim() ? workflowScopes : undefined,
-          agent: workflowAgent.trim() ? workflowAgent : undefined,
-          only_errors: workflowOnlyErrors,
-          limit: 200,
-        })
-        .then((w) => setWorkflow(w))
-        .catch(() => {});
+      const pidFallback = followJob ? undefined : selectedPlanId ?? undefined;
+      const topHash = followJob ? undefined : selectedTopTaskHash ?? undefined;
+      (async () => {
+        try {
+          if (followJob && createPlanJobId) {
+            const w = await api.getWorkflow({
+              job_id: createPlanJobId,
+              plan_id_missing: false,
+              scopes: workflowScopes.trim() ? workflowScopes : undefined,
+              agent: workflowAgent.trim() ? workflowAgent : undefined,
+              only_errors: workflowOnlyErrors,
+              limit: 200,
+            });
+            setWorkflow(w);
+            return;
+          }
+
+          if (topHash) {
+            const w = await api.getWorkflow({
+              top_task_hash: topHash,
+              plan_id_missing: false,
+              scopes: workflowScopes.trim() ? workflowScopes : undefined,
+              agent: workflowAgent.trim() ? workflowAgent : undefined,
+              only_errors: workflowOnlyErrors,
+              limit: 200,
+            });
+            if ((w.returned_rows ?? w.nodes.length) > 0) {
+              setWorkflow(w);
+              return;
+            }
+          }
+
+          if (pidFallback) {
+            const w2 = await api.getWorkflow({
+              plan_id: pidFallback,
+              plan_id_missing: false,
+              scopes: workflowScopes.trim() ? workflowScopes : undefined,
+              agent: workflowAgent.trim() ? workflowAgent : undefined,
+              only_errors: workflowOnlyErrors,
+              limit: 200,
+            });
+            setWorkflow(w2);
+          }
+        } catch {
+          // ignore
+        }
+      })();
     }, 1200);
     return () => clearInterval(t);
   }, [viewMode, selectedPlanId, createPlanJob?.status, createPlanJob?.plan_id, workflowScopes, workflowAgent, workflowOnlyErrors]);
@@ -248,7 +264,7 @@ export default function App() {
         ) : viewMode === "WORKFLOW" ? (
           <div className="panel" style={{ padding: 12, display: "flex", flexDirection: "column", minHeight: 0 }}>
             <div className="row" style={{ gap: 8, marginBottom: 10 }}>
-              <div style={{ fontWeight: 900, color: "#a855f7" }}>{selectedPlanLabel ? `Plan: ${selectedPlanLabel}` : "Plan: -"}</div>
+              <div style={{ fontWeight: 900, color: "#a855f7" }}>{selectedPlanTitle ? `Plan: ${selectedPlanTitle}` : "Plan: -"}</div>
               <div className="spacer" />
               <label className="inline">
                 scopes
@@ -264,17 +280,36 @@ export default function App() {
               </label>
               <button
                 onClick={() => {
-                  const pid = selectedPlanId ?? undefined;
-                  api
-                    .getWorkflow({
-                      plan_id: pid,
-                      scopes: workflowScopes.trim() ? workflowScopes : undefined,
-                      agent: workflowAgent.trim() ? workflowAgent : undefined,
-                      only_errors: workflowOnlyErrors,
-                      limit: 200,
-                    })
-                    .then((w) => setWorkflow(w))
-                    .catch((e) => log(String(e)));
+                  const pid = selectedTopTaskHash ? undefined : selectedPlanId ?? undefined;
+                  (async () => {
+                    try {
+                      if (selectedTopTaskHash) {
+                        const w = await api.getWorkflow({
+                          top_task_hash: selectedTopTaskHash,
+                          scopes: workflowScopes.trim() ? workflowScopes : undefined,
+                          agent: workflowAgent.trim() ? workflowAgent : undefined,
+                          only_errors: workflowOnlyErrors,
+                          limit: 200,
+                        });
+                        if ((w.returned_rows ?? w.nodes.length) > 0) {
+                          setWorkflow(w);
+                          return;
+                        }
+                      }
+                      if (pid) {
+                        const w2 = await api.getWorkflow({
+                          plan_id: pid,
+                          scopes: workflowScopes.trim() ? workflowScopes : undefined,
+                          agent: workflowAgent.trim() ? workflowAgent : undefined,
+                          only_errors: workflowOnlyErrors,
+                          limit: 200,
+                        });
+                        setWorkflow(w2);
+                      }
+                    } catch (e) {
+                      log(String(e));
+                    }
+                  })();
                 }}
               >
                 Refresh
