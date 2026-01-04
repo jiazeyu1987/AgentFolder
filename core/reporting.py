@@ -201,9 +201,77 @@ def _blocked_failed_ready_nodes(conn: sqlite3.Connection, *, plan_id: str) -> Tu
 
 
 def _inputs_needed(conn: sqlite3.Connection, *, plan_id: str, required_docs_dir: Path) -> List[Dict[str, Any]]:
-    rows = conn.execute(
+    """
+    Prefer explicit required_docs files for BLOCKED(WAITING_INPUT) tasks.
+    Additionally, surface missing required inputs proactively based on input_requirements/evidences,
+    so users can prepare files before a task is marked BLOCKED.
+    """
+
+    def _items_from_required_docs(tid: str) -> List[Dict[str, Any]]:
+        req_path = required_docs_dir / f"{tid}.md"
+        items = _parse_required_docs_md(req_path) if req_path.exists() else []
+        out_items: List[Dict[str, Any]] = []
+        for it in (items or []):
+            if not isinstance(it, dict):
+                continue
+            out_items.append(
+                {
+                    "name": str(it.get("name") or ""),
+                    "description": str(it.get("description") or ""),
+                    "accepted_types": it.get("accepted_types") or [],
+                    "suggested_path": str(it.get("suggested_path") or ""),
+                }
+            )
+        return out_items
+
+    def _items_from_input_requirements(tid: str) -> List[Dict[str, Any]]:
+        # Missing required requirements for this task.
+        rows2 = conn.execute(
+            """
+            SELECT
+              r.name,
+              r.allowed_types_json,
+              COALESCE(r.min_count, 1) AS min_count,
+              COALESCE(ev.cnt, 0) AS have
+            FROM input_requirements r
+            LEFT JOIN (
+              SELECT requirement_id, COUNT(1) AS cnt
+              FROM evidences
+              GROUP BY requirement_id
+            ) ev ON ev.requirement_id = r.requirement_id
+            WHERE r.task_id = ?
+              AND COALESCE(r.required, 0) = 1
+              AND COALESCE(ev.cnt, 0) < COALESCE(r.min_count, 1)
+            ORDER BY r.created_at ASC
+            """,
+            (tid,),
+        ).fetchall()
+        out_items: List[Dict[str, Any]] = []
+        for rr in rows2:
+            allowed: List[str] = []
+            raw = rr["allowed_types_json"]
+            if raw:
+                try:
+                    allowed = json.loads(raw)
+                except Exception:
+                    allowed = []
+            name = str(rr["name"] or "")
+            out_items.append(
+                {
+                    "name": name,
+                    "description": "",
+                    "accepted_types": allowed,
+                    "suggested_path": f"workspace/inputs/{name}/" if name else "workspace/inputs/",
+                    "have": int(rr["have"] or 0),
+                    "need": int(rr["min_count"] or 1),
+                }
+            )
+        return out_items
+
+    # 1) Explicit blocked tasks (required_docs written by readiness/run)
+    blocked_rows = conn.execute(
         """
-        SELECT task_id, title, node_type, status, blocked_reason
+        SELECT task_id, title
         FROM task_nodes
         WHERE plan_id = ? AND active_branch = 1 AND status = 'BLOCKED' AND blocked_reason = 'WAITING_INPUT'
         ORDER BY priority DESC, updated_at DESC
@@ -211,23 +279,54 @@ def _inputs_needed(conn: sqlite3.Connection, *, plan_id: str, required_docs_dir:
         (plan_id,),
     ).fetchall()
     out: List[Dict[str, Any]] = []
-    for r in rows:
+    seen: set[str] = set()
+    for r in blocked_rows:
         tid = str(r["task_id"])
+        seen.add(tid)
         req_path = required_docs_dir / f"{tid}.md"
-        items = _parse_required_docs_md(req_path) if req_path.exists() else []
         out.append(
             {
                 "task_title": str(r["title"] or ""),
                 "required_docs_path": str(req_path),
-                "items": [
-                    {
-                        "name": str(it.get("name") or ""),
-                        "accepted_types": it.get("accepted_types") or [],
-                        "suggested_path": str(it.get("suggested_path") or ""),
-                    }
-                    for it in (items or [])
-                    if isinstance(it, dict)
-                ],
+                "items": _items_from_required_docs(tid),
+            }
+        )
+
+    # 2) Proactive: tasks with missing required inputs (even if not yet BLOCKED)
+    # Find tasks that have at least one unmet required input requirement.
+    missing_tasks = conn.execute(
+        """
+        SELECT DISTINCT tn.task_id, tn.title
+        FROM task_nodes tn
+        JOIN input_requirements r ON r.task_id = tn.task_id AND COALESCE(r.required, 0) = 1
+        LEFT JOIN (
+          SELECT requirement_id, COUNT(1) AS cnt
+          FROM evidences
+          GROUP BY requirement_id
+        ) ev ON ev.requirement_id = r.requirement_id
+        WHERE tn.plan_id = ?
+          AND tn.active_branch = 1
+          AND COALESCE(ev.cnt, 0) < COALESCE(r.min_count, 1)
+        ORDER BY tn.priority DESC, tn.updated_at DESC
+        LIMIT 50
+        """,
+        (plan_id,),
+    ).fetchall()
+    for r in missing_tasks:
+        tid = str(r["task_id"])
+        if tid in seen:
+            continue
+        req_path = required_docs_dir / f"{tid}.md"
+        items = _items_from_required_docs(tid)
+        if not items:
+            items = _items_from_input_requirements(tid)
+        if not items:
+            continue
+        out.append(
+            {
+                "task_title": str(r["title"] or ""),
+                "required_docs_path": str(req_path),
+                "items": items,
             }
         )
     return out

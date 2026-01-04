@@ -1,136 +1,10 @@
 {
-  "title": "HTML5 Canvas Bullet Hell Shooter (打飞机游戏)",
-  "description": "A complete single-file HTML5 Canvas shooting game featuring a player ship, waves of enemies, a boss fight with configurable danmaku (bullet hell) patterns, and a power-up system with specific weapon types (Apple, Chicken, Grape, Lemon).",
+  "title": "Canvas 2D 弹幕射击游戏 (STG) 开发",
+  "summary": "基于 HTML5 Canvas 和原生 JavaScript 实现的单文件弹幕射击游戏，包含敌机、BOSS、弹幕系统、道具掉落及特效。本计划将开发过程拆解为多个依赖节点以确保逻辑清晰，并最终聚合为单一 HTML 文件。",
   "nodes": [
     {
-      "task_id": "69ac8f43-c32b-48b5-b23f-041844aad786",
-      "title": "Core Game Loop & Structure",
-      "type": "dev",
-      "details": "Set up the HTML5 Canvas context (full window or 800x600), main game loop using requestAnimationFrame, and state management (Start, Playing, GameOver). Handle window resizing events.",
-      "status": "pending",
-      "node_type": "ACTION",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "owner_agent_id": "xiaobo",
-      "priority": 0,
-      "tags": [],
-      "acceptance_criteria": [
-        "HTML file contains a <canvas> element.",
-        "Canvas context is initialized.",
-        "Game loop (update/draw) runs via requestAnimationFrame.",
-        "State switching (start/gameover) logic exists."
-      ]
-    },
-    {
-      "task_id": "653896d8-bdf4-4f20-9138-c9e701146854",
-      "title": "Player Controller & Rendering",
-      "type": "dev",
-      "details": "Implement the Player entity: triangle/ship shape. Controls: Arrow Keys or A/D for movement (smooth). Auto-firing mechanism (cooldown based). Player has HP (default 3) and a short iframe (invulnerability) after being hit.",
-      "status": "pending",
-      "node_type": "ACTION",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "owner_agent_id": "xiaobo",
-      "priority": 0,
-      "tags": [],
-      "acceptance_criteria": [
-        "Player moves left/right within canvas bounds.",
-        "Player shoots bullets upwards automatically.",
-        "Hit detection reduces HP.",
-        "Player flashes/invulnerable for 1s after hit."
-      ]
-    },
-    {
-      "task_id": "44a39a7f-9eea-4cd6-9e9e-328b7aeb1cd7",
-      "title": "Enemy Spawning & Movement",
-      "type": "dev",
-      "details": "Create Enemy class: spawns at random X at top, moves down. HP 1-3. On death -> explode (particle) + score increase. Spawn rate increases over time/difficulty.",
-      "status": "pending",
-      "node_type": "ACTION",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "owner_agent_id": "xiaobo",
-      "priority": 0,
-      "tags": [],
-      "acceptance_criteria": [
-        "Enemies spawn continuously at the top.",
-        "Enemies collide with Player bullets and take damage.",
-        "Enemies collide with Player -> Player takes damage.",
-        "Score increases on enemy kill."
-      ]
-    },
-    {
-      "task_id": "0feabd04-ba91-4575-b3b9-9492563fc1fd",
-      "title": "Boss & Danmaku System",
-      "type": "dev",
-      "details": "Implement Boss Entity: High HP. Appears every X seconds or Score threshold. Movement: Enters top, hovers/sine-wave. Danmaku System: 1) Spread (fan shape), 2) Ring (circle out), 3) Spiral (angle += speed), 4) Homing (updates vector toward player). Uses trigonometry for bullet vectors.",
-      "status": "pending",
-      "node_type": "ACTION",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "owner_agent_id": "xiaobo",
-      "priority": 0,
-      "tags": [],
-      "acceptance_criteria": [
-        "Boss appears with full HP bar.",
-        "Boss fires patterns: Spread, Ring, Spiral, Homing.",
-        "Boss cycles patterns every few seconds.",
-        "Defeating Boss gives large score bonus."
-      ]
-    },
-    {
-      "task_id": "422adb11-0743-48b1-9bc4-26d2b00b1e78",
-      "title": "Power-up System",
-      "type": "dev",
-      "details": "Implement 4 specific powerups dropped by enemies/boss: 1) Apple (Spread Shot: 3-way front), 2) Chicken (Shotgun: 5-9 random spread), 3) Grape (Pierce: passes through 2-3 enemies), 4) Lemon (Laser: high damage beam). Each lasts 8s. UI shows active weapon name & timer.",
-      "status": "pending",
-      "node_type": "ACTION",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "owner_agent_id": "xiaobo",
-      "priority": 0,
-      "tags": [],
-      "acceptance_criteria": [
-        "Enemies drop items: Apple, Chicken, Grape, Lemon.",
-        "Item collision updates Player weapon state.",
-        "Apple fires 3 bullets. Chicken fires 5-9 spread. Grape pierces. Lemon fires beam.",
-        "Weapon effect expires after 8s and reverts to default."
-      ]
-    },
-    {
-      "task_id": "cd0c32f8-6f15-44da-a0eb-4184c361a070",
-      "title": "Visual Effects, Particles & UI",
-      "type": "dev",
-      "details": "Particle System for explosions. HUD overlay: Score (top left), HP (hearts or bar), Boss HP Bar (top center, conditional), Active Power-up (bottom right with text). Start Screen & Game Over Screen with Restart button.",
-      "status": "pending",
-      "node_type": "ACTION",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "owner_agent_id": "xiaobo",
-      "priority": 0,
-      "tags": [],
-      "acceptance_criteria": [
-        "Explosions spawn on enemy death.",
-        "HUD displays Score, HP, Weapon status.",
-        "Boss HP bar only visible when Boss is active.",
-        "Start/Game Over screens are functional."
-      ]
-    },
-    {
-      "task_id": "5b2cf203-7596-4b36-bc4b-d6bca050429d",
-      "title": "Final Integration & Tuning",
-      "type": "dev",
-      "details": "Aggregate all JS classes into a single <script> block within index.html. Ensure no external file references. Tune game balance: spawn rates, boss timing, power-up duration (e.g. 8s). Add instructional text (Move: Arrows, Auto-fire).",
-      "status": "pending",
-      "node_type": "ACTION",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "owner_agent_id": "xiaobo",
-      "priority": 0,
-      "tags": [],
-      "acceptance_criteria": [
-        "Deliverable is a single .html file.",
-        "File runs directly in browser (no build step).",
-        "Game balance is playable (difficulty ramps).",
-        "Instructions included."
-      ]
-    },
-    {
-      "task_id": "2fd4e196-7b59-476a-bb39-f40a83be7b96",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
+      "task_id": "273de94a-97d2-4154-8928-fac442e6fcc4",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
       "node_type": "GOAL",
       "title": "Root Task",
       "goal_statement": "请你用 HTML5 Canvas + 原生 JavaScript 实现一个“打飞机 / 弹幕射击”小游戏，要求一个 HTML 文件即可运行，复制到浏览器就能玩。",
@@ -141,405 +15,238 @@
         "autofix",
         "placeholder"
       ]
+    },
+    {
+      "task_id": "26b68a96-3af9-4ee9-8aab-4f95809a148f",
+      "title": "HTML/CSS Skeleton & Canvas Setup",
+      "type": "code_gen",
+      "estimated_duration_sec": 60,
+      "dependencies": [],
+      "details": "Create base HTML structure with full-screen Canvas. Add overlay DOM elements for UI (Start, HUD, Game Over). Write CSS to center overlays. Initialize Canvas 2D context. No external assets/images.",
+      "node_type": "ACTION",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "owner_agent_id": "xiaobo",
+      "priority": 1,
+      "tags": []
+    },
+    {
+      "task_id": "bb3a954e-1bca-464b-ac8e-d9e06a60b835",
+      "title": "Game Loop & Input Handling",
+      "type": "code_gen",
+      "estimated_duration_sec": 90,
+      "dependencies": [
+        "26b68a96-3af9-4ee9-8aab-4f95809a148f"
+      ],
+      "details": "Implement Game Loop using requestAnimationFrame. Build InputHandler class to track key states (Arrow/WASD/Space). Manage Game States: START, PLAYING, GAMEOVER transitions.",
+      "node_type": "ACTION",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "owner_agent_id": "xiaobo",
+      "priority": 2,
+      "tags": []
+    },
+    {
+      "task_id": "31e542ef-c642-41b0-a42d-b1f79d8979c2",
+      "title": "Player Class & Rendering",
+      "type": "code_gen",
+      "estimated_duration_sec": 90,
+      "dependencies": [
+        "bb3a954e-1bca-464b-ac8e-d9e06a60b835"
+      ],
+      "details": "Create Player class with update(x, y) and draw(ctx) methods. Draw using ctx.moveTo/lineTo to form a geometric fighter jet. Implement boundary checking and auto-fire timer.",
+      "node_type": "ACTION",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "owner_agent_id": "xiaobo",
+      "priority": 3,
+      "tags": []
+    },
+    {
+      "task_id": "1974e7d8-df3a-4b4e-ac8c-8bf65f884dde",
+      "title": "Enemy & Bullet System Core",
+      "type": "code_gen",
+      "estimated_duration_sec": 120,
+      "dependencies": [
+        "bb3a954e-1bca-464b-ac8e-d9e06a60b835"
+      ],
+      "details": "Implement Enemy class (falling rocks/ships). Implement Bullet class with object pooling. Add 7 firing patterns: 1) Spiral, 2) Circle, 3) Random Scatter, 4) Aimed (Player dir), 5) Laser Beam, 6) Homing, 7) Falling Rain.",
+      "node_type": "ACTION",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "owner_agent_id": "xiaobo",
+      "priority": 4,
+      "tags": []
+    },
+    {
+      "task_id": "313021b3-0549-4c68-adf4-d6678bcc913e",
+      "title": "Boss Logic & State Machine",
+      "type": "code_gen",
+      "estimated_duration_sec": 90,
+      "dependencies": [
+        "1974e7d8-df3a-4b4e-ac8c-8bf65f884dde"
+      ],
+      "details": "Implement Boss State Machine (Idle -> Attack -> Dash). Trigger phase transitions at 50% and 20% HP. Integrate bullet patterns. Draw Boss HP bar on UI.",
+      "node_type": "ACTION",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "owner_agent_id": "xiaobo",
+      "priority": 5,
+      "tags": []
+    },
+    {
+      "task_id": "d67bb079-8bbf-400c-adc0-15ea15d9ae36",
+      "title": "Collision, Power-ups & FX",
+      "type": "code_gen",
+      "estimated_duration_sec": 120,
+      "dependencies": [
+        "31e542ef-c642-41b0-a42d-b1f79d8979c2",
+        "1974e7d8-df3a-4b4e-ac8c-8bf65f884dde",
+        "313021b3-0549-4c68-adf4-d6678bcc913e"
+      ],
+      "details": "Implement collision detection (Circle/Rect). Create PowerUp class with 4 effects: Apple (Triple), Chicken (Scatter), Grape (Piercing), Lemon (Laser). Add Particle class for explosion effects using simple canvas shapes.",
+      "node_type": "ACTION",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "owner_agent_id": "xiaobo",
+      "priority": 6,
+      "tags": []
+    },
+    {
+      "task_id": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "title": "Final HTML Export",
+      "type": "code_gen",
+      "estimated_duration_sec": 60,
+      "dependencies": [
+        "d67bb079-8bbf-400c-adc0-15ea15d9ae36"
+      ],
+      "details": "Aggregate all JS modules (Player, Enemy, Boss, Bullet, PowerUp) and CSS into a single HTML file. Ensure no external dependencies.",
+      "node_type": "ACTION",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "owner_agent_id": "xiaobo",
+      "priority": 7,
+      "tags": []
     }
   ],
   "edges": [
     {
-      "edge_id": "64713693-e6d1-421a-b40b-9559f8c6fe89",
-      "from": "task_1_core_setup",
-      "to": "task_2_player",
-      "condition": "on_success",
-      "from_task_id": "69ac8f43-c32b-48b5-b23f-041844aad786",
-      "to_task_id": "653896d8-bdf4-4f20-9138-c9e701146854",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "edge_type": "DEPENDS_ON",
-      "metadata": {}
-    },
-    {
-      "edge_id": "78ddd11a-0822-4a69-a627-6c22b3cfa725",
-      "from": "task_2_player",
-      "to": "task_3_enemy_system",
-      "condition": "on_success",
-      "from_task_id": "653896d8-bdf4-4f20-9138-c9e701146854",
-      "to_task_id": "44a39a7f-9eea-4cd6-9e9e-328b7aeb1cd7",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "edge_type": "DEPENDS_ON",
-      "metadata": {}
-    },
-    {
-      "edge_id": "68bc9500-5897-4b2d-a618-c86aef43a8d0",
-      "from": "task_3_enemy_system",
-      "to": "task_4_boss_danmaku",
-      "condition": "on_success",
-      "from_task_id": "44a39a7f-9eea-4cd6-9e9e-328b7aeb1cd7",
-      "to_task_id": "0feabd04-ba91-4575-b3b9-9492563fc1fd",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "edge_type": "DEPENDS_ON",
-      "metadata": {}
-    },
-    {
-      "edge_id": "2fb0bb7d-61c7-47a3-959f-2972c08d1d6e",
-      "from": "task_4_boss_danmaku",
-      "to": "task_5_powerups",
-      "condition": "on_success",
-      "from_task_id": "0feabd04-ba91-4575-b3b9-9492563fc1fd",
-      "to_task_id": "422adb11-0743-48b1-9bc4-26d2b00b1e78",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "edge_type": "DEPENDS_ON",
-      "metadata": {}
-    },
-    {
-      "edge_id": "cf01c445-8873-4425-8432-74cc6a535210",
-      "from": "task_5_powerups",
-      "to": "task_6_vfx_ui",
-      "condition": "on_success",
-      "from_task_id": "422adb11-0743-48b1-9bc4-26d2b00b1e78",
-      "to_task_id": "cd0c32f8-6f15-44da-a0eb-4184c361a070",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "edge_type": "DEPENDS_ON",
-      "metadata": {}
-    },
-    {
-      "edge_id": "647efe06-0169-47ed-8a26-7ee2277b63c7",
-      "from": "task_6_vfx_ui",
-      "to": "task_7_final_integration",
-      "condition": "on_success",
-      "from_task_id": "cd0c32f8-6f15-44da-a0eb-4184c361a070",
-      "to_task_id": "5b2cf203-7596-4b36-bc4b-d6bca050429d",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "edge_type": "DEPENDS_ON",
-      "metadata": {}
-    },
-    {
-      "edge_id": "7771596c-a8fc-43e2-9eeb-da534c0a96f3",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "from_task_id": "2fd4e196-7b59-476a-bb39-f40a83be7b96",
-      "to_task_id": "69ac8f43-c32b-48b5-b23f-041844aad786",
+      "edge_id": "685ba672-76f9-4c19-b90d-b0f829b69873",
+      "from": "start",
+      "to": "step_1_setup",
+      "condition": "auto_start",
+      "from_task_id": "273de94a-97d2-4154-8928-fac442e6fcc4",
+      "to_task_id": "26b68a96-3af9-4ee9-8aab-4f95809a148f",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "57a40f7f-4fb8-48bf-a1e9-5463fef3433c",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "from_task_id": "2fd4e196-7b59-476a-bb39-f40a83be7b96",
-      "to_task_id": "653896d8-bdf4-4f20-9138-c9e701146854",
-      "edge_type": "DECOMPOSE",
+      "edge_id": "f0aee27c-840f-4f4d-b7a3-98e0faf18f29",
+      "from": "step_1_setup",
+      "to": "step_2_loop",
+      "condition": "success",
+      "from_task_id": "26b68a96-3af9-4ee9-8aab-4f95809a148f",
+      "to_task_id": "bb3a954e-1bca-464b-ac8e-d9e06a60b835",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_type": "DEPENDS_ON",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "de74cc88-b721-4d07-aa20-4a0a32ebdce3",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "from_task_id": "2fd4e196-7b59-476a-bb39-f40a83be7b96",
-      "to_task_id": "44a39a7f-9eea-4cd6-9e9e-328b7aeb1cd7",
-      "edge_type": "DECOMPOSE",
+      "edge_id": "333cbf14-72bf-44aa-b43f-17998446b423",
+      "from": "step_2_loop",
+      "to": "step_3_player",
+      "condition": "success",
+      "from_task_id": "bb3a954e-1bca-464b-ac8e-d9e06a60b835",
+      "to_task_id": "31e542ef-c642-41b0-a42d-b1f79d8979c2",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_type": "DEPENDS_ON",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "71ee8b9d-1e89-4d00-abca-2cbab1ba2021",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "from_task_id": "2fd4e196-7b59-476a-bb39-f40a83be7b96",
-      "to_task_id": "0feabd04-ba91-4575-b3b9-9492563fc1fd",
-      "edge_type": "DECOMPOSE",
+      "edge_id": "b35a814a-e207-48a8-a757-bd66d8825418",
+      "from": "step_2_loop",
+      "to": "step_4_enemy_bullet",
+      "condition": "success",
+      "from_task_id": "bb3a954e-1bca-464b-ac8e-d9e06a60b835",
+      "to_task_id": "1974e7d8-df3a-4b4e-ac8c-8bf65f884dde",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_type": "DEPENDS_ON",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "7af9ae98-dde5-46b5-b9af-5b50f4773e95",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "from_task_id": "2fd4e196-7b59-476a-bb39-f40a83be7b96",
-      "to_task_id": "422adb11-0743-48b1-9bc4-26d2b00b1e78",
-      "edge_type": "DECOMPOSE",
+      "edge_id": "db0c7864-d9c4-4581-bf28-d40c4115c619",
+      "from": "step_4_enemy_bullet",
+      "to": "step_5_boss",
+      "condition": "success",
+      "from_task_id": "1974e7d8-df3a-4b4e-ac8c-8bf65f884dde",
+      "to_task_id": "313021b3-0549-4c68-adf4-d6678bcc913e",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_type": "DEPENDS_ON",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "8e78bd0d-f5bf-4714-9542-f870df1e5b9e",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "from_task_id": "2fd4e196-7b59-476a-bb39-f40a83be7b96",
-      "to_task_id": "cd0c32f8-6f15-44da-a0eb-4184c361a070",
-      "edge_type": "DECOMPOSE",
+      "edge_id": "1a16b50b-b3ee-4993-ad2a-98e1ed73c655",
+      "from": "step_3_player",
+      "to": "step_6_collision_powerup",
+      "condition": "success",
+      "from_task_id": "31e542ef-c642-41b0-a42d-b1f79d8979c2",
+      "to_task_id": "d67bb079-8bbf-400c-adc0-15ea15d9ae36",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_type": "DEPENDS_ON",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "bff6f316-42d1-4f15-83de-e9a82626f2c6",
-      "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-      "from_task_id": "2fd4e196-7b59-476a-bb39-f40a83be7b96",
-      "to_task_id": "5b2cf203-7596-4b36-bc4b-d6bca050429d",
-      "edge_type": "DECOMPOSE",
+      "edge_id": "839b58c1-5eb3-4d0a-8582-c434fc9bd213",
+      "from": "step_4_enemy_bullet",
+      "to": "step_6_collision_powerup",
+      "condition": "success",
+      "from_task_id": "1974e7d8-df3a-4b4e-ac8c-8bf65f884dde",
+      "to_task_id": "d67bb079-8bbf-400c-adc0-15ea15d9ae36",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {
+        "and_or": "AND"
+      }
+    },
+    {
+      "edge_id": "10dd88b0-f1a5-44e8-a26a-f0e92d7aea8d",
+      "from": "step_5_boss",
+      "to": "step_6_collision_powerup",
+      "condition": "success",
+      "from_task_id": "313021b3-0549-4c68-adf4-d6678bcc913e",
+      "to_task_id": "d67bb079-8bbf-400c-adc0-15ea15d9ae36",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_type": "DEPENDS_ON",
+      "metadata": {
+        "and_or": "AND"
+      }
+    },
+    {
+      "edge_id": "e11f2a3b-4c5d-4a6b-8c9d-0e1f2a3b4c5d",
+      "from": "step_6_collision_powerup",
+      "to": "step_7_final_export",
+      "condition": "success",
+      "from_task_id": "d67bb079-8bbf-400c-adc0-15ea15d9ae36",
+      "to_task_id": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_type": "DEPENDS_ON",
       "metadata": {
         "and_or": "AND"
       }
     }
   ],
-  "requirements": [
-    {
-      "requirement_id": "49063dc9-2edc-40da-b2b1-559a89c2e40b",
-      "task_id": "653896d8-bdf4-4f20-9138-c9e701146854",
-      "name": "upstream:Core Game Loop & Structure",
-      "kind": "FILE",
-      "required": 1,
-      "min_count": 1,
-      "allowed_types": [
-        "md",
-        "txt",
-        "json",
-        "html",
-        "css",
-        "js"
-      ],
-      "source": "USER",
-      "validation": {
-        "description": "Read and follow the upstream deliverable from 'Core Game Loop & Structure'.",
-        "why": "Prevent interface drift by grounding this task on upstream deliverables."
-      }
-    },
-    {
-      "requirement_id": "30470f2c-b31a-4ae6-b7e6-936b5fbf8e37",
-      "task_id": "44a39a7f-9eea-4cd6-9e9e-328b7aeb1cd7",
-      "name": "upstream:Player Controller & Rendering",
-      "kind": "FILE",
-      "required": 1,
-      "min_count": 1,
-      "allowed_types": [
-        "md",
-        "txt",
-        "json",
-        "html",
-        "css",
-        "js"
-      ],
-      "source": "USER",
-      "validation": {
-        "description": "Read and follow the upstream deliverable from 'Player Controller & Rendering'.",
-        "why": "Prevent interface drift by grounding this task on upstream deliverables."
-      }
-    },
-    {
-      "requirement_id": "03fdb4de-3b72-4de8-9fc5-7b2b277130ef",
-      "task_id": "0feabd04-ba91-4575-b3b9-9492563fc1fd",
-      "name": "upstream:Enemy Spawning & Movement",
-      "kind": "FILE",
-      "required": 1,
-      "min_count": 1,
-      "allowed_types": [
-        "md",
-        "txt",
-        "json",
-        "html",
-        "css",
-        "js"
-      ],
-      "source": "USER",
-      "validation": {
-        "description": "Read and follow the upstream deliverable from 'Enemy Spawning & Movement'.",
-        "why": "Prevent interface drift by grounding this task on upstream deliverables."
-      }
-    },
-    {
-      "requirement_id": "2dd5c5f9-c3b2-4c95-b7c6-feca66245c0f",
-      "task_id": "422adb11-0743-48b1-9bc4-26d2b00b1e78",
-      "name": "upstream:Boss & Danmaku System",
-      "kind": "FILE",
-      "required": 1,
-      "min_count": 1,
-      "allowed_types": [
-        "md",
-        "txt",
-        "json",
-        "html",
-        "css",
-        "js"
-      ],
-      "source": "USER",
-      "validation": {
-        "description": "Read and follow the upstream deliverable from 'Boss & Danmaku System'.",
-        "why": "Prevent interface drift by grounding this task on upstream deliverables."
-      }
-    },
-    {
-      "requirement_id": "2516310a-8bb2-4538-81ed-e2bbfef41178",
-      "task_id": "cd0c32f8-6f15-44da-a0eb-4184c361a070",
-      "name": "upstream:Power-up System",
-      "kind": "FILE",
-      "required": 1,
-      "min_count": 1,
-      "allowed_types": [
-        "md",
-        "txt",
-        "json",
-        "html",
-        "css",
-        "js"
-      ],
-      "source": "USER",
-      "validation": {
-        "description": "Read and follow the upstream deliverable from 'Power-up System'.",
-        "why": "Prevent interface drift by grounding this task on upstream deliverables."
-      }
-    },
-    {
-      "requirement_id": "9081a23e-5863-4cbb-8b62-e391b341786f",
-      "task_id": "5b2cf203-7596-4b36-bc4b-d6bca050429d",
-      "name": "upstream:Visual Effects, Particles & UI",
-      "kind": "FILE",
-      "required": 1,
-      "min_count": 1,
-      "allowed_types": [
-        "md",
-        "txt",
-        "json",
-        "html",
-        "css",
-        "js"
-      ],
-      "source": "USER",
-      "validation": {
-        "description": "Read and follow the upstream deliverable from 'Visual Effects, Particles & UI'.",
-        "why": "Prevent interface drift by grounding this task on upstream deliverables."
-      }
-    },
-    {
-      "requirement_id": "b72a82b2-eb4a-4fe9-8957-ca123b4e76de",
-      "task_id": "653896d8-bdf4-4f20-9138-c9e701146854",
-      "name": "upstream:Core Game Loop & Structure",
-      "kind": "UPSTREAM_ARTIFACT",
-      "required": true,
-      "min_count": 1,
-      "allowed_types": [
-        "md",
-        "txt",
-        "json",
-        "html",
-        "css",
-        "js"
-      ],
-      "source": "69ac8f43-c32b-48b5-b23f-041844aad786",
-      "validation": {
-        "description": "Read and follow the upstream deliverable from 'Core Game Loop & Structure'.",
-        "why": "Prevent interface drift by grounding this task on upstream deliverables."
-      }
-    },
-    {
-      "requirement_id": "5af575bf-87fc-4e09-a5f8-587159bf70e3",
-      "task_id": "44a39a7f-9eea-4cd6-9e9e-328b7aeb1cd7",
-      "name": "upstream:Player Controller & Rendering",
-      "kind": "UPSTREAM_ARTIFACT",
-      "required": true,
-      "min_count": 1,
-      "allowed_types": [
-        "md",
-        "txt",
-        "json",
-        "html",
-        "css",
-        "js"
-      ],
-      "source": "653896d8-bdf4-4f20-9138-c9e701146854",
-      "validation": {
-        "description": "Read and follow the upstream deliverable from 'Player Controller & Rendering'.",
-        "why": "Prevent interface drift by grounding this task on upstream deliverables."
-      }
-    },
-    {
-      "requirement_id": "546462f8-2b27-47d8-a0ce-e6dce1b2a6da",
-      "task_id": "0feabd04-ba91-4575-b3b9-9492563fc1fd",
-      "name": "upstream:Enemy Spawning & Movement",
-      "kind": "UPSTREAM_ARTIFACT",
-      "required": true,
-      "min_count": 1,
-      "allowed_types": [
-        "md",
-        "txt",
-        "json",
-        "html",
-        "css",
-        "js"
-      ],
-      "source": "44a39a7f-9eea-4cd6-9e9e-328b7aeb1cd7",
-      "validation": {
-        "description": "Read and follow the upstream deliverable from 'Enemy Spawning & Movement'.",
-        "why": "Prevent interface drift by grounding this task on upstream deliverables."
-      }
-    },
-    {
-      "requirement_id": "33eae3b1-7300-42cc-b888-772c4434bd95",
-      "task_id": "422adb11-0743-48b1-9bc4-26d2b00b1e78",
-      "name": "upstream:Boss & Danmaku System",
-      "kind": "UPSTREAM_ARTIFACT",
-      "required": true,
-      "min_count": 1,
-      "allowed_types": [
-        "md",
-        "txt",
-        "json",
-        "html",
-        "css",
-        "js"
-      ],
-      "source": "0feabd04-ba91-4575-b3b9-9492563fc1fd",
-      "validation": {
-        "description": "Read and follow the upstream deliverable from 'Boss & Danmaku System'.",
-        "why": "Prevent interface drift by grounding this task on upstream deliverables."
-      }
-    },
-    {
-      "requirement_id": "62748154-e2f9-47f6-8b3c-365aea831aef",
-      "task_id": "cd0c32f8-6f15-44da-a0eb-4184c361a070",
-      "name": "upstream:Power-up System",
-      "kind": "UPSTREAM_ARTIFACT",
-      "required": true,
-      "min_count": 1,
-      "allowed_types": [
-        "md",
-        "txt",
-        "json",
-        "html",
-        "css",
-        "js"
-      ],
-      "source": "422adb11-0743-48b1-9bc4-26d2b00b1e78",
-      "validation": {
-        "description": "Read and follow the upstream deliverable from 'Power-up System'.",
-        "why": "Prevent interface drift by grounding this task on upstream deliverables."
-      }
-    },
-    {
-      "requirement_id": "1a30d8cc-ddd3-4c32-8a7c-fdf1b530de11",
-      "task_id": "5b2cf203-7596-4b36-bc4b-d6bca050429d",
-      "name": "upstream:Visual Effects, Particles & UI",
-      "kind": "UPSTREAM_ARTIFACT",
-      "required": true,
-      "min_count": 1,
-      "allowed_types": [
-        "md",
-        "txt",
-        "json",
-        "html",
-        "css",
-        "js"
-      ],
-      "source": "cd0c32f8-6f15-44da-a0eb-4184c361a070",
-      "validation": {
-        "description": "Read and follow the upstream deliverable from 'Visual Effects, Particles & UI'.",
-        "why": "Prevent interface drift by grounding this task on upstream deliverables."
-      }
-    }
-  ],
+  "requirements": [],
   "plan": {
     "title": "请你用 HTML5 Canvas + 原生 JavaScript 实现一个“打飞机 / 弹幕射击”小游戏，要求一个 HTML 文件即可运行，复制到浏览器就能玩。",
-    "plan_id": "e36a2caa-1ef0-43a8-8276-88b448144a2f",
-    "root_task_id": "2fd4e196-7b59-476a-bb39-f40a83be7b96",
-    "created_at": "2026-01-04T14:28:24Z",
+    "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+    "root_task_id": "273de94a-97d2-4154-8928-fac442e6fcc4",
+    "created_at": "2026-01-04T15:33:29Z",
     "owner_agent_id": "xiaobo",
     "constraints": {
       "deadline": null,

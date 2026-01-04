@@ -19,6 +19,18 @@ def write_artifact_file(base_dir: Path, *, task_id: str, name: str, fmt: str, co
     return path
 
 
+def write_artifact_file_in_dir(out_dir: Path, *, name: str, fmt: str, content: str) -> Path:
+    """
+    Write an artifact to a specific directory (used for unified per-plan deliverables).
+    """
+    ensure_dir(out_dir)
+    safe_fmt = fmt.lower().lstrip(".")
+    safe_name = name.replace("/", "_").replace("\\", "_").strip() or "artifact"
+    path = out_dir / f"{safe_name}.{safe_fmt}"
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def insert_artifact_and_activate(
     conn: sqlite3.Connection,
     *,

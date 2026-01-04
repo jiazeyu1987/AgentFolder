@@ -544,7 +544,34 @@ def recompute_readiness_for_plan(conn: sqlite3.Connection, *, plan_id: str) -> i
                 except Exception:
                     pass
 
-    # Aggregate goal completion: parent GOAL becomes DONE when all DECOMPOSE children are DONE.
+    # Aggregate goal completion:
+    # - Root GOAL: DONE only when all ACTION nodes are DONE/ABANDONED (prevents premature DONE when DECOMPOSE edges are incomplete).
+    # - Other GOAL nodes: DONE when all DECOMPOSE children are DONE (existing behavior).
+    root_row = conn.execute("SELECT root_task_id FROM plans WHERE plan_id = ?", (plan_id,)).fetchone()
+    root_task_id = str(root_row["root_task_id"]) if root_row and root_row["root_task_id"] else ""
+    if root_task_id:
+        remaining = conn.execute(
+            """
+            SELECT COUNT(1) AS c
+            FROM task_nodes
+            WHERE plan_id = ?
+              AND active_branch = 1
+              AND node_type = 'ACTION'
+              AND status NOT IN ('DONE', 'ABANDONED')
+            """,
+            (plan_id,),
+        ).fetchone()
+        remaining_cnt = int(remaining["c"] if remaining else 0)
+        cur_row = conn.execute("SELECT status FROM task_nodes WHERE task_id=? AND active_branch=1", (root_task_id,)).fetchone()
+        cur = str(cur_row["status"] or "") if cur_row else ""
+        if remaining_cnt == 0 and cur != "DONE":
+            _set_status(conn, plan_id=plan_id, task_id=root_task_id, status="DONE", blocked_reason=None)
+            changed += 1
+        if remaining_cnt > 0 and cur == "DONE":
+            _set_status(conn, plan_id=plan_id, task_id=root_task_id, status="READY", blocked_reason=None)
+            changed += 1
+
+    # Other GOAL nodes.
     parents = conn.execute(
         """
         SELECT task_id FROM task_nodes
@@ -554,6 +581,8 @@ def recompute_readiness_for_plan(conn: sqlite3.Connection, *, plan_id: str) -> i
     ).fetchall()
     for parent in parents:
         parent_id = parent["task_id"]
+        if root_task_id and str(parent_id) == str(root_task_id):
+            continue
         child_rows = conn.execute(
             """
             SELECT to_task_id, metadata_json FROM task_edges

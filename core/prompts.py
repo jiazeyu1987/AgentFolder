@@ -129,30 +129,49 @@ def build_xiaobo_prompt(
     upstream: List[Dict[str, Any]] = []
     upstream_paths_text = ""
     try:
-        ev_by_req: Dict[str, List[str]] = {}
-        for e in evidences:
-            rid = str(e.get("requirement_id") or "").strip()
-            p = str(e.get("path") or "").strip()
-            if rid and p:
-                ev_by_req.setdefault(rid, []).append(p)
-        for r in requirements:
-            if str(r.get("kind") or "").strip().upper() != "UPSTREAM_ARTIFACT":
+        rows = conn.execute(
+            """
+            SELECT
+              e.from_task_id AS upstream_task_id,
+              n.title AS upstream_title,
+              n.approved_artifact_id,
+              n.active_artifact_id,
+              aa.path AS approved_path,
+              ab.path AS active_path
+            FROM task_edges e
+            JOIN task_nodes n ON n.task_id = e.from_task_id
+            LEFT JOIN artifacts aa ON aa.artifact_id = n.approved_artifact_id
+            LEFT JOIN artifacts ab ON ab.artifact_id = n.active_artifact_id
+            WHERE e.plan_id = ?
+              AND e.to_task_id = ?
+              AND e.edge_type = 'DEPENDS_ON'
+              AND n.node_type = 'ACTION'
+              AND n.active_branch = 1
+            ORDER BY e.created_at ASC
+            """,
+            (plan_id, task_id),
+        ).fetchall()
+        for r in rows:
+            preferred = str(r["approved_path"] or "").strip() or str(r["active_path"] or "").strip()
+            if not preferred:
                 continue
-            rid = str(r.get("requirement_id") or "").strip()
-            upstream.append({"artifact_role": r.get("name"), "source": r.get("source"), "paths": ev_by_req.get(rid, [])})
-
+            upstream.append(
+                {
+                    "upstream_task_title": str(r["upstream_title"] or ""),
+                    "preferred_path": preferred,
+                    "approved_artifact_id": str(r["approved_artifact_id"] or ""),
+                    "active_artifact_id": str(r["active_artifact_id"] or ""),
+                }
+            )
         if upstream:
             lines = ["UPSTREAM_ARTIFACTS (local paths; read these files if needed):"]
-            for item in upstream:
-                role = str(item.get("artifact_role") or "").strip() or "upstream_artifact"
-                paths = item.get("paths") if isinstance(item.get("paths"), list) else []
-                if not paths:
+            for item in upstream[:20]:
+                title = str(item.get("upstream_task_title") or "").strip() or "upstream_task"
+                p = str(item.get("preferred_path") or "").strip()
+                if not p:
                     continue
-                lines.append(f"- {role}:")
-                for p in paths[:8]:
-                    p2 = str(p or "").strip()
-                    if p2:
-                        lines.append(f"  - {p2}")
+                lines.append(f"- {title}:")
+                lines.append(f"  - {p}")
             upstream_paths_text = "\n".join(lines).strip()
     except Exception:
         upstream = []

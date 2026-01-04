@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from core.util import ensure_dir, utc_now_iso
 from core.final_picker import FinalDeliverableError, pick_final_deliverable
 from core.events import emit_event
+from core.deliverables_paths import rel_to_deliverables, task_slug
 
 
 _BAD_CHARS_RE = re.compile(r"[^a-zA-Z0-9\u4e00-\u9fff._ -]+")
@@ -53,8 +54,8 @@ def export_deliverables(
     - Write final.json pointing to a single entrypoint deliverable.
     """
     ensure_dir(out_dir)
-    artifacts_dir = out_dir / "artifacts"
-    ensure_dir(artifacts_dir)
+    tasks_dir = out_dir / "tasks"
+    ensure_dir(tasks_dir)
     if include_reviews:
         ensure_dir(out_dir / "reviews")
 
@@ -123,16 +124,17 @@ def export_deliverables(
         src = Path(str(t["artifact_path"] or ""))
         if not src.exists():
             continue
-        task_slug = f"{_safe_name(str(t['title'] or 'task'))}_{str(t['task_id'])[:8]}"
-        dest_dir = artifacts_dir / task_slug
+        slug = task_slug(str(t["title"] or "task"), task_id=str(t["task_id"]))
+        dest_dir = tasks_dir / slug
         ensure_dir(dest_dir)
 
-        dest = dest_dir / src.name
-        if dest.exists():
-            dest = dest_dir / f"{src.stem}_{str(t['artifact_id'])[:8]}{src.suffix}"
-
-        shutil.copy2(str(src), str(dest))
-        files_copied += 1
+        dest = src
+        if not str(src.resolve()).lower().startswith(str(out_dir.resolve()).lower()):
+            dest = dest_dir / src.name
+            if dest.exists():
+                dest = dest_dir / f"{src.stem}_{str(t['artifact_id'])[:8]}{src.suffix}"
+            shutil.copy2(str(src), str(dest))
+            files_copied += 1
 
         manifest["files"].append(
             {
@@ -149,7 +151,7 @@ def export_deliverables(
                     "sha256": t["artifact_sha256"],
                     "created_at": t["artifact_created_at"],
                     "source_path": str(src),
-                    "dest_path": str(dest.relative_to(out_dir)),
+                    "dest_path": rel_to_deliverables(str(plan_id), dest),
                 },
             }
         )
@@ -163,7 +165,7 @@ def export_deliverables(
             try:
                 workspace_reviews = Path("workspace") / "reviews" / str(t["task_id"])
                 if workspace_reviews.exists():
-                    dest_reviews_dir = out_dir / "reviews" / task_slug
+                    dest_reviews_dir = out_dir / "reviews" / slug
                     ensure_dir(dest_reviews_dir)
                     for f in sorted(workspace_reviews.glob("review_*.json")):
                         shutil.copy2(str(f), str(dest_reviews_dir / f.name))

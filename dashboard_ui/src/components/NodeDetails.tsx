@@ -24,8 +24,39 @@ type NodeDetailsProps = {
   node: GraphNode | null;
   planId: string | null;
   snapshot?: PlanSnapshotResp | null;
+  inputsDir?: string | null;
   onRefresh?: () => void;
 };
+
+function _trimSlash(s: string) {
+  return s.replace(/[\\\/]+$/, "");
+}
+
+function resolveWorkspacePath(suggested: string | undefined, inputsDir: string | null | undefined): { relative: string; absolute: string | null } {
+  const rel = String(suggested || "").trim();
+  if (!rel) return { relative: "", absolute: null };
+  const inputs = inputsDir ? _trimSlash(String(inputsDir)) : null;
+  if (!inputs) return { relative: rel, absolute: null };
+  const workspaceDir = inputs.replace(/[\\\/]inputs$/i, "");
+  if (rel.toLowerCase().startsWith("workspace/")) {
+    const rest = rel.slice("workspace/".length).replace(/\//g, "\\");
+    return { relative: rel, absolute: _trimSlash(workspaceDir) + "\\" + rest };
+  }
+  return { relative: rel, absolute: null };
+}
+
+function buildInputTemplate(it: { name: string; description?: string; accepted_types?: string[] | string; suggested_path?: string }): string {
+  const name = String(it.name || "input").trim() || "input";
+  const desc = String(it.description || "").trim();
+  const types = Array.isArray(it.accepted_types) ? it.accepted_types : typeof it.accepted_types === "string" ? it.accepted_types.split(",") : [];
+  const typesNorm = types.map((t) => String(t).trim().toLowerCase()).filter(Boolean);
+  const suggested = String(it.suggested_path || "").trim().toLowerCase();
+  const wantsJson = typesNorm.includes("json") || suggested.endsWith(".json");
+  if (wantsJson) {
+    return JSON.stringify({ name, description: desc || "Describe the required input here.", data: {} }, null, 2);
+  }
+  return `# ${name}\n\n${desc || "Describe the required input here."}\n\n## Requirements\n- \n\n## Notes\n- \n`;
+}
 
 function groupErrorsForDisplay(errors: UiError[], opts: { primaryTaskTitle: string }) {
   // Group by (task_title, llm_call_id). When llm_call_id is null, treat as task-level error.
@@ -72,6 +103,7 @@ export default function NodeDetails(props: NodeDetailsProps) {
   const n = props.node;
   const planId = props.planId;
   const snapshot = props.snapshot ?? null;
+  const inputsDir = props.inputsDir ?? null;
   const onRefresh = props.onRefresh;
 
   const [details, setDetails] = useState<TaskDetailsResp | null>(null);
@@ -81,7 +113,11 @@ export default function NodeDetails(props: NodeDetailsProps) {
   const [errors, setErrors] = useState<ErrorsResp["errors"]>([]);
   const [errorsErr, setErrorsErr] = useState<string>("");
   const [planMissing, setPlanMissing] = useState<
-    Array<{ taskTitle: string; requiredDocsPath: string; items: Array<{ name: string; suggested_path?: string; accepted_types?: string[] | string }> }>
+    Array<{
+      taskTitle: string;
+      requiredDocsPath: string;
+      items: Array<{ name: string; description?: string; suggested_path?: string; accepted_types?: string[] | string }>;
+    }>
   >([]);
   const [planMissingErr, setPlanMissingErr] = useState<string>("");
 
@@ -118,7 +154,12 @@ export default function NodeDetails(props: NodeDetailsProps) {
           taskTitle: String(it.task_title || ""),
           requiredDocsPath: String(it.required_docs_path || ""),
           items: Array.isArray(it.items)
-            ? it.items.map((m: any) => ({ name: String(m.name || ""), suggested_path: m.suggested_path, accepted_types: m.accepted_types }))
+            ? it.items.map((m: any) => ({
+                name: String(m.name || ""),
+                description: typeof m.description === "string" ? m.description : undefined,
+                suggested_path: m.suggested_path,
+                accepted_types: m.accepted_types,
+              }))
             : [],
         }));
         setPlanMissing(out);
@@ -275,13 +316,33 @@ export default function NodeDetails(props: NodeDetailsProps) {
             <ul className="list">
               {n.missing_inputs.slice(0, 20).map((m, idx) => (
                 <li key={idx}>
-                  <div className="mono">{m.name}</div>
-                  {m.suggested_path ? <div className="mono">{m.suggested_path}</div> : null}
+                  <div className="mono" style={{ fontWeight: 900 }}>
+                    {m.name}
+                  </div>
+                  {m.description ? <div className="muted">{m.description}</div> : null}
+                  {m.suggested_path ? (
+                    (() => {
+                      const p = resolveWorkspacePath(m.suggested_path, inputsDir);
+                      return (
+                        <>
+                          <div className="mono">{p.relative}</div>
+                          {p.absolute ? <div className="mono">{p.absolute}</div> : null}
+                        </>
+                      );
+                    })()
+                  ) : null}
                   {m.accepted_types ? (
                     <div className="muted">
                       types: {Array.isArray(m.accepted_types) ? m.accepted_types.join(",") : String(m.accepted_types)}
                     </div>
                   ) : null}
+                  <details style={{ marginTop: 6 }}>
+                    <summary className="muted">Example content</summary>
+                    <pre className="mono" style={{ whiteSpace: "pre-wrap" }}>
+                      {buildInputTemplate(m)}
+                    </pre>
+                    <button onClick={() => copyText(buildInputTemplate(m))}>Copy Example</button>
+                  </details>
                 </li>
               ))}
             </ul>
@@ -315,13 +376,33 @@ export default function NodeDetails(props: NodeDetailsProps) {
                     <ul className="list">
                       {it.items.slice(0, 8).map((m, j) => (
                         <li key={j}>
-                          <div className="mono">{m.name}</div>
-                          {m.suggested_path ? <div className="mono">{m.suggested_path}</div> : null}
+                          <div className="mono" style={{ fontWeight: 900 }}>
+                            {m.name}
+                          </div>
+                          {m.description ? <div className="muted">{m.description}</div> : null}
+                          {m.suggested_path ? (
+                            (() => {
+                              const p = resolveWorkspacePath(m.suggested_path, inputsDir);
+                              return (
+                                <>
+                                  <div className="mono">{p.relative}</div>
+                                  {p.absolute ? <div className="mono">{p.absolute}</div> : null}
+                                </>
+                              );
+                            })()
+                          ) : null}
                           {m.accepted_types ? (
                             <div className="muted">
                               types: {Array.isArray(m.accepted_types) ? m.accepted_types.join(",") : String(m.accepted_types)}
                             </div>
                           ) : null}
+                          <details style={{ marginTop: 6 }}>
+                            <summary className="muted">Example content</summary>
+                            <pre className="mono" style={{ whiteSpace: "pre-wrap" }}>
+                              {buildInputTemplate(m)}
+                            </pre>
+                            <button onClick={() => copyText(buildInputTemplate(m))}>Copy Example</button>
+                          </details>
                         </li>
                       ))}
                     </ul>

@@ -69,7 +69,7 @@ def test_add_default_upstream_bindings_adds_requirements_from_depends_on_edges()
     plan2 = add_default_upstream_bindings(plan)
     reqs = plan2.get("requirements")
     assert isinstance(reqs, list)
-    assert any(isinstance(r, dict) and r.get("kind") == "UPSTREAM_ARTIFACT" and r.get("task_id") == b_id and r.get("source") == a_id for r in reqs)
+    assert reqs == []
     validate_plan_dict(plan2)
 
 
@@ -133,4 +133,3 @@ def test_readiness_auto_binds_upstream_artifacts_as_evidence(monkeypatch):
             assert int(have) >= 1
         finally:
             conn.close()
-

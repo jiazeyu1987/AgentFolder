@@ -369,7 +369,13 @@ export default function App() {
         {viewMode === "WORKFLOW" ? (
           <LLMCallDetails llmCallId={selectedLlmCallId} />
         ) : viewMode === "TASK" ? (
-          <NodeDetails node={selectedNode} planId={selectedPlanId} snapshot={snapshot} onRefresh={() => refresh().catch((e) => log(String(e)))} />
+          <NodeDetails
+            node={selectedNode}
+            planId={selectedPlanId}
+            snapshot={snapshot}
+            inputsDir={(config as any)?.paths?.inputs_dir ?? null}
+            onRefresh={() => refresh().catch((e) => log(String(e)))}
+          />
         ) : null}
       </div>
     </div>

@@ -667,6 +667,12 @@ def run_check_once(
 
     if verdict == "APPROVED":
         set_approved_artifact(conn, task_id=target_id, artifact_id=reviewed_artifact_id)
+        try:
+            from core.manifest import write_manifest_json
+
+            write_manifest_json(conn, plan_id=str(plan_id), include_candidates=True)
+        except Exception:
+            pass
         emit_workflow_event(
             conn,
             workflow="RUN",
@@ -726,6 +732,12 @@ def run_check_once(
             )
             _set_status(conn, plan_id=plan_id, task_id=target_id, status="DONE", job_id=job_id)
     else:
+        try:
+            from core.manifest import write_manifest_json
+
+            write_manifest_json(conn, plan_id=str(plan_id), include_candidates=True)
+        except Exception:
+            pass
         emit_workflow_event(
             conn,
             workflow="RUN",

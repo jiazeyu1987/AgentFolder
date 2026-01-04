@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import config
-from core.artifacts import insert_artifact_and_activate, load_active_artifact_path, write_artifact_file
+from core.artifacts import insert_artifact_and_activate, load_active_artifact_path, write_artifact_file_in_dir
 from core.db import apply_migrations, connect, transaction
 from core.events import emit_event
 from core.error_counters import increment_counter, reset_counter
@@ -416,8 +416,19 @@ def xiaobo_round(
             name = str(artifact.get("name") or "artifact")
             fmt = str(artifact.get("format") or "md")
             content = str(artifact.get("content") or "")
-            path = write_artifact_file(config.ARTIFACTS_DIR, task_id=task_id, name=name, fmt=fmt, content=content)
+            task_row = conn.execute("SELECT title FROM task_nodes WHERE task_id = ?", (task_id,)).fetchone()
+            task_title = str(task_row["title"] if task_row and task_row["title"] is not None else "task")
+            from core.deliverables_paths import task_output_dir
+
+            out_dir = task_output_dir(plan_id, task_title=task_title, task_id=task_id)
+            path = write_artifact_file_in_dir(out_dir, name=name, fmt=fmt, content=content)
             insert_artifact_and_activate(conn, plan_id=plan_id, task_id=task_id, name=name, fmt=fmt, path=path)
+            try:
+                from core.manifest import write_manifest_json
+
+                write_manifest_json(conn, plan_id=str(plan_id), include_candidates=True)
+            except Exception:
+                pass
             try:
                 emit_workflow_event(
                     conn,
@@ -1070,11 +1081,24 @@ def xiaoxie_check_round(
 
 
 def is_plan_done(conn, plan_id: str) -> bool:
-    root = conn.execute("SELECT root_task_id FROM plans WHERE plan_id = ?", (plan_id,)).fetchone()
-    if not root:
-        return False
-    status = conn.execute("SELECT status FROM task_nodes WHERE task_id = ?", (root["root_task_id"],)).fetchone()
-    return bool(status and status["status"] == "DONE")
+    """
+    A plan is DONE when all ACTION nodes are DONE (or ABANDONED) on the active branch.
+
+    We intentionally do NOT rely on root GOAL status, because some plans may have incomplete DECOMPOSE edges
+    (e.g. only decomposing the first ACTION), which would otherwise mark the root DONE prematurely.
+    """
+    remaining = conn.execute(
+        """
+        SELECT COUNT(1) AS c
+        FROM task_nodes
+        WHERE plan_id = ?
+          AND active_branch = 1
+          AND node_type = 'ACTION'
+          AND status NOT IN ('DONE', 'ABANDONED')
+        """,
+        (plan_id,),
+    ).fetchone()
+    return int(remaining["c"] if remaining else 0) == 0
 
 
 def is_plan_blocked_waiting_user(conn, plan_id: str) -> bool:
@@ -1314,21 +1338,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         if is_plan_blocked_waiting_user(conn, plan_id):
             exit_reason = "WAITING_USER"
             break
-            llm_calls = xiaobo_round(
-                conn=conn,
-                plan_id=plan_id,
-                prompts=prompts,
-                llm=llm,
-                llm_calls=llm_calls,
-                skills_registry=skills_registry,
-                per_task_llm_calls=per_task_llm_calls,
-            )
-            if cfg.workflow_mode == "v2":
-                llm_calls = v2_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
-            else:
-                llm_calls = xiaojing_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
-                llm_calls = xiaojing_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
-                llm_calls = xiaoxie_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+
+        llm_calls = xiaobo_round(
+            conn=conn,
+            plan_id=plan_id,
+            prompts=prompts,
+            llm=llm,
+            llm_calls=llm_calls,
+            skills_registry=skills_registry,
+            per_task_llm_calls=per_task_llm_calls,
+        )
+        if cfg.workflow_mode == "v2":
+            llm_calls = v2_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+        else:
+            llm_calls = xiaojing_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+            llm_calls = xiaojing_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+            llm_calls = xiaoxie_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+
+        # Ensure progress persists: rounds write to DB and SQLite keeps an implicit transaction open
+        # until commit/rollback; without this, the process exit rolls back work and the UI sees no change.
+        try:
+            if getattr(conn, "in_transaction", False):
+                conn.commit()
+        except Exception:
+            pass
 
         if is_plan_done(conn, plan_id):
             break
@@ -1337,6 +1370,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             break
 
         time.sleep(config.POLL_INTERVAL_SECONDS)
+
+    # Ensure any implicit transaction is committed so final workflow events are durable.
+    try:
+        if getattr(conn, "in_transaction", False):
+            conn.commit()
+    except Exception:
+        pass
 
     emit_workflow_event(
         conn,
