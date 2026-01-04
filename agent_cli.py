@@ -1351,8 +1351,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             except Exception:
                 pass
 
-        print(json.dumps({"deleted": deleted, "mode": res.get("mode"), "delete_error": res.get("delete_error")}, ensure_ascii=False))
-        return 0
+        mode = str(res.get("mode") or "")
+        delete_error = res.get("delete_error")
+        # Treat incomplete wipes as failures so the UI doesn't think reset succeeded while stale plans remain.
+        # Note: delete_error is expected when file deletion fails on Windows; a successful "wiped" is still OK.
+        ok = mode in {"deleted", "wiped"} and mode != "wipe_failed"
+        print(json.dumps({"deleted": deleted, "mode": res.get("mode"), "delete_error": delete_error}, ensure_ascii=False))
+        return 0 if ok else 1
     return 2
 
 

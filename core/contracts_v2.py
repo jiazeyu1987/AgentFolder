@@ -74,6 +74,13 @@ def _infer_error_from_reason(*, schema: str, schema_version: str, reason: str, o
         actual = r
         example_fix = json.dumps({"suggestions": [{"priority": "MED"}]}, ensure_ascii=False)
 
+    # plan rubric max_score sum
+    if "max_score must sum to 100" in r:
+        json_path = "$.dimensions[*].max_score"
+        expected = "sum to 100"
+        actual = r
+        example_fix = json.dumps({"dimensions": [{"max_score": 40}, {"max_score": 25}, {"max_score": 20}, {"max_score": 15}]}, ensure_ascii=False)
+
     # node missing key: node_type (plan schema)
     if r.startswith("node missing key:"):
         key = r.split(":", 1)[1].strip()
@@ -182,6 +189,60 @@ def _val_plan_gen(obj: Any, ctx: Dict[str, Any]) -> Tuple[bool, str]:
         return False, str(exc)
 
 
+def _norm_plan_rubric(raw: Any, ctx: Dict[str, Any]) -> Any:
+    if not isinstance(raw, dict):
+        return raw
+    return raw
+
+
+def _val_plan_rubric(obj: Any, ctx: Dict[str, Any]) -> Tuple[bool, str]:
+    if not isinstance(obj, dict):
+        return False, "expected object"
+    if str(obj.get("schema_version") or "") != "xiaojing_plan_rubric_v1":
+        return False, "schema_version mismatch (expected xiaojing_plan_rubric_v1)"
+    top_task_hash = str(obj.get("top_task_hash") or "")
+    if not top_task_hash.strip():
+        return False, "missing required key: top_task_hash"
+    try:
+        pass_score = int(obj.get("pass_score"))
+    except Exception:
+        return False, "missing required key: pass_score"
+    if pass_score < 0 or pass_score > 100:
+        return False, "pass_score out of range"
+    dims = obj.get("dimensions")
+    if not isinstance(dims, list) or not dims:
+        return False, "missing required key: dimensions"
+    total = 0
+    for d in dims:
+        if not isinstance(d, dict):
+            return False, "dimensions items must be objects"
+        for k in ("dimension", "max_score", "description", "scoring_guide"):
+            if k not in d:
+                return False, f"missing required key: {k}"
+        try:
+            ms = int(d.get("max_score"))
+        except Exception:
+            return False, "dimensions[*].max_score must be int"
+        total += ms
+    if total != 100:
+        return False, "dimensions[*].max_score must sum to 100"
+    sc = obj.get("stage_checklists")
+    if not isinstance(sc, dict):
+        return False, "missing required key: stage_checklists"
+    for stage in ("STRUCTURE", "BINDINGS", "EXECUTION"):
+        v = sc.get(stage)
+        if not isinstance(v, list):
+            return False, f"stage_checklists.{stage} must be list"
+        for item in v:
+            if not isinstance(item, str):
+                return False, f"stage_checklists.{stage} items must be strings"
+    # Strongly recommend matching the current request (helps debug grouping).
+    expected_hash = str(ctx.get("top_task_hash") or "").strip()
+    if expected_hash and top_task_hash.strip() != expected_hash:
+        return False, "top_task_hash mismatch"
+    return True, ""
+
+
 CONTRACTS: Dict[str, ContractSpec] = {
     "TASK_ACTION": ContractSpec(
         name="TASK_ACTION",
@@ -228,6 +289,17 @@ CONTRACTS: Dict[str, ContractSpec] = {
             "schema_version": "plan_json_v1",
             "required_keys": ["plan", "nodes", "edges"],
             "enums": {"nodes[*].node_type": ["GOAL", "ACTION", "CHECK"], "edges[*].edge_type": ["DECOMPOSE", "DEPENDS_ON", "ALTERNATIVE"]},
+        },
+    ),
+    "PLAN_RUBRIC": ContractSpec(
+        name="PLAN_RUBRIC",
+        schema_version="xiaojing_plan_rubric_v1",
+        normalize=_norm_plan_rubric,
+        validate=_val_plan_rubric,
+        summary={
+            "schema_version": "xiaojing_plan_rubric_v1",
+            "required_keys": ["schema_version", "top_task_hash", "pass_score", "dimensions", "stage_checklists"],
+            "enums": {"stage_checklists.keys": ["STRUCTURE", "BINDINGS", "EXECUTION"]},
         },
     ),
 }

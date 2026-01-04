@@ -38,6 +38,13 @@
       "nodes[*].node_type": ["GOAL", "ACTION", "CHECK"],
       "edges[*].edge_type": ["DECOMPOSE", "DEPENDS_ON", "ALTERNATIVE"]
     }
+  },
+  "PLAN_RUBRIC": {
+    "schema_version": "xiaojing_plan_rubric_v1",
+    "required_keys": ["schema_version", "top_task_hash", "pass_score", "dimensions", "stage_checklists"],
+    "enums": {
+      "stage_checklists.keys": ["STRUCTURE", "BINDINGS", "EXECUTION"]
+    }
   }
 }
 <!-- CONTRACT_SUMMARY_JSON_END -->

@@ -104,7 +104,7 @@ export interface TaskLlmCallsResp {
 }
 
 export type CreatePlanJobStatus = "RUNNING" | "DONE" | "FAILED";
-export type CreatePlanPhase = "PLAN_GEN" | "PLAN_REVIEW" | "UNKNOWN";
+export type CreatePlanPhase = "PLAN_RUBRIC" | "PLAN_GEN" | "PLAN_REVIEW" | "UNKNOWN";
 
 export interface CreatePlanJobResp {
   job_id: string;
@@ -120,6 +120,7 @@ export interface CreatePlanJobResp {
   phase: CreatePlanPhase;
   stage?: string;
   stage_attempt?: number;
+  rubric_attempt?: number;
   review_attempt: number;
   last_llm_call: { created_at: string; scope: string; agent: string; error_code: string | null; validator_error: string | null } | null;
   hint: string;

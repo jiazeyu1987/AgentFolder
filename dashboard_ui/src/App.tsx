@@ -25,7 +25,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<"TASK" | "WORKFLOW" | "ERROR_ANALYSIS" | "AUDIT_LOG">("TASK");
   const [workflow, setWorkflow] = useState<WorkflowResp | null>(null);
   const [selectedLlmCallId, setSelectedLlmCallId] = useState<string | null>(null);
-  const [workflowScopes, setWorkflowScopes] = useState<string>("PLAN_GEN,PLAN_REVIEW");
+  const [workflowScopes, setWorkflowScopes] = useState<string>("PLAN_RUBRIC,PLAN_GEN,PLAN_REVIEW");
   const [workflowAgent, setWorkflowAgent] = useState<string>("");
   const [workflowOnlyErrors, setWorkflowOnlyErrors] = useState<boolean>(false);
 
@@ -213,7 +213,7 @@ export default function App() {
             <div className="muted mono">{graph?.plan.plan_id ?? ""}</div>
           </div>
           <div className="muted">
-            running: <span className="mono">{graph?.running.task_id ? graph.running.task_id.slice(0, 8) : "-"}</span>
+            status: <span className="mono">{graph?.running.task_id ? `Running(${graph.running.task_id.slice(0, 8)})` : "Pause"}</span>
           </div>
           <div className="spacer" />
           <div className="row" style={{ gap: 8 }}>

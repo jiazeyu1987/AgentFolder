@@ -68,6 +68,21 @@ def _invalid_review_payload():
     return {"schema_version": "v1", "action_required": "APPROVE", "review_summary": {"total_score": 92}}
 
 
+def _plan_rubric(top_task_hash: str, pass_score: int = 90):
+    return {
+        "schema_version": "xiaojing_plan_rubric_v1",
+        "top_task_hash": top_task_hash,
+        "pass_score": int(pass_score),
+        "dimensions": [
+            {"dimension": "Completeness", "max_score": 40, "description": "d", "scoring_guide": "g"},
+            {"dimension": "Dependency Soundness", "max_score": 25, "description": "d", "scoring_guide": "g"},
+            {"dimension": "Executability", "max_score": 20, "description": "d", "scoring_guide": "g"},
+            {"dimension": "Clarity", "max_score": 15, "description": "d", "scoring_guide": "g"},
+        ],
+        "stage_checklists": {"STRUCTURE": ["a"], "BINDINGS": ["b"], "EXECUTION": ["c"]},
+    }
+
+
 def test_invalid_plan_review_does_not_advance_to_next_plan_gen(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(config, "PLAN_PATH_DEFAULT", tmp_path / "plan.json")
 
@@ -76,7 +91,10 @@ def test_invalid_plan_review_does_not_advance_to_next_plan_gen(tmp_path: Path, m
     apply_migrations(conn, config.MIGRATIONS_DIR)
     prompts = register_prompt_versions(conn, load_prompts(config.PROMPTS_SHARED_PATH, config.PROMPTS_AGENTS_DIR))
 
-    fake = FakeLLM([_plan_gen_payload("p1"), _invalid_review_payload(), _invalid_review_payload()])
+    from core.util import normalize_title, stable_hash_text
+
+    top_task_hash = stable_hash_text(normalize_title("Top Task"))
+    fake = FakeLLM([_plan_rubric(top_task_hash), _plan_gen_payload("p1"), _invalid_review_payload(), _invalid_review_payload()])
 
     with pytest.raises(PlanWorkflowError):
         generate_and_review_plan(
@@ -93,5 +111,5 @@ def test_invalid_plan_review_does_not_advance_to_next_plan_gen(tmp_path: Path, m
             plan_output_path=tmp_path / "plan.json",
         )
 
-    # 1 PLAN_GEN + 2 PLAN_REVIEW, but NOT the second PLAN_GEN.
-    assert len(fake.prompts) == 3
+    # 1 PLAN_RUBRIC + 1 PLAN_GEN + 2 PLAN_REVIEW, but NOT the second PLAN_GEN.
+    assert len(fake.prompts) == 4

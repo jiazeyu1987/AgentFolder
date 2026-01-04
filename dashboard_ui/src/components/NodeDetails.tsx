@@ -5,6 +5,10 @@ import { formatLocalDateTime } from "../time";
 
 type UiError = ErrorsResp["errors"][number];
 
+async function copyText(text: string) {
+  await navigator.clipboard.writeText(text);
+}
+
 function groupByAgent(calls: TaskLlmCallsResp["calls"]) {
   const m = new Map<string, TaskLlmCallsResp["calls"]>();
   for (const c of calls) {
@@ -74,6 +78,10 @@ export default function NodeDetails(props: NodeDetailsProps) {
   const [llmErr, setLlmErr] = useState<string>("");
   const [errors, setErrors] = useState<ErrorsResp["errors"]>([]);
   const [errorsErr, setErrorsErr] = useState<string>("");
+  const [planMissing, setPlanMissing] = useState<
+    Array<{ taskTitle: string; requiredDocsPath: string; items: Array<{ name: string; suggested_path?: string; accepted_types?: string[] | string }> }>
+  >([]);
+  const [planMissingErr, setPlanMissingErr] = useState<string>("");
 
   const [resetAttempts, setResetAttempts] = useState<boolean>(false);
   const [resetAck, setResetAck] = useState<string | null>(null);
@@ -86,6 +94,8 @@ export default function NodeDetails(props: NodeDetailsProps) {
     setLlmErr("");
     setErrors([]);
     setErrorsErr("");
+    setPlanMissing([]);
+    setPlanMissingErr("");
     setResetAck(null);
     if (!n) return;
 
@@ -96,6 +106,37 @@ export default function NodeDetails(props: NodeDetailsProps) {
         .getErrors({ plan_id: planId, task_id: n.task_id, include_related: n.node_type !== "CHECK", limit: 200 })
         .then((r) => setErrors(r.errors))
         .catch((e) => setErrorsErr(String(e)));
+    }
+
+    // Root Task convenience: show plan-level missing inputs so users can see why the plan is stuck.
+    if (planId && n.node_type === "GOAL") {
+      api
+        .getGraph(planId)
+        .then((g) => {
+          const out: Array<{
+            taskTitle: string;
+            requiredDocsPath: string;
+            items: Array<{ name: string; suggested_path?: string; accepted_types?: string[] | string }>;
+          }> = [];
+          for (const node of g.nodes) {
+            const isWaitingInput =
+              node.status === "BLOCKED" && String(node.blocked_reason || "").includes("WAITING_INPUT");
+            const isInputMissing = node.last_error?.error_code === "INPUT_MISSING";
+            const hasMissingList = Boolean(node.missing_inputs && node.missing_inputs.length);
+            if (!hasMissingList && !isWaitingInput && !isInputMissing) continue;
+            out.push({
+              taskTitle: node.title,
+              requiredDocsPath: node.required_docs_path,
+              items: (node.missing_inputs || []).map((m) => ({
+                name: m.name,
+                suggested_path: m.suggested_path,
+                accepted_types: m.accepted_types,
+              })),
+            });
+          }
+          setPlanMissing(out.slice(0, 30));
+        })
+        .catch((e) => setPlanMissingErr(String(e)));
     }
   }, [n?.task_id, planId]);
 
@@ -239,25 +280,70 @@ export default function NodeDetails(props: NodeDetailsProps) {
         </>
       ) : null}
 
-      {n.missing_inputs && n.missing_inputs.length ? (
+      {((n.missing_inputs && n.missing_inputs.length) || (n.status === "BLOCKED" && String(n.blocked_reason || "").includes("WAITING_INPUT"))) ? (
         <>
           <h4>Missing Inputs</h4>
-          <ul className="list">
-            {n.missing_inputs.slice(0, 20).map((m, idx) => (
-              <li key={idx}>
-                <div className="mono">{m.name}</div>
-                {m.suggested_path ? <div className="mono">{m.suggested_path}</div> : null}
-                {m.accepted_types ? (
-                  <div className="muted">
-                    types: {Array.isArray(m.accepted_types) ? m.accepted_types.join(",") : String(m.accepted_types)}
-                  </div>
-                ) : null}
-              </li>
-            ))}
-          </ul>
+          {n.missing_inputs && n.missing_inputs.length ? (
+            <ul className="list">
+              {n.missing_inputs.slice(0, 20).map((m, idx) => (
+                <li key={idx}>
+                  <div className="mono">{m.name}</div>
+                  {m.suggested_path ? <div className="mono">{m.suggested_path}</div> : null}
+                  {m.accepted_types ? (
+                    <div className="muted">
+                      types: {Array.isArray(m.accepted_types) ? m.accepted_types.join(",") : String(m.accepted_types)}
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="muted">This task is blocked waiting for input. Open the required_docs file below to see what to provide.</div>
+          )}
           <div className="muted">
             required_docs: <span className="mono">{n.required_docs_path}</span>
+            <button style={{ marginLeft: 8 }} onClick={() => copyText(n.required_docs_path)}>
+              Copy Path
+            </button>
           </div>
+        </>
+      ) : null}
+
+      {n.node_type === "GOAL" ? (
+        <>
+          <h4>Missing Inputs (Plan)</h4>
+          {planMissingErr ? <div className="muted">load failed: {planMissingErr}</div> : null}
+          {!planMissing.length ? <div className="muted">none</div> : null}
+          {planMissing.length ? (
+            <ul className="list">
+              {planMissing.map((it, idx) => (
+                <li key={idx}>
+                  <div style={{ fontWeight: 800 }}>{it.taskTitle}</div>
+                  <div className="muted">
+                    required_docs: <span className="mono">{it.requiredDocsPath}</span>{" "}
+                    <button onClick={() => copyText(it.requiredDocsPath)}>Copy Path</button>
+                  </div>
+                  {it.items.length ? (
+                    <ul className="list">
+                      {it.items.slice(0, 8).map((m, j) => (
+                        <li key={j}>
+                          <div className="mono">{m.name}</div>
+                          {m.suggested_path ? <div className="mono">{m.suggested_path}</div> : null}
+                          {m.accepted_types ? (
+                            <div className="muted">
+                              types: {Array.isArray(m.accepted_types) ? m.accepted_types.join(",") : String(m.accepted_types)}
+                            </div>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="muted">Open the required_docs file to see what to provide.</div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </>
       ) : null}
 

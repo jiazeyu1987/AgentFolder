@@ -312,6 +312,58 @@ def build_xiaojing_plan_review_prompt(
     ).strip() + "\n"
 
 
+def build_xiaojing_plan_rubric_prompt(
+    bundle: PromptBundle,
+    *,
+    top_task: str,
+    top_task_hash: str,
+    pass_score: int,
+    base_rubric_json: Dict[str, Any],
+) -> str:
+    """
+    Phase-1 rubric: freeze the scoring standard so later reviews are consistent.
+    Output contract: xiaojing_plan_rubric_v1.
+    """
+    context = {
+        "top_task": str(top_task),
+        "top_task_hash": str(top_task_hash),
+        "pass_score": int(pass_score),
+        "base_rubric": base_rubric_json,
+        "required_stages": ["STRUCTURE", "BINDINGS", "EXECUTION"],
+    }
+    tmpl = {
+        "schema_version": "xiaojing_plan_rubric_v1",
+        "top_task_hash": "<TOP_TASK_HASH>",
+        "pass_score": int(pass_score),
+        "dimensions": [
+            {"dimension": "Completeness", "max_score": 40, "description": "What must exist in the plan", "scoring_guide": "How to score 0..40"},
+            {"dimension": "Dependency Soundness", "max_score": 25, "description": "Correct DAG / deps", "scoring_guide": "How to score 0..25"},
+            {"dimension": "Executability", "max_score": 20, "description": "Action nodes concrete", "scoring_guide": "How to score 0..20"},
+            {"dimension": "Clarity", "max_score": 15, "description": "Naming unambiguous", "scoring_guide": "How to score 0..15"},
+        ],
+        "stage_checklists": {
+            "STRUCTURE": ["Root GOAL defined", "No placeholder nodes", "All edges reference existing nodes"],
+            "BINDINGS": ["Each ACTION has deliverable + acceptance criteria", "Inputs/outputs are bound"],
+            "EXECUTION": ["Plan executable in serial", "Export final deliverable is specified"],
+        },
+    }
+    return "\n\n".join(
+        [
+            bundle.shared.content.strip(),
+            bundle.xiaojing.content.strip(),
+            "You are defining the scoring rubric for later PLAN reviews. Freeze it so later scores are consistent.",
+            "Hard rules:",
+            "- Output MUST be a single JSON object only.",
+            "- JSON must satisfy the schema_version exactly.",
+            "- dimensions[*].max_score must sum to 100.",
+            "RUNTIME_CONTEXT_JSON:",
+            json.dumps(context, ensure_ascii=False, indent=2),
+            "OUTPUT_JSON_TEMPLATE (copy exactly, fill values; do not wrap inside another object):",
+            json.dumps(tmpl, ensure_ascii=False, indent=2),
+        ]
+    ).strip() + "\n"
+
+
 def _xiaojing_review_output_template(*, review_target: str, task_id: str) -> str:
     """
     Minimal contract template to reduce reviewer output drift.

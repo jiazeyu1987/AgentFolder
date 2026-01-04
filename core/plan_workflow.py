@@ -329,7 +329,7 @@ def generate_and_review_plan(
 ) -> PlanWorkflowResult:
     constraints = constraints or {"deadline": None, "priority": "HIGH"}
     available_skills = available_skills or []
-    rubric = _load_plan_rubric()
+    base_rubric = _load_plan_rubric()
     started_at_ts = time.time()
 
     # IMPORTANT: keep user intent stable. Retry feedback should not be appended into the "top_task" that
@@ -347,6 +347,12 @@ def generate_and_review_plan(
     last_plan_json_for_remediation: Optional[Dict[str, Any]] = None
     last_plan_gen_call_id_for_remediation: Optional[str] = None
     last_review_call_id_for_remediation: Optional[str] = None
+
+    from core.runtime_config import get_runtime_config
+
+    cfg = get_runtime_config()
+    # Phase-1: define/freeze a rubric first (per top_task_hash). Later PLAN_REVIEW stages must reuse it.
+    from core.plan_rubrics import ensure_plan_rubric
     while True:
         attempt += 1
         if attempt > max_total_attempts:
@@ -355,6 +361,18 @@ def generate_and_review_plan(
         from core.util import normalize_title
 
         top_task_hash = stable_hash_text(normalize_title(user_top_task))
+        rubric_rec, _rubric_call_id = ensure_plan_rubric(
+            conn,
+            prompts=prompts,
+            llm=llm,
+            top_task=user_top_task,
+            top_task_hash=top_task_hash,
+            pass_score=int(cfg.plan_review_pass_score),
+            base_rubric_json=base_rubric,
+            max_attempts=max(2, int(max_review_attempts_per_plan)),
+            keep_trying=bool(keep_trying),
+        )
+        rubric = rubric_rec.rubric
 
         def _review_stage(*, stage: str, plan_id: str, plan_json: Dict[str, Any], stage_checklist: Optional[List[str]] = None) -> Dict[str, Any]:
             review_prompt = build_xiaojing_plan_review_prompt(
@@ -630,6 +648,13 @@ def generate_and_review_plan(
                 root_task_id=str(plan.get("root_task_id") or plan_id),
                 constraints=constraints,
             )
+            # Bind the rubric (phase-1 scoring standard) to this concrete plan_id for traceability.
+            try:
+                from core.plan_rubrics import attach_rubric_to_plan
+
+                attach_rubric_to_plan(conn, rubric_id=str(rubric_rec.rubric_id), plan_id=str(plan_id))
+            except Exception:
+                pass
         # Keep audit_events consistent: PLAN_GEN was logged before plan_id/title existed.
         if plan_gen_call_id and plan_gen_call_id != "UNKNOWN":
             try:

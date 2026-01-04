@@ -146,6 +146,22 @@ def _read_create_plan_state() -> Optional[Dict[str, Any]]:
         return None
 
 
+def _stop_create_plan_process() -> Dict[str, Any]:
+    state = _read_create_plan_state()
+    if not state:
+        return {"stopped": False, "reason": "no create_plan_process.json"}
+    pid = state.get("pid")
+    if not isinstance(pid, int):
+        return {"stopped": False, "reason": "invalid pid in create_plan_process.json"}
+    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+    alive = _is_process_alive(pid)
+    try:
+        CREATE_PLAN_STATE_PATH.unlink(missing_ok=True)  # type: ignore[arg-type]
+    except Exception:
+        pass
+    return {"stopped": not alive, "pid": pid}
+
+
 def _hash_top_task(s: str) -> str:
     # Use the same stable hash function as other parts of the system (audit/top_task grouping).
     return stable_hash_text(s or "")
@@ -208,26 +224,17 @@ def _start_create_plan_process(*, db_path: Path, top_task: str, max_attempts: in
     if max_total_attempts is not None:
         cmd += ["--max-total-attempts", str(int(max_total_attempts))]
 
-    # Use a tiny Python wrapper (ASCII-only) to persist stdout/stderr + exit_code without cmd.exe encoding issues.
+    # Use a tiny Python wrapper to persist a UTF-8 log + exit_code without cmd.exe encoding issues.
     wrapper_py = job_dir / "run_create_plan_wrapper.py"
+    from core.job_wrappers import render_create_plan_wrapper_py
+
     wrapper_py.write_text(
-        "\n".join(
-            [
-                "import json, subprocess, sys",
-                "from pathlib import Path",
-                f"ROOT = Path(r\"{str(ROOT_DIR)}\")",
-                f"LOG = Path(r\"{str(log_path)}\")",
-                f"EXIT = Path(r\"{str(exit_path)}\")",
-                f"CMD = {json.dumps([str(x) for x in cmd], ensure_ascii=True)}",
-                "LOG.parent.mkdir(parents=True, exist_ok=True)",
-                "EXIT.parent.mkdir(parents=True, exist_ok=True)",
-                "with open(LOG, 'wb') as f:",
-                "  p = subprocess.run(CMD, cwd=str(ROOT), stdout=f, stderr=f)",
-                "ec = int(getattr(p, 'returncode', 1) or 0)",
-                "EXIT.write_text(json.dumps({'job_id': " + json.dumps(job_id) + ", 'exit_code': ec}, ensure_ascii=False), encoding='utf-8')",
-                "sys.exit(ec)",
-                "",
-            ]
+        render_create_plan_wrapper_py(
+            root_dir=str(ROOT_DIR),
+            log_path=str(log_path),
+            exit_path=str(exit_path),
+            cmd=[str(x) for x in cmd],
+            job_id=str(job_id),
         ),
         encoding="utf-8",
     )
@@ -279,8 +286,8 @@ def infer_create_plan_progress(
     started_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Infer create-plan progress from llm_calls (PLAN_GEN/PLAN_REVIEW).
-    Returns: {attempt, phase, stage, stage_attempt, review_attempt, last_llm_call, inferred_plan_id}
+    Infer create-plan progress from llm_calls (PLAN_RUBRIC/PLAN_GEN/PLAN_REVIEW).
+    Returns: {attempt, phase, stage, stage_attempt, review_attempt, rubric_attempt, last_llm_call, inferred_plan_id}
     """
     inferred_plan_id: Optional[str] = None
 
@@ -291,7 +298,7 @@ def infer_create_plan_progress(
             """
             SELECT created_at, plan_id, task_id, agent, scope, validator_error, error_code, error_message, meta_json
             FROM llm_calls
-            WHERE created_at >= ? AND scope IN ('PLAN_GEN','PLAN_REVIEW')
+            WHERE created_at >= ? AND scope IN ('PLAN_RUBRIC','PLAN_GEN','PLAN_REVIEW')
             ORDER BY created_at DESC
             LIMIT 1
             """,
@@ -308,7 +315,7 @@ def infer_create_plan_progress(
             """
             SELECT created_at, plan_id, task_id, agent, scope, validator_error, error_code, error_message, meta_json
             FROM llm_calls
-            WHERE plan_id = ? AND scope IN ('PLAN_GEN','PLAN_REVIEW')
+            WHERE plan_id = ? AND scope IN ('PLAN_RUBRIC','PLAN_GEN','PLAN_REVIEW')
             ORDER BY created_at DESC
             LIMIT 1
             """,
@@ -320,7 +327,7 @@ def infer_create_plan_progress(
             """
             SELECT created_at, plan_id, task_id, agent, scope, validator_error, error_code, error_message, meta_json
             FROM llm_calls
-            WHERE plan_id IS NULL AND agent = 'xiaobo' AND scope = 'PLAN_GEN'
+            WHERE plan_id IS NULL AND scope IN ('PLAN_RUBRIC','PLAN_GEN')
             ORDER BY created_at DESC
             LIMIT 1
             """
@@ -345,10 +352,11 @@ def infer_create_plan_progress(
     meta = _parse_meta_json(last.get("meta_json"))
     attempt = _coerce_int(meta.get("attempt"), 1)
     review_attempt = _coerce_int(meta.get("review_attempt"), 1)
+    rubric_attempt = _coerce_int(meta.get("rubric_attempt"), 1)
     stage = str(meta.get("stage") or "").strip().upper() or "UNKNOWN"
     stage_attempt = _coerce_int(meta.get("stage_attempt"), 1)
     phase = str(last.get("scope") or "UNKNOWN")
-    if phase not in {"PLAN_GEN", "PLAN_REVIEW"}:
+    if phase not in {"PLAN_RUBRIC", "PLAN_GEN", "PLAN_REVIEW"}:
         phase = "UNKNOWN"
 
     last_llm_call = {
@@ -364,6 +372,7 @@ def infer_create_plan_progress(
         "stage": stage,
         "stage_attempt": stage_attempt,
         "review_attempt": review_attempt,
+        "rubric_attempt": rubric_attempt,
         "last_llm_call": last_llm_call,
         "inferred_plan_id": inferred_plan_id,
     }
@@ -937,6 +946,7 @@ def get_job(job_id: str) -> Dict[str, Any]:
     phase = prog.get("phase") or "UNKNOWN"
     attempt = int(prog.get("attempt") or 1)
     review_attempt = int(prog.get("review_attempt") or 1)
+    rubric_attempt = int(prog.get("rubric_attempt") or 1)
     stage = prog.get("stage") or "UNKNOWN"
     stage_attempt = int(prog.get("stage_attempt") or 1)
 
@@ -944,7 +954,9 @@ def get_job(job_id: str) -> Dict[str, Any]:
     last_call = prog.get("last_llm_call")
     retry_reason = ""
     if status == "RUNNING":
-        if phase == "PLAN_GEN":
+        if phase == "PLAN_RUBRIC":
+            hint = f"当前在 PLAN_RUBRIC（rubric_attempt={rubric_attempt}）生成评分标准。"
+        elif phase == "PLAN_GEN":
             hint = f"当前在 PLAN_GEN（stage={stage}, stage_attempt={stage_attempt}）生成计划。"
         elif phase == "PLAN_REVIEW":
             hint = f"当前在 PLAN_REVIEW（stage={stage}, review_attempt={review_attempt}）审核计划。"
@@ -975,6 +987,7 @@ def get_job(job_id: str) -> Dict[str, Any]:
         "phase": phase,
         "stage": stage,
         "stage_attempt": stage_attempt,
+        "rubric_attempt": rubric_attempt,
         "review_attempt": review_attempt,
         "last_llm_call": last_call,
         "hint": hint,
@@ -1461,8 +1474,6 @@ def create_plan(body: CreatePlanIn) -> Dict[str, Any]:
 @app.post("/api/reset-db")
 def reset_db(body: ResetDbIn) -> Dict[str, Any]:
     global _DB_RESETTING
-    with _DB_RESET_LOCK:
-        _DB_RESETTING = True
     try:
         with _db_conn() as conn:
             log_audit(
@@ -1472,6 +1483,25 @@ def reset_db(body: ResetDbIn) -> Dict[str, Any]:
                 message="reset db",
                 payload={"purge_workspace": bool(body.purge_workspace), "purge_tasks": bool(body.purge_tasks), "purge_logs": bool(body.purge_logs)},
             )
+    except Exception:
+        pass
+    with _DB_RESET_LOCK:
+        _DB_RESETTING = True
+    # Best-effort: stop any background processes that may be holding or rewriting the DB.
+    try:
+        _stop_create_plan_process()
+    except Exception:
+        pass
+    try:
+        _stop_run_process()
+    except Exception:
+        pass
+    try:
+        RUN_STATE_PATH.unlink(missing_ok=True)  # type: ignore[arg-type]
+    except Exception:
+        pass
+    try:
+        CREATE_PLAN_STATE_PATH.unlink(missing_ok=True)  # type: ignore[arg-type]
     except Exception:
         pass
     python_exe = _python_executable()

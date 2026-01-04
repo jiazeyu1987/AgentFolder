@@ -12,7 +12,12 @@ export default function CreatePlanProgress(props: {
     if (!props.job) return null;
     const j = props.job;
     const stage = j.stage ? ` stage=${j.stage}${j.stage_attempt ? `(${j.stage_attempt})` : ""}` : "";
-    const phaseExtra = j.phase === "PLAN_REVIEW" ? ` (review_attempt=${j.review_attempt})` : "";
+    const phaseExtra =
+      j.phase === "PLAN_REVIEW"
+        ? ` (review_attempt=${j.review_attempt})`
+        : j.phase === "PLAN_RUBRIC"
+          ? ` (rubric_attempt=${j.rubric_attempt ?? 1})`
+          : "";
     return `attempt=${j.attempt}${stage} phase=${j.phase}${phaseExtra}`;
   }, [props.job]);
 

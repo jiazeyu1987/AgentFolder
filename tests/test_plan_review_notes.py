@@ -43,6 +43,21 @@ def _plan_gen_payload(plan_id: str):
     }
 
 
+def _plan_rubric(top_task_hash: str, pass_score: int = 90):
+    return {
+        "schema_version": "xiaojing_plan_rubric_v1",
+        "top_task_hash": top_task_hash,
+        "pass_score": int(pass_score),
+        "dimensions": [
+            {"dimension": "Completeness", "max_score": 40, "description": "d", "scoring_guide": "g"},
+            {"dimension": "Dependency Soundness", "max_score": 25, "description": "d", "scoring_guide": "g"},
+            {"dimension": "Executability", "max_score": 20, "description": "d", "scoring_guide": "g"},
+            {"dimension": "Clarity", "max_score": 15, "description": "d", "scoring_guide": "g"},
+        ],
+        "stage_checklists": {"STRUCTURE": ["a"], "BINDINGS": ["b"], "EXECUTION": ["c"]},
+    }
+
+
 def _plan_review_modify():
     return {
         "schema_version": "xiaojing_review_v1",
@@ -93,9 +108,13 @@ def test_plan_review_generates_bounded_notes_and_feeds_next_gen(tmp_path: Path, 
     conn = connect(db_path)
     apply_migrations(conn, config.MIGRATIONS_DIR)
     prompts = register_prompt_versions(conn, load_prompts(config.PROMPTS_SHARED_PATH, config.PROMPTS_AGENTS_DIR))
+    from core.util import normalize_title, stable_hash_text
+
+    top_task_hash = stable_hash_text(normalize_title("Top Task"))
 
     fake = FakeLLM(
         [
+            _plan_rubric(top_task_hash, pass_score=90),
             _plan_gen_payload("p1"),
             _plan_review_modify(),
             _plan_gen_payload("p2"),
@@ -127,9 +146,9 @@ def test_plan_review_generates_bounded_notes_and_feeds_next_gen(tmp_path: Path, 
     assert len(note) <= 120
 
     # The second PLAN_GEN prompt must include this note in RUNTIME_CONTEXT_JSON.
-    # fake.prompts[0] = PLAN_GEN attempt1, fake.prompts[1] = PLAN_REVIEW attempt1,
-    # fake.prompts[2] = PLAN_GEN attempt2
-    prompt2 = fake.prompts[2]
+    # fake.prompts[0] = PLAN_RUBRIC, fake.prompts[1] = PLAN_GEN attempt1, fake.prompts[2] = PLAN_REVIEW attempt1,
+    # fake.prompts[3] = PLAN_GEN attempt2
+    prompt2 = fake.prompts[3]
     assert "review_notes" in prompt2
     assert "previous_plan_json" in prompt2
     # Extract RUNTIME_CONTEXT_JSON and compare normalized value.
