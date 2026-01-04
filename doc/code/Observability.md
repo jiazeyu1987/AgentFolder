@@ -36,3 +36,36 @@
   - 输出：`workspace/observability/<plan_id>/snapshot_*.json` 与 `snapshot_*.md`
 - Backend：`GET /api/plan_snapshot?plan_id=<PLAN_ID>`
   - 返回 JSON：summary/reasons/inputs_needed/waiting_review/recent_errors/final_deliverable/doctor/feasibility/report
+
+### Snapshot Schema（machine-readable）
+<!-- SNAPSHOT_SCHEMA_JSON_START -->
+{
+  "schema_version": "plan_snapshot_v1",
+  "required_top_level_keys": [
+    "schema_version",
+    "ts",
+    "plan",
+    "job",
+    "summary",
+    "reasons",
+    "inputs_needed",
+    "waiting_review",
+    "recent_errors",
+    "final_deliverable",
+    "doctor",
+    "feasibility",
+    "report",
+    "manifest"
+  ],
+  "reason_codes": [
+    "WAITING_REVIEW",
+    "WAITING_INPUT",
+    "WAITING_EXTERNAL",
+    "BLOCKED",
+    "FAILED",
+    "RUNNABLE",
+    "DONE"
+  ],
+  "notes": "SSOT snapshot for CLI/backend/UI; adapters must not re-infer reasons."
+}
+<!-- SNAPSHOT_SCHEMA_JSON_END -->

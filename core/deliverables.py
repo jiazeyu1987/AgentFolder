@@ -40,6 +40,7 @@ def export_deliverables(
     out_dir: Path,
     include_reviews: bool = False,
     include_candidates: bool = False,
+    job_id: Optional[str] = None,
 ) -> ExportResult:
     """
     Collect "final deliverables" for a plan into a single folder for easy handoff.
@@ -60,6 +61,22 @@ def export_deliverables(
     plan = conn.execute("SELECT plan_id, title, root_task_id, created_at FROM plans WHERE plan_id=?", (plan_id,)).fetchone()
     if not plan:
         raise RuntimeError(f"plan not found: {plan_id}")
+    # Event-first: start export step (best-effort; never break export).
+    try:
+        from core.workflow_events import emit_workflow_event
+
+        emit_workflow_event(
+            conn,
+            workflow="EXPORT",
+            event_type="STEP_STARTED",
+            severity="INFO",
+            message="EXPORT started",
+            job_id=job_id,
+            plan_id=str(plan_id),
+            payload={"step": "EXPORT", "out_dir": str(out_dir)},
+        )
+    except Exception:
+        pass
 
     plan_meta = {"plan_id": plan["plan_id"], "title": plan["title"], "root_task_id": plan["root_task_id"], "created_at": plan["created_at"], "exported_at": utc_now_iso()}
     (out_dir / "plan_meta.json").write_text(json.dumps(plan_meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -262,6 +279,37 @@ def export_deliverables(
                 "final_entrypoint": str(final_json.get("final_entrypoint") or ""),
                 "final_artifact_id": str(final_json.get("final_artifact_id") or ""),
             },
+        )
+    except Exception:
+        pass
+    try:
+        from core.workflow_events import emit_workflow_event
+
+        emit_workflow_event(
+            conn,
+            workflow="EXPORT",
+            event_type="EXPORT_DONE",
+            severity="INFO",
+            message="export done",
+            job_id=job_id,
+            plan_id=str(plan_id),
+            payload={
+                "step": "EXPORT",
+                "out_dir": str(out_dir),
+                "files_copied": int(files_copied),
+                "final_entrypoint": str(final_json.get("final_entrypoint") or ""),
+                "final_artifact_id": str(final_json.get("final_artifact_id") or ""),
+            },
+        )
+        emit_workflow_event(
+            conn,
+            workflow="EXPORT",
+            event_type="STEP_FINISHED",
+            severity="INFO",
+            message="EXPORT finished",
+            job_id=job_id,
+            plan_id=str(plan_id),
+            payload={"step": "EXPORT", "ok": True},
         )
     except Exception:
         pass

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
-import type { ConfigResp, CreatePlanJobResp, GraphNode, GraphV1, PlansResp } from "./types";
+import type { ConfigResp, CreatePlanJobResp, GraphNode, GraphV1, PlansResp, PlanSnapshotResp } from "./types";
 import ControlPanel from "./components/ControlPanel";
 import TaskGraph from "./components/TaskGraph";
 import NodeDetails from "./components/NodeDetails";
@@ -17,6 +17,7 @@ export default function App() {
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [autoSelectPlanFromJob, setAutoSelectPlanFromJob] = useState<boolean>(false);
   const [graph, setGraph] = useState<GraphV1 | null>(null);
+  const [snapshot, setSnapshot] = useState<PlanSnapshotResp | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [topTask, setTopTask] = useState<string>("");
   const [logText, setLogText] = useState<string>("");
@@ -57,30 +58,37 @@ export default function App() {
           : null;
     setSelectedPlanId(pid);
     if (pid) {
-      const g = await api.getGraph(pid);
+      const [g, snap] = await Promise.all([api.getGraph(pid), api.getPlanSnapshot(pid)]);
       setGraph(g);
+      setSnapshot(snap);
       if (selectedTaskId && !g.nodes.find((n) => n.task_id === selectedTaskId)) {
         setSelectedTaskId(null);
       }
     } else {
       setGraph(null);
+      setSnapshot(null);
       setSelectedTaskId(null);
     }
   }
 
   useEffect(() => {
     refresh().catch((e) => log(String(e)));
-    // polling: lightweight graph refresh
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // polling: lightweight graph+snapshot refresh (UI-only; SSOT for explanations is snapshot)
+  useEffect(() => {
+    if (!selectedPlanId) return;
     const t = setInterval(() => {
-      if (!selectedPlanId) return;
-      api
-        .getGraph(selectedPlanId)
-        .then((g) => setGraph(g))
+      Promise.all([api.getGraph(selectedPlanId), api.getPlanSnapshot(selectedPlanId)])
+        .then(([g, snap]) => {
+          setGraph(g);
+          setSnapshot(snap);
+        })
         .catch(() => {});
     }, 2000);
     return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [selectedPlanId]);
 
   useEffect(() => {
     if (viewMode !== "WORKFLOW") return;
@@ -113,6 +121,12 @@ export default function App() {
               only_errors: workflowOnlyErrors,
               limit: 200,
             });
+            // If there's no plan_id selected, still set an empty workflow so UI doesn't hang on "loading".
+            // If there is a selected plan_id, we can fallback to that for a more targeted view.
+            if (!pidFallback) {
+              setWorkflow(w);
+              return;
+            }
             if ((w.returned_rows ?? w.nodes.length) > 0) {
               setWorkflow(w);
               return;
@@ -168,9 +182,11 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedPlanId) return;
-    api
-      .getGraph(selectedPlanId)
-      .then((g) => setGraph(g))
+    Promise.all([api.getGraph(selectedPlanId), api.getPlanSnapshot(selectedPlanId)])
+      .then(([g, snap]) => {
+        setGraph(g);
+        setSnapshot(snap);
+      })
       .catch((e) => log(String(e)));
   }, [selectedPlanId]);
 
@@ -178,6 +194,15 @@ export default function App() {
     if (!graph || !selectedTaskId) return null;
     return graph.nodes.find((n) => n.task_id === selectedTaskId) ?? null;
   }, [graph, selectedTaskId]);
+
+  const headerTitle = snapshot?.plan?.title ?? graph?.plan.title ?? "No Plan";
+  const headerPlanId = snapshot?.plan?.plan_id ?? graph?.plan.plan_id ?? "";
+  const planDone = Boolean(snapshot?.summary?.is_done);
+  const reasonHead = snapshot?.reasons?.length ? String(snapshot.reasons[0].code) : "";
+  const nextCmd =
+    snapshot && (snapshot.report as any)?.next_steps && Array.isArray((snapshot.report as any).next_steps) && (snapshot.report as any).next_steps.length
+      ? String((snapshot.report as any).next_steps[0]?.cmd || "")
+      : "";
 
   return (
     <div className="layout">
@@ -209,11 +234,25 @@ export default function App() {
       <div className="center">
         <div className="panel header">
           <div>
-            <div className="title">{graph?.plan.title ?? "No Plan"}</div>
-            <div className="muted mono">{graph?.plan.plan_id ?? ""}</div>
+            <div className="title">{headerTitle}</div>
+            <div className="muted mono">{headerPlanId}</div>
           </div>
           <div className="muted">
-            status: <span className="mono">{graph?.running.task_id ? `Running(${graph.running.task_id.slice(0, 8)})` : "Pause"}</span>
+            plan: <span className="mono">{planDone ? "DONE" : "NOT_DONE"}</span>
+            {reasonHead ? (
+              <>
+                {" "}
+                · reason: <span className="mono">{reasonHead}</span>
+              </>
+            ) : null}
+            {nextCmd ? (
+              <>
+                {" "}
+                · next: <span className="mono">{nextCmd}</span>
+              </>
+            ) : null}
+            {" "}
+            · runner: <span className="mono">{graph?.running.task_id ? `Running(${graph.running.task_id.slice(0, 8)})` : "Pause"}</span>
           </div>
           <div className="spacer" />
           <div className="row" style={{ gap: 8 }}>
@@ -330,7 +369,7 @@ export default function App() {
         {viewMode === "WORKFLOW" ? (
           <LLMCallDetails llmCallId={selectedLlmCallId} />
         ) : viewMode === "TASK" ? (
-          <NodeDetails node={selectedNode} planId={selectedPlanId} onRefresh={() => refresh().catch((e) => log(String(e)))} />
+          <NodeDetails node={selectedNode} planId={selectedPlanId} snapshot={snapshot} onRefresh={() => refresh().catch((e) => log(String(e)))} />
         ) : null}
       </div>
     </div>

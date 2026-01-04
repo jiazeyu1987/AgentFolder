@@ -128,6 +128,7 @@ def ensure_plan_rubric(
     base_rubric_json: Dict[str, Any],
     max_attempts: int = 4,
     keep_trying: bool = False,
+    job_id: Optional[str] = None,
 ) -> Tuple[PlanRubric, str]:
     """
     Phase-1 rubric: define the scoring standard first, then reuse it for all PLAN_REVIEW stages.
@@ -150,6 +151,26 @@ def ensure_plan_rubric(
     rubric_obj: Dict[str, Any] = {}
     while True:
         attempt += 1
+        try:
+            from core.workflow_events import emit_workflow_event
+
+            emit_workflow_event(
+                conn,
+                workflow="CREATE_PLAN",
+                event_type="LLM_CALL_REQUESTED",
+                severity="INFO",
+                message="PLAN_RUBRIC: request",
+                job_id=job_id,
+                top_task_hash=top_task_hash,
+                payload={
+                    "step": "PLAN_RUBRIC",
+                    "agent": "xiaojing",
+                    "scope": "PLAN_RUBRIC",
+                    "rubric_attempt": int(attempt),
+                },
+            )
+        except Exception:
+            pass
         res = llm.call_json(prompt_to_use)
         last_call_id = record_llm_call(
             conn,
@@ -164,8 +185,30 @@ def ensure_plan_rubric(
             started_at_ts=getattr(res, "started_at_ts", None),
             finished_at_ts=getattr(res, "finished_at_ts", None),
             parsed_json=res.parsed_json if isinstance(res.parsed_json, dict) else None,
-            meta={"rubric_attempt": int(attempt)},
+            meta={"rubric_attempt": int(attempt), "stage": "STRUCTURE", "stage_attempt": 1},
         )
+        try:
+            from core.workflow_events import emit_workflow_event
+
+            emit_workflow_event(
+                conn,
+                workflow="CREATE_PLAN",
+                event_type="LLM_CALL_RECORDED",
+                severity="INFO",
+                message="PLAN_RUBRIC: recorded",
+                job_id=job_id,
+                top_task_hash=top_task_hash,
+                llm_call_id=str(last_call_id),
+                payload={
+                    "step": "PLAN_RUBRIC",
+                    "agent": "xiaojing",
+                    "scope": "PLAN_RUBRIC",
+                    "rubric_attempt": int(attempt),
+                    "llm_call_id": str(last_call_id),
+                },
+            )
+        except Exception:
+            pass
 
         rubric_obj, err = normalize_and_validate("PLAN_RUBRIC", res.parsed_json, {"top_task_hash": top_task_hash, "pass_score": int(pass_score)})
         if isinstance(rubric_obj, dict) and not err:
@@ -192,8 +235,29 @@ def ensure_plan_rubric(
             annotate_llm_output_for_retry(conn, llm_call_id=str(last_call_id), retry_kind="CONTRACT_MISMATCH", retry_reason=reason)
         except Exception:
             pass
+        try:
+            from core.workflow_events import emit_workflow_event
+
+            emit_workflow_event(
+                conn,
+                workflow="CREATE_PLAN",
+                event_type="DECISION_MADE",
+                severity="WARN",
+                message="PLAN_RUBRIC invalid; retry",
+                job_id=job_id,
+                top_task_hash=top_task_hash,
+                llm_call_id=str(last_call_id),
+                payload={
+                    "step": "PLAN_RUBRIC",
+                    "rubric_attempt": int(attempt),
+                    "why": "CONTRACT_MISMATCH",
+                    "retry_reason": str(reason)[:300],
+                    "next": "RETRY_RUBRIC",
+                },
+            )
+        except Exception:
+            pass
 
         prompt_to_use = _build_rubric_retry_prompt(original_prompt=prompt, invalid_response=res.raw_response_text or "", reason=reason)
         if (not keep_trying) and attempt >= max(1, int(max_attempts)):
             raise RuntimeError("PLAN_RUBRIC invalid after retries")
-

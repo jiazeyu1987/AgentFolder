@@ -13,6 +13,7 @@ import type {
   TopTasksResp,
   AuditResp,
   ResetToPlanResp,
+  PlanSnapshotResp,
 } from "./types";
 
 async function httpJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -34,7 +35,13 @@ export function getConfig(): Promise<ConfigResp> {
   return httpJson<ConfigResp>("/api/config");
 }
 
-export function updateRuntimeConfig(patch: { max_decomposition_depth?: number; one_shot_threshold_person_days?: number; plan_review_pass_score?: number; plan_review_notes_max_chars?: number }): Promise<unknown> {
+export function updateRuntimeConfig(patch: {
+  max_decomposition_depth?: number;
+  one_shot_threshold_person_days?: number;
+  create_plan_max_attempts?: number;
+  plan_review_pass_score?: number;
+  plan_review_notes_max_chars?: number;
+}): Promise<unknown> {
   return httpJson("/api/runtime_config/update", { method: "POST", body: JSON.stringify(patch) });
 }
 
@@ -44,6 +51,11 @@ export function getPlans(): Promise<PlansResp> {
 
 export function getGraph(planId: string): Promise<GraphV1> {
   return httpJson<GraphV1>(`/api/plan/${encodeURIComponent(planId)}/graph`);
+}
+
+export function getPlanSnapshot(planId: string): Promise<PlanSnapshotResp> {
+  const usp = new URLSearchParams({ plan_id: String(planId) });
+  return httpJson<PlanSnapshotResp>(`/api/plan_snapshot?${usp.toString()}`);
 }
 
 export function runStart(maxIterations: number): Promise<unknown> {
@@ -62,10 +74,14 @@ export function createPlan(topTask: string, maxAttempts: number): Promise<unknow
   return httpJson("/api/plan/create", { method: "POST", body: JSON.stringify({ top_task: topTask, max_attempts: maxAttempts }) });
 }
 
-export function createPlanAsync(topTask: string, maxAttempts: number, keepTrying = false, maxTotalAttempts?: number): Promise<CreatePlanAsyncResp> {
+export function createPlanAsync(topTask: string, opts?: { max_attempts?: number; keep_trying?: boolean; max_total_attempts?: number }): Promise<CreatePlanAsyncResp> {
+  const body: any = { top_task: topTask };
+  if (opts?.max_attempts !== undefined) body.max_attempts = opts.max_attempts;
+  if (opts?.keep_trying !== undefined) body.keep_trying = opts.keep_trying;
+  if (opts?.max_total_attempts !== undefined) body.max_total_attempts = opts.max_total_attempts;
   return httpJson<CreatePlanAsyncResp>("/api/plan/create_async", {
     method: "POST",
-    body: JSON.stringify({ top_task: topTask, max_attempts: maxAttempts, keep_trying: keepTrying, max_total_attempts: maxTotalAttempts }),
+    body: JSON.stringify(body),
   });
 }
 

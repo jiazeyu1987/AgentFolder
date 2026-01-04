@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import type { ErrorsResp, GraphNode, TaskDetailsResp, TaskLlmCallsResp } from "../types";
+import type { ErrorsResp, GraphNode, PlanSnapshotResp, TaskDetailsResp, TaskLlmCallsResp } from "../types";
 import * as api from "../api";
 import { formatLocalDateTime } from "../time";
 
@@ -23,6 +23,7 @@ function groupByAgent(calls: TaskLlmCallsResp["calls"]) {
 type NodeDetailsProps = {
   node: GraphNode | null;
   planId: string | null;
+  snapshot?: PlanSnapshotResp | null;
   onRefresh?: () => void;
 };
 
@@ -70,6 +71,7 @@ function groupErrorsForDisplay(errors: UiError[], opts: { primaryTaskTitle: stri
 export default function NodeDetails(props: NodeDetailsProps) {
   const n = props.node;
   const planId = props.planId;
+  const snapshot = props.snapshot ?? null;
   const onRefresh = props.onRefresh;
 
   const [details, setDetails] = useState<TaskDetailsResp | null>(null);
@@ -108,37 +110,23 @@ export default function NodeDetails(props: NodeDetailsProps) {
         .catch((e) => setErrorsErr(String(e)));
     }
 
-    // Root Task convenience: show plan-level missing inputs so users can see why the plan is stuck.
+    // Root Task convenience: prefer snapshot.inputs_needed (SSOT) for plan-level missing inputs.
     if (planId && n.node_type === "GOAL") {
-      api
-        .getGraph(planId)
-        .then((g) => {
-          const out: Array<{
-            taskTitle: string;
-            requiredDocsPath: string;
-            items: Array<{ name: string; suggested_path?: string; accepted_types?: string[] | string }>;
-          }> = [];
-          for (const node of g.nodes) {
-            const isWaitingInput =
-              node.status === "BLOCKED" && String(node.blocked_reason || "").includes("WAITING_INPUT");
-            const isInputMissing = node.last_error?.error_code === "INPUT_MISSING";
-            const hasMissingList = Boolean(node.missing_inputs && node.missing_inputs.length);
-            if (!hasMissingList && !isWaitingInput && !isInputMissing) continue;
-            out.push({
-              taskTitle: node.title,
-              requiredDocsPath: node.required_docs_path,
-              items: (node.missing_inputs || []).map((m) => ({
-                name: m.name,
-                suggested_path: m.suggested_path,
-                accepted_types: m.accepted_types,
-              })),
-            });
-          }
-          setPlanMissing(out.slice(0, 30));
-        })
-        .catch((e) => setPlanMissingErr(String(e)));
+      try {
+        const inputs = (snapshot?.inputs_needed ?? []) as any[];
+        const out = inputs.slice(0, 30).map((it) => ({
+          taskTitle: String(it.task_title || ""),
+          requiredDocsPath: String(it.required_docs_path || ""),
+          items: Array.isArray(it.items)
+            ? it.items.map((m: any) => ({ name: String(m.name || ""), suggested_path: m.suggested_path, accepted_types: m.accepted_types }))
+            : [],
+        }));
+        setPlanMissing(out);
+      } catch (e) {
+        setPlanMissingErr(String(e));
+      }
     }
-  }, [n?.task_id, planId]);
+  }, [n?.task_id, planId, snapshot?.ts]);
 
   const groups = useMemo(() => (llm ? groupByAgent(llm.calls) : []), [llm]);
   const errorsByLlmCallId = useMemo(() => {

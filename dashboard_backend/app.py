@@ -105,10 +105,30 @@ def _is_process_alive(pid: int) -> bool:
 
 def _start_run_process(*, db_path: Path, plan_path: Path, max_iterations: int) -> Dict[str, Any]:
     python_exe = _python_executable()
-    cmd = [python_exe, str(ROOT_DIR / "agent_cli.py"), "--db", str(db_path), "run", "--plan", str(plan_path), "--max-iterations", str(int(max_iterations))]
+    job_id = str(uuid.uuid4())
+    cmd = [
+        python_exe,
+        str(ROOT_DIR / "agent_cli.py"),
+        "--db",
+        str(db_path),
+        "run",
+        "--plan",
+        str(plan_path),
+        "--max-iterations",
+        str(int(max_iterations)),
+        "--job-id",
+        str(job_id),
+    ]
     # Start detached so UI can close and run continues.
     proc = _popen_hidden(cmd, cwd=str(ROOT_DIR))
-    state = {"pid": int(proc.pid), "cmd": cmd, "started_at": utc_now_iso(), "db_path": str(db_path), "plan_path": str(plan_path)}
+    state = {
+        "job_id": job_id,
+        "pid": int(proc.pid),
+        "cmd": cmd,
+        "started_at": utc_now_iso(),
+        "db_path": str(db_path),
+        "plan_path": str(plan_path),
+    }
     _write_run_state(state)
     return state
 
@@ -218,6 +238,8 @@ def _start_create_plan_process(*, db_path: Path, top_task: str, max_attempts: in
         str(top_task_file),
         "--max-attempts",
         str(int(max_attempts)),
+        "--job-id",
+        str(job_id),
     ]
     if keep_trying:
         cmd.append("--keep-trying")
@@ -277,6 +299,117 @@ def _parse_meta_json(meta_json: Any) -> Dict[str, Any]:
         except Exception:
             return {}
     return {}
+
+
+def _infer_create_plan_progress_from_workflow_events(conn: sqlite3.Connection, *, job_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Prefer event-first progress (workflow_events) over llm_calls inference.
+    Returns None if no events exist for this job_id.
+    """
+    try:
+        from core.workflow_events import fetch_workflow_events
+    except Exception:
+        return None
+
+    events = fetch_workflow_events(conn, job_id=str(job_id), workflow="CREATE_PLAN", limit=80)
+    if not events:
+        return None
+
+    def first_payload_field(name: str):
+        for e in events:
+            if name in e.payload:
+                return e.payload.get(name)
+        return None
+
+    # Determine current step + attempt/stage from the newest event that carries a step.
+    current_step = None
+    for e in events:
+        step = e.payload.get("step")
+        if isinstance(step, str) and step.strip():
+            current_step = step.strip()
+            break
+        if e.event_type == "STEP_STARTED":
+            step2 = e.payload.get("step")
+            if isinstance(step2, str) and step2.strip():
+                current_step = step2.strip()
+                break
+
+    attempt = int(first_payload_field("attempt") or 1)
+    stage = str(first_payload_field("stage") or "").strip().upper() or "UNKNOWN"
+    stage_attempt = int(first_payload_field("stage_attempt") or 1)
+    review_attempt = int(first_payload_field("review_attempt") or 1)
+    rubric_attempt = int(first_payload_field("rubric_attempt") or 1)
+
+    # phase is for legacy UI labels; derive from step/scope.
+    scope = first_payload_field("scope")
+    if isinstance(scope, str) and scope.strip() in {"PLAN_RUBRIC", "PLAN_GEN", "PLAN_REVIEW"}:
+        phase = scope.strip()
+    elif isinstance(current_step, str):
+        if current_step == "PLAN_RUBRIC":
+            phase = "PLAN_RUBRIC"
+        elif "REVIEW" in current_step:
+            phase = "PLAN_REVIEW"
+        else:
+            phase = "PLAN_GEN"
+    else:
+        phase = "UNKNOWN"
+
+    inferred_plan_id = None
+    for e in events:
+        if e.plan_id:
+            inferred_plan_id = str(e.plan_id)
+            break
+
+    last_event = {
+        "created_at": events[0].created_at,
+        "event_type": events[0].event_type,
+        "severity": events[0].severity,
+        "message": events[0].message,
+        "payload": events[0].payload,
+    }
+
+    last_decision = None
+    for e in events:
+        if e.event_type == "DECISION_MADE":
+            last_decision = {
+                "created_at": e.created_at,
+                "message": e.message,
+                "payload": e.payload,
+            }
+            break
+
+    last_error = None
+    for e in events:
+        if e.event_type == "ERROR_RAISED":
+            last_error = {
+                "created_at": e.created_at,
+                "message": e.message,
+                "payload": e.payload,
+            }
+            break
+
+    retry_reason = ""
+    if isinstance(last_decision, dict):
+        pr = last_decision.get("payload") or {}
+        if isinstance(pr, dict):
+            rr = pr.get("retry_reason")
+            if isinstance(rr, str) and rr.strip():
+                retry_reason = rr.strip()[:200]
+
+    return {
+        "attempt": attempt,
+        "phase": phase,
+        "stage": stage,
+        "stage_attempt": stage_attempt,
+        "review_attempt": review_attempt,
+        "rubric_attempt": rubric_attempt,
+        "current_step": current_step or "UNKNOWN",
+        "retry_reason": retry_reason,
+        "last_event": last_event,
+        "last_decision": last_decision,
+        "last_error": last_error,
+        "inferred_plan_id": inferred_plan_id,
+    }
 
 
 def infer_create_plan_progress(
@@ -390,7 +523,7 @@ app.add_middleware(
 
 class CreatePlanIn(BaseModel):
     top_task: str
-    max_attempts: int = 3
+    max_attempts: Optional[int] = None
     keep_trying: bool = False
     max_total_attempts: Optional[int] = None
 
@@ -413,6 +546,7 @@ class ResetDbIn(BaseModel):
 class RuntimeConfigUpdateIn(BaseModel):
     max_decomposition_depth: Optional[int] = None
     one_shot_threshold_person_days: Optional[float] = None
+    create_plan_max_attempts: Optional[int] = None
     plan_review_pass_score: Optional[int] = None
     plan_review_notes_max_chars: Optional[int] = None
 
@@ -814,6 +948,8 @@ def update_runtime_config(body: RuntimeConfigUpdateIn) -> Dict[str, Any]:
         patch["max_decomposition_depth"] = int(body.max_decomposition_depth)
     if body.one_shot_threshold_person_days is not None:
         patch["one_shot_threshold_person_days"] = float(body.one_shot_threshold_person_days)
+    if body.create_plan_max_attempts is not None:
+        patch["create_plan_max_attempts"] = int(body.create_plan_max_attempts)
     if body.plan_review_pass_score is not None:
         patch["plan_review_pass_score"] = int(body.plan_review_pass_score)
     if body.plan_review_notes_max_chars is not None:
@@ -861,10 +997,12 @@ def create_plan_async(body: CreatePlanIn) -> Dict[str, Any]:
         return {"started": False, "reason": "already running", "job_id": state.get("job_id"), "pid": state.get("pid")}
 
     resolved_top_task = _resolve_top_task_from_request(body.top_task)
+    cfg = get_runtime_config()
+    max_attempts_eff = int(body.max_attempts) if body.max_attempts is not None else int(cfg.create_plan_max_attempts)
     state = _start_create_plan_process(
         db_path=config.DB_PATH_DEFAULT,
         top_task=resolved_top_task,
-        max_attempts=int(body.max_attempts),
+        max_attempts=max_attempts_eff,
         keep_trying=bool(body.keep_trying),
         max_total_attempts=body.max_total_attempts,
     )
@@ -927,12 +1065,15 @@ def get_job(job_id: str) -> Dict[str, Any]:
     with _db_conn() as conn:
         plan_id = state.get("plan_id")
         started_at = state.get("started_at")
-        prog = infer_create_plan_progress(
+        llm_prog = infer_create_plan_progress(
             conn,
             plan_id=str(plan_id) if isinstance(plan_id, str) and plan_id.strip() else None,
             started_at=str(started_at) if isinstance(started_at, str) and started_at.strip() else None,
         )
-    inferred_plan_id = prog.get("inferred_plan_id")
+        events_prog = _infer_create_plan_progress_from_workflow_events(conn, job_id=str(job_id))
+    prog = events_prog or llm_prog
+
+    inferred_plan_id = (prog.get("inferred_plan_id") if isinstance(prog, dict) else None) or (llm_prog.get("inferred_plan_id") if isinstance(llm_prog, dict) else None)
     if not plan_id and isinstance(inferred_plan_id, str) and inferred_plan_id.strip():
         plan_id = inferred_plan_id.strip()
         state["plan_id"] = plan_id
@@ -943,32 +1084,38 @@ def get_job(job_id: str) -> Dict[str, Any]:
         state["plan_id"] = plan_id
         _write_create_plan_state(state)
 
-    phase = prog.get("phase") or "UNKNOWN"
-    attempt = int(prog.get("attempt") or 1)
-    review_attempt = int(prog.get("review_attempt") or 1)
-    rubric_attempt = int(prog.get("rubric_attempt") or 1)
-    stage = prog.get("stage") or "UNKNOWN"
-    stage_attempt = int(prog.get("stage_attempt") or 1)
+    phase = (prog.get("phase") or "UNKNOWN") if isinstance(prog, dict) else "UNKNOWN"
+    attempt = int((prog.get("attempt") or 1) if isinstance(prog, dict) else 1)
+    review_attempt = int((prog.get("review_attempt") or 1) if isinstance(prog, dict) else 1)
+    rubric_attempt = int((prog.get("rubric_attempt") or 1) if isinstance(prog, dict) else 1)
+    stage = (prog.get("stage") or "UNKNOWN") if isinstance(prog, dict) else "UNKNOWN"
+    stage_attempt = int((prog.get("stage_attempt") or 1) if isinstance(prog, dict) else 1)
+    current_step = (prog.get("current_step") if isinstance(prog, dict) else None) or None
+    last_event = (prog.get("last_event") if isinstance(prog, dict) else None) or None
+    last_decision = (prog.get("last_decision") if isinstance(prog, dict) else None) or None
+    last_error = (prog.get("last_error") if isinstance(prog, dict) else None) or None
 
     hint = ""
-    last_call = prog.get("last_llm_call")
-    retry_reason = ""
+    last_call = llm_prog.get("last_llm_call") if isinstance(llm_prog, dict) else None
+    retry_reason = str(prog.get("retry_reason") or "").strip() if isinstance(prog, dict) else ""
     if status == "RUNNING":
-        if phase == "PLAN_RUBRIC":
+        if isinstance(current_step, str) and current_step.strip() and current_step.strip().upper() != "UNKNOWN":
+            hint = f"当前步骤：{current_step}"
+        elif phase == "PLAN_RUBRIC":
             hint = f"当前在 PLAN_RUBRIC（rubric_attempt={rubric_attempt}）生成评分标准。"
         elif phase == "PLAN_GEN":
             hint = f"当前在 PLAN_GEN（stage={stage}, stage_attempt={stage_attempt}）生成计划。"
         elif phase == "PLAN_REVIEW":
             hint = f"当前在 PLAN_REVIEW（stage={stage}, review_attempt={review_attempt}）审核计划。"
         else:
-            hint = "正在运行（等待新的 LLM 调用记录）。"
+            hint = "正在运行（等待新的事件/LLM 记录）。"
     else:
         hint = "已结束。若未生成 plan_id，请查看 LLM Timeline 或 DB 的 llm_calls。"
 
     if isinstance(last_call, dict):
         ve = str(last_call.get("validator_error") or "").strip()
         ec = str(last_call.get("error_code") or "").strip()
-        if status == "RUNNING" and phase == "PLAN_REVIEW" and (ve or ec):
+        if not retry_reason and status == "RUNNING" and phase == "PLAN_REVIEW" and (ve or ec):
             retry_reason = (ec or ve)[:200]
         if ve or ec:
             hint = f"{hint} 建议打开 LLM Timeline 查看 validator_error/error_code。"
@@ -989,6 +1136,10 @@ def get_job(job_id: str) -> Dict[str, Any]:
         "stage_attempt": stage_attempt,
         "rubric_attempt": rubric_attempt,
         "review_attempt": review_attempt,
+        "current_step": current_step,
+        "last_event": last_event,
+        "last_decision": last_decision,
+        "last_error": last_error,
         "last_llm_call": last_call,
         "hint": hint,
         "retry_reason": retry_reason,
@@ -1452,6 +1603,8 @@ def reset_to_plan(body: ResetToPlanIn) -> Dict[str, Any]:
 @app.post("/api/plan/create")
 def create_plan(body: CreatePlanIn) -> Dict[str, Any]:
     python_exe = _python_executable()
+    cfg = get_runtime_config()
+    max_attempts_eff = int(body.max_attempts) if body.max_attempts is not None else int(cfg.create_plan_max_attempts)
     cmd = [
         python_exe,
         str(ROOT_DIR / "agent_cli.py"),
@@ -1461,7 +1614,7 @@ def create_plan(body: CreatePlanIn) -> Dict[str, Any]:
         "--top-task",
         body.top_task,
         "--max-attempts",
-        str(int(body.max_attempts)),
+        str(int(max_attempts_eff)),
     ]
     if body.keep_trying:
         cmd.append("--keep-trying")

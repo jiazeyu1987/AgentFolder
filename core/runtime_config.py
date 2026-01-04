@@ -38,6 +38,7 @@ class RuntimeConfig:
     python_executable: str
     max_decomposition_depth: int
     one_shot_threshold_person_days: float
+    create_plan_max_attempts: int
     plan_review_pass_score: int
     plan_review_notes_max_chars: int
     export_include_candidates: bool
@@ -64,6 +65,7 @@ def _load_json(path: Path) -> Dict[str, Any]:
             "python_executable": "",
             "max_decomposition_depth": 5,
             "one_shot_threshold_person_days": 10,
+            "create_plan_max_attempts": 3,
             "plan_review_pass_score": 90,
             "plan_review_notes_max_chars": 500,
             "export_include_candidates": False,
@@ -114,6 +116,10 @@ def load_runtime_config(path: Optional[Path] = None) -> RuntimeConfig:
     one_shot_threshold_person_days = float(data.get("one_shot_threshold_person_days") or 10)
     if one_shot_threshold_person_days <= 0:
         raise RuntimeConfigError("one_shot_threshold_person_days must be > 0")
+
+    create_plan_max_attempts = int(data.get("create_plan_max_attempts") or 3)
+    if create_plan_max_attempts <= 0 or create_plan_max_attempts > 100:
+        raise RuntimeConfigError("create_plan_max_attempts must be 1..100")
 
     plan_review_pass_score = int(data.get("plan_review_pass_score") or 90)
     if plan_review_pass_score <= 0 or plan_review_pass_score > 100:
@@ -185,6 +191,7 @@ def load_runtime_config(path: Optional[Path] = None) -> RuntimeConfig:
         python_executable=python_executable,
         max_decomposition_depth=max_decomposition_depth,
         one_shot_threshold_person_days=one_shot_threshold_person_days,
+        create_plan_max_attempts=create_plan_max_attempts,
         plan_review_pass_score=plan_review_pass_score,
         plan_review_notes_max_chars=plan_review_notes_max_chars,
         export_include_candidates=export_include_candidates,

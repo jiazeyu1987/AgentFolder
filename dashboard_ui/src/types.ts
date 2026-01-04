@@ -71,6 +71,22 @@ export interface PlansResp {
   ts: string;
 }
 
+export interface PlanSnapshotResp {
+  schema_version: "plan_snapshot_v1";
+  ts: string;
+  plan: { plan_id: string; title: string; root_task_id?: string; created_at?: string; workflow_mode?: string };
+  summary: { is_done?: boolean } & Record<string, unknown>;
+  reasons: Array<{ code: string; count: number; example?: string }>;
+  inputs_needed: Array<{ task_title: string; required_docs_path: string; items: Array<{ name: string; accepted_types?: string[]; suggested_path?: string }> }>;
+  waiting_review: Array<Record<string, unknown>>;
+  recent_errors: Array<{ task_title?: string; created_at?: string; error_code?: string; message?: string; hint?: string; context_excerpt?: string }>;
+  final_deliverable: null | { deliverables_dir: string; final_entrypoint: string; how_to_run: string[]; final_task_title: string; final_artifact_id: string };
+  doctor: { ok: boolean; findings: Array<Record<string, unknown>> };
+  feasibility: Record<string, unknown> | null;
+  report: Record<string, unknown>;
+  manifest: Record<string, unknown> | null;
+}
+
 export interface ConfigResp {
   runtime_config: unknown;
   paths: Record<string, string>;
@@ -79,6 +95,7 @@ export interface ConfigResp {
 export type RuntimeConfigPatch = {
   max_decomposition_depth?: number;
   one_shot_threshold_person_days?: number;
+  create_plan_max_attempts?: number;
   plan_review_pass_score?: number;
   plan_review_notes_max_chars?: number;
 };
@@ -122,6 +139,10 @@ export interface CreatePlanJobResp {
   stage_attempt?: number;
   rubric_attempt?: number;
   review_attempt: number;
+  current_step?: string | null;
+  last_event?: { created_at: string; event_type: string; severity: string; message: string | null; payload: any } | null;
+  last_decision?: { created_at: string; message: string | null; payload: any } | null;
+  last_error?: { created_at: string; message: string | null; payload: any } | null;
   last_llm_call: { created_at: string; scope: string; agent: string; error_code: string | null; validator_error: string | null } | null;
   hint: string;
   retry_reason?: string;

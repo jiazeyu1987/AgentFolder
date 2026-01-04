@@ -10,6 +10,7 @@ from core.errors import apply_error_outcome, map_error_to_outcome, record_error
 from core.events import emit_event
 from core.reviews import insert_review, write_review_json
 from core.util import utc_now_iso
+from core.workflow_events import emit_workflow_event
 
 
 ReviewerFn = Callable[[Dict[str, Any]], Dict[str, Any]]
@@ -21,7 +22,15 @@ class ReviewContractMismatch(RuntimeError):
         self.hint = hint
 
 
-def _set_status(conn: sqlite3.Connection, *, plan_id: str, task_id: str, status: str, blocked_reason: Optional[str] = None) -> None:
+def _set_status(
+    conn: sqlite3.Connection,
+    *,
+    plan_id: str,
+    task_id: str,
+    status: str,
+    blocked_reason: Optional[str] = None,
+    job_id: Optional[str] = None,
+) -> None:
     row = conn.execute("SELECT status FROM task_nodes WHERE task_id = ?", (task_id,)).fetchone()
     before = str(row["status"]) if row and row["status"] is not None else None
     conn.execute(
@@ -29,6 +38,20 @@ def _set_status(conn: sqlite3.Connection, *, plan_id: str, task_id: str, status:
         (status, blocked_reason, utc_now_iso(), task_id),
     )
     emit_event(conn, plan_id=plan_id, task_id=task_id, event_type="STATUS_CHANGED", payload={"status": status, "blocked_reason": blocked_reason})
+    try:
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STATUS_CHANGED",
+            severity="INFO",
+            message=f"status: {before or '-'} -> {status}",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=task_id,
+            payload={"status_before": before, "status_after": status, "blocked_reason": blocked_reason, "source": "v2_review_gate"},
+        )
+    except Exception:
+        pass
     try:
         from core.audit_log import log_audit
 
@@ -140,6 +163,7 @@ def run_check_once(
     plan_id: str,
     check_task_id: str,
     reviewer_fn: ReviewerFn,
+    job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     v2 minimal gate:
@@ -149,14 +173,71 @@ def run_check_once(
     - REJECTED: ACTION -> TO_BE_MODIFY (candidate artifact preserved).
     - CHECK always ends DONE on a successful review attempt.
     """
+    step = "V2_CHECK"
+    emit_workflow_event(
+        conn,
+        workflow="RUN",
+        event_type="STEP_STARTED",
+        severity="INFO",
+        message="V2_CHECK started",
+        job_id=job_id,
+        plan_id=plan_id,
+        task_id=check_task_id,
+        payload={"step": step, "check_task_id": check_task_id},
+    )
+
     # Concurrency guard: if we cannot acquire the READY->IN_PROGRESS transition, treat as a benign skip.
     if not _acquire_check_lock(conn, plan_id=plan_id, check_task_id=check_task_id):
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="DECISION_MADE",
+            severity="INFO",
+            message="check skipped: lock not acquired",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "why": "LOCK_BUSY", "next": "SKIP"},
+        )
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="INFO",
+            message="V2_CHECK finished",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "ok": True, "reason": "SKIPPED_LOCK_NOT_ACQUIRED"},
+        )
         return {"ok": True, "reason": "SKIPPED_LOCK_NOT_ACQUIRED"}
 
     check, target = _load_check_and_target(conn, plan_id=plan_id, check_task_id=check_task_id)
     if not check:
         record_error(conn, plan_id=plan_id, task_id=check_task_id, error_code="TASK_NOT_FOUND", message="CHECK task not found")
-        _set_status(conn, plan_id=plan_id, task_id=check_task_id, status="READY", blocked_reason=None)
+        _set_status(conn, plan_id=plan_id, task_id=check_task_id, status="READY", blocked_reason=None, job_id=job_id)
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="ERROR_RAISED",
+            severity="ERROR",
+            message="CHECK task not found",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "error_code": "TASK_NOT_FOUND", "next": "FIX_PLAN_OR_DB"},
+        )
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="WARN",
+            message="V2_CHECK finished",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "ok": False, "error_code": "TASK_NOT_FOUND"},
+        )
         return {"ok": False, "error_code": "TASK_NOT_FOUND"}
 
     target_id = (check["review_target_task_id"] or "").strip() if isinstance(check["review_target_task_id"], str) else ""
@@ -170,6 +251,28 @@ def run_check_once(
             context={"json_path": "$.task_nodes[task_id=<check>].review_target_task_id"},
         )
         apply_error_outcome(conn, plan_id=plan_id, task_id=check_task_id, outcome=map_error_to_outcome("INPUT_MISSING"))
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="ERROR_RAISED",
+            severity="ERROR",
+            message="CHECK missing review_target_task_id",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "error_code": "INPUT_MISSING", "next": "FIX_PLAN_BINDING"},
+        )
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="WARN",
+            message="V2_CHECK finished",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "ok": False, "error_code": "INPUT_MISSING"},
+        )
         return {"ok": False, "error_code": "INPUT_MISSING", "hint": "Bind CHECK.review_target_task_id to an ACTION task_id."}
 
     if not target:
@@ -182,6 +285,28 @@ def run_check_once(
             context={"target_task_id": target_id},
         )
         apply_error_outcome(conn, plan_id=plan_id, task_id=check_task_id, outcome=map_error_to_outcome("INPUT_CONFLICT"))
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="ERROR_RAISED",
+            severity="ERROR",
+            message="CHECK points to missing ACTION",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "error_code": "INPUT_MISSING", "review_target_task_id": target_id, "next": "FIX_PLAN_BINDING"},
+        )
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="WARN",
+            message="V2_CHECK finished",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "ok": False, "error_code": "INPUT_MISSING"},
+        )
         return {"ok": False, "error_code": "INPUT_MISSING", "hint": "Fix review_target_task_id to reference an existing ACTION."}
 
     reviewed_artifact_id = (target["active_artifact_id"] or "").strip() if isinstance(target["active_artifact_id"], str) else ""
@@ -195,13 +320,57 @@ def run_check_once(
             context={"review_target_task_id": target_id},
         )
         apply_error_outcome(conn, plan_id=plan_id, task_id=check_task_id, outcome=map_error_to_outcome("INPUT_MISSING"))
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="ERROR_RAISED",
+            severity="WARN",
+            message="Target ACTION has no active artifact",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "error_code": "INPUT_MISSING", "review_target_task_id": target_id, "next": "RUN_ACTION_FIRST"},
+        )
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="WARN",
+            message="V2_CHECK finished",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "ok": False, "error_code": "INPUT_MISSING"},
+        )
         return {"ok": False, "error_code": "INPUT_MISSING", "hint": "Generate an artifact for the ACTION first."}
 
     idempotency_key = f"{check_task_id}:{reviewed_artifact_id}"
     already = conn.execute("SELECT review_id FROM reviews WHERE idempotency_key = ? LIMIT 1", (idempotency_key,)).fetchone()
     if already:
         # Idempotent no-op: do not change ACTION/CHECK states (restore CHECK to READY).
-        _set_status(conn, plan_id=plan_id, task_id=check_task_id, status="READY", blocked_reason=None)
+        _set_status(conn, plan_id=plan_id, task_id=check_task_id, status="READY", blocked_reason=None, job_id=job_id)
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="DECISION_MADE",
+            severity="INFO",
+            message="check already reviewed; no-op",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "why": "ALREADY_REVIEWED", "reviewed_artifact_id": reviewed_artifact_id, "next": "NOOP"},
+        )
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="INFO",
+            message="V2_CHECK finished",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "ok": True, "reason": "ALREADY_REVIEWED"},
+        )
         return {"ok": True, "reason": "ALREADY_REVIEWED", "review_id": str(already["review_id"])}
 
     art_path = _load_artifact_path(conn, artifact_id=reviewed_artifact_id)
@@ -215,6 +384,28 @@ def run_check_once(
             context={"check_task_id": check_task_id, "review_target_task_id": target_id, "reviewed_artifact_id": reviewed_artifact_id},
         )
         apply_error_outcome(conn, plan_id=plan_id, task_id=check_task_id, outcome=map_error_to_outcome("INPUT_MISSING"))
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="ERROR_RAISED",
+            severity="ERROR",
+            message="Locked artifact missing in DB",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "error_code": "INPUT_MISSING", "reviewed_artifact_id": reviewed_artifact_id, "next": "REGENERATE_ARTIFACT"},
+        )
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="WARN",
+            message="V2_CHECK finished",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "ok": False, "error_code": "INPUT_MISSING"},
+        )
         return {"ok": False, "error_code": "INPUT_MISSING", "hint": "Artifact record missing; regenerate the candidate artifact."}
 
     from pathlib import Path
@@ -229,6 +420,28 @@ def run_check_once(
             context={"reviewed_artifact_id": reviewed_artifact_id, "missing_path": art_path},
         )
         apply_error_outcome(conn, plan_id=plan_id, task_id=check_task_id, outcome=map_error_to_outcome("INPUT_MISSING"))
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="ERROR_RAISED",
+            severity="ERROR",
+            message="Locked artifact file missing",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "error_code": "INPUT_MISSING", "missing_path": art_path, "next": "REGENERATE_ARTIFACT"},
+        )
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="WARN",
+            message="V2_CHECK finished",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "ok": False, "error_code": "INPUT_MISSING"},
+        )
         return {"ok": False, "error_code": "INPUT_MISSING", "hint": f"Missing artifact file: {art_path}"}
 
     review_context = {
@@ -259,8 +472,52 @@ def run_check_once(
         cfg = get_runtime_config()
         if _attempt_count(conn, task_id=check_task_id) >= int(cfg.max_check_attempts_v2):
             apply_error_outcome(conn, plan_id=plan_id, task_id=check_task_id, outcome=map_error_to_outcome("MAX_ATTEMPTS_EXCEEDED"))
+            emit_workflow_event(
+                conn,
+                workflow="RUN",
+                event_type="DECISION_MADE",
+                severity="ERROR",
+                message="check blocked: max contract mismatch attempts",
+                job_id=job_id,
+                plan_id=plan_id,
+                task_id=check_task_id,
+                payload={"step": step, "why": "CONTRACT_MISMATCH", "next": "BLOCKED_WAITING_EXTERNAL"},
+            )
+            emit_workflow_event(
+                conn,
+                workflow="RUN",
+                event_type="STEP_FINISHED",
+                severity="WARN",
+                message="V2_CHECK finished",
+                job_id=job_id,
+                plan_id=plan_id,
+                task_id=check_task_id,
+                payload={"step": step, "ok": False, "error_code": "MAX_ATTEMPTS_EXCEEDED"},
+            )
             return {"ok": False, "error_code": "MAX_ATTEMPTS_EXCEEDED", "hint": "Contract mismatch repeatedly; open LLM Explorer / fix prompt schema."}
-        _set_status(conn, plan_id=plan_id, task_id=check_task_id, status="READY", blocked_reason=None)
+        _set_status(conn, plan_id=plan_id, task_id=check_task_id, status="READY", blocked_reason=None, job_id=job_id)
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="DECISION_MADE",
+            severity="WARN",
+            message="check contract mismatch; retry later",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "why": "CONTRACT_MISMATCH", "next": "RETRY_CHECK"},
+        )
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="WARN",
+            message="V2_CHECK finished",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "ok": False, "error_code": "CONTRACT_MISMATCH"},
+        )
         return {"ok": False, "error_code": "CONTRACT_MISMATCH", "hint": getattr(exc, "hint", "Fix reviewer contract and retry.")}
     except Exception as exc:
         record_error(
@@ -276,6 +533,28 @@ def run_check_once(
             },
         )
         apply_error_outcome(conn, plan_id=plan_id, task_id=check_task_id, outcome=map_error_to_outcome("INPUT_CONFLICT"))
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="ERROR_RAISED",
+            severity="ERROR",
+            message="reviewer failed",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "error_code": "REVIEWER_FAILED", "next": "BLOCKED_WAITING_EXTERNAL"},
+        )
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="WARN",
+            message="V2_CHECK finished",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "ok": False, "error_code": "REVIEWER_FAILED"},
+        )
         return {"ok": False, "error_code": "REVIEWER_FAILED", "hint": "Reviewer crashed; check prompt/contracts or rerun later."}
 
     if not isinstance(review_payload, dict):
@@ -284,8 +563,52 @@ def run_check_once(
         cfg = get_runtime_config()
         if _attempt_count(conn, task_id=check_task_id) >= int(cfg.max_check_attempts_v2):
             apply_error_outcome(conn, plan_id=plan_id, task_id=check_task_id, outcome=map_error_to_outcome("MAX_ATTEMPTS_EXCEEDED"))
+            emit_workflow_event(
+                conn,
+                workflow="RUN",
+                event_type="DECISION_MADE",
+                severity="ERROR",
+                message="check blocked: max bad output attempts",
+                job_id=job_id,
+                plan_id=plan_id,
+                task_id=check_task_id,
+                payload={"step": step, "why": "REVIEWER_BAD_OUTPUT", "next": "BLOCKED_WAITING_EXTERNAL"},
+            )
+            emit_workflow_event(
+                conn,
+                workflow="RUN",
+                event_type="STEP_FINISHED",
+                severity="WARN",
+                message="V2_CHECK finished",
+                job_id=job_id,
+                plan_id=plan_id,
+                task_id=check_task_id,
+                payload={"step": step, "ok": False, "error_code": "MAX_ATTEMPTS_EXCEEDED"},
+            )
             return {"ok": False, "error_code": "MAX_ATTEMPTS_EXCEEDED", "hint": "Reviewer output repeatedly invalid; please fix prompts/contracts."}
-        _set_status(conn, plan_id=plan_id, task_id=check_task_id, status="READY", blocked_reason=None)
+        _set_status(conn, plan_id=plan_id, task_id=check_task_id, status="READY", blocked_reason=None, job_id=job_id)
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="DECISION_MADE",
+            severity="WARN",
+            message="reviewer bad output; retry later",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "why": "REVIEWER_BAD_OUTPUT", "next": "RETRY_CHECK"},
+        )
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="WARN",
+            message="V2_CHECK finished",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=check_task_id,
+            payload={"step": step, "ok": False, "error_code": "REVIEWER_BAD_OUTPUT"},
+        )
         return {"ok": False, "error_code": "REVIEWER_BAD_OUTPUT", "hint": "Reviewer output invalid; will retry."}
 
     verdict_raw = review_payload.get("verdict")
@@ -323,9 +646,38 @@ def run_check_once(
         verdict=verdict,
         acceptance_results=normalized_review.get("acceptance_results"),
     )
+    emit_workflow_event(
+        conn,
+        workflow="RUN",
+        event_type="REVIEW_WRITTEN",
+        severity="INFO",
+        message=f"review {verdict}",
+        job_id=job_id,
+        plan_id=plan_id,
+        task_id=check_task_id,
+        payload={
+            "step": step,
+            "check_task_id": check_task_id,
+            "review_target_task_id": target_id,
+            "reviewed_artifact_id": reviewed_artifact_id,
+            "verdict": verdict,
+            "total_score": int(normalized_review.get("total_score") or 0),
+        },
+    )
 
     if verdict == "APPROVED":
         set_approved_artifact(conn, task_id=target_id, artifact_id=reviewed_artifact_id)
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="ARTIFACT_APPROVED",
+            severity="INFO",
+            message="artifact approved",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=target_id,
+            payload={"step": step, "approved_artifact_id": reviewed_artifact_id, "review_target_task_id": target_id},
+        )
         # If the ACTION generated a newer candidate while we were reviewing, do not mark DONE.
         # Keep approved pointer on the reviewed version, but require reviewing the newest candidate.
         current_active = _current_active_artifact_id(conn, task_id=target_id)
@@ -342,11 +694,61 @@ def run_check_once(
                     "hint": "Run CHECK again to review the latest candidate artifact.",
                 },
             )
-            _set_status(conn, plan_id=plan_id, task_id=target_id, status="READY_TO_CHECK")
+            emit_workflow_event(
+                conn,
+                workflow="RUN",
+                event_type="DECISION_MADE",
+                severity="WARN",
+                message="approved older candidate; needs re-review",
+                job_id=job_id,
+                plan_id=plan_id,
+                task_id=target_id,
+                payload={
+                    "step": step,
+                    "why": "STALE_REVIEW",
+                    "next": "REVIEW_LATEST",
+                    "approved_artifact_id": reviewed_artifact_id,
+                    "current_active_artifact_id": current_active,
+                },
+            )
+            _set_status(conn, plan_id=plan_id, task_id=target_id, status="READY_TO_CHECK", job_id=job_id)
         else:
-            _set_status(conn, plan_id=plan_id, task_id=target_id, status="DONE")
+            emit_workflow_event(
+                conn,
+                workflow="RUN",
+                event_type="DECISION_MADE",
+                severity="INFO",
+                message="action approved",
+                job_id=job_id,
+                plan_id=plan_id,
+                task_id=target_id,
+                payload={"step": step, "why": "APPROVED", "next": "ACTION_DONE", "approved_artifact_id": reviewed_artifact_id},
+            )
+            _set_status(conn, plan_id=plan_id, task_id=target_id, status="DONE", job_id=job_id)
     else:
-        _set_status(conn, plan_id=plan_id, task_id=target_id, status="TO_BE_MODIFY")
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="DECISION_MADE",
+            severity="INFO",
+            message="action rejected; needs modify",
+            job_id=job_id,
+            plan_id=plan_id,
+            task_id=target_id,
+            payload={"step": step, "why": "REJECTED", "next": "TO_BE_MODIFY", "reviewed_artifact_id": reviewed_artifact_id},
+        )
+        _set_status(conn, plan_id=plan_id, task_id=target_id, status="TO_BE_MODIFY", job_id=job_id)
 
-    _set_status(conn, plan_id=plan_id, task_id=check_task_id, status="DONE")
+    _set_status(conn, plan_id=plan_id, task_id=check_task_id, status="DONE", job_id=job_id)
+    emit_workflow_event(
+        conn,
+        workflow="RUN",
+        event_type="STEP_FINISHED",
+        severity="INFO",
+        message="V2_CHECK finished",
+        job_id=job_id,
+        plan_id=plan_id,
+        task_id=check_task_id,
+        payload={"step": step, "ok": True, "verdict": verdict, "reviewed_artifact_id": reviewed_artifact_id},
+    )
     return {"ok": True, "verdict": verdict, "review_target_task_id": target_id, "reviewed_artifact_id": reviewed_artifact_id}

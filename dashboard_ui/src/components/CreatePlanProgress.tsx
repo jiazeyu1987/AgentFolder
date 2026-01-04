@@ -11,6 +11,9 @@ export default function CreatePlanProgress(props: {
   const head = useMemo(() => {
     if (!props.job) return null;
     const j = props.job;
+    if (j.current_step && String(j.current_step).trim() && String(j.current_step).toUpperCase() !== "UNKNOWN") {
+      return `step=${j.current_step} attempt=${j.attempt}`;
+    }
     const stage = j.stage ? ` stage=${j.stage}${j.stage_attempt ? `(${j.stage_attempt})` : ""}` : "";
     const phaseExtra =
       j.phase === "PLAN_REVIEW"
@@ -46,6 +49,19 @@ export default function CreatePlanProgress(props: {
                 </div>
               ) : null}
               {props.job.retry_reason ? <div className="muted">retry_reason: {props.job.retry_reason}</div> : null}
+              {props.job.last_decision ? (
+                <div className="muted">
+                  decision:{" "}
+                  <span className="mono">
+                    {String(props.job.last_decision.payload?.why ?? "").slice(0, 40) || "DECISION"}
+                  </span>{" "}
+                  {String(props.job.last_decision.payload?.next ?? "").slice(0, 40) ? (
+                    <>
+                      → <span className="mono">{String(props.job.last_decision.payload?.next).slice(0, 40)}</span>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
             <div className="spacer" />
             {planId ? (

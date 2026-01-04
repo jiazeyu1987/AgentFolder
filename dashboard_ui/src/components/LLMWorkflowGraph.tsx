@@ -63,6 +63,9 @@ export default function LLMWorkflowGraph(props: {
   workflow: WorkflowResp;
   onSelectCall: (llmCallId: string) => void;
 }) {
+  if (!props.workflow.nodes.length) {
+    return <div className="muted">No workflow data yet. Select a plan or run Create Plan.</div>;
+  }
   const stageOrder = ["STRUCTURE", "BINDINGS", "EXECUTION", "UNKNOWN"] as const;
   const stageIndex = (st: string) => {
     const s = String(st || "").toUpperCase() || "UNKNOWN";

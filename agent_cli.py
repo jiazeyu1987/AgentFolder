@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,7 @@ from core.cleanup import plan_cleanup
 from core.rewriter_v2 import apply_rewrite, propose_rewrite, render_patch_plan_md
 from core.feasibility_v2 import feasibility_check
 from core.v2_converge import converge_v2_plan
+from core.workflow_events import emit_workflow_event
 from skills.registry import load_registry
 
 
@@ -601,6 +603,16 @@ def cmd_export(
 
     cfg = get_runtime_config()
     include_candidates_effective = bool(include_candidates) if include_candidates is not None else bool(cfg.export_include_candidates)
+    job_id = str(uuid.uuid4())
+    emit_workflow_event(
+        conn,
+        workflow="EXPORT",
+        event_type="JOB_STARTED",
+        job_id=job_id,
+        plan_id=str(plan_id),
+        message="export started",
+        payload={"include_reviews": bool(include_reviews), "include_candidates": bool(include_candidates_effective), "out_dir": str(out_dir)},
+    )
     try:
         res = export_deliverables(
             conn,
@@ -608,12 +620,32 @@ def cmd_export(
             out_dir=out_dir,
             include_reviews=include_reviews,
             include_candidates=include_candidates_effective,
+            job_id=job_id,
         )
     except Exception as exc:
         msg = str(exc)
+        emit_workflow_event(
+            conn,
+            workflow="EXPORT",
+            event_type="JOB_FINISHED",
+            severity="ERROR",
+            job_id=job_id,
+            plan_id=str(plan_id),
+            message="export failed",
+            payload={"error": msg},
+        )
         print(f"export failed: {msg}", file=sys.stderr)
         print("next: ensure CHECK reviews approved an artifact, then re-run `agent_cli.py export` or run `agent_cli.py doctor` for details.", file=sys.stderr)
         return 2
+    emit_workflow_event(
+        conn,
+        workflow="EXPORT",
+        event_type="JOB_FINISHED",
+        job_id=job_id,
+        plan_id=str(plan_id),
+        message="export finished",
+        payload={"files_copied": int(res.files_copied), "out_dir": str(res.out_dir)},
+    )
 
     final_path = Path(out_dir) / "final.json"
     final_obj: Dict[str, Any] = {}
@@ -858,19 +890,49 @@ def cmd_rewrite(
     cfg = get_runtime_config()
     threshold = float(threshold_person_days) if threshold_person_days is not None else float(cfg.one_shot_threshold_person_days)
     depth = int(max_depth) if max_depth is not None else int(cfg.max_decomposition_depth)
+    job_id = str(uuid.uuid4())
+    emit_workflow_event(
+        conn,
+        workflow="REWRITE",
+        event_type="JOB_STARTED",
+        job_id=job_id,
+        plan_id=str(plan_id),
+        message="rewrite started",
+        payload={"apply": bool(apply), "threshold_person_days": float(threshold), "max_depth": int(depth)},
+    )
     patch_plan = propose_rewrite(conn, str(plan_id), workflow_mode=cfg.workflow_mode, one_shot_threshold_person_days=threshold, max_depth=depth)
+    emit_workflow_event(
+        conn,
+        workflow="REWRITE",
+        event_type="REWRITE_PROPOSED",
+        job_id=job_id,
+        plan_id=str(plan_id),
+        message="rewrite proposed",
+        payload={"patch_types": [p.get("type") for p in (patch_plan.get("patches") or []) if isinstance(p, dict)]},
+    )
 
     if as_json and not apply:
+        emit_workflow_event(conn, workflow="REWRITE", event_type="JOB_FINISHED", job_id=job_id, plan_id=str(plan_id), message="rewrite finished")
         print(json.dumps(patch_plan, ensure_ascii=False, indent=2))
         return 0
 
     if apply:
         res = apply_rewrite(conn, patch_plan, dry_run=False)
+        emit_workflow_event(
+            conn,
+            workflow="REWRITE",
+            event_type="REWRITE_APPLIED",
+            job_id=job_id,
+            plan_id=str(plan_id),
+            message="rewrite applied",
+            payload={"snapshot_path": str(res.snapshot_path) if res.snapshot_path else None},
+        )
         md = render_patch_plan_md(res.patch_plan)
         print(md.rstrip())
         if res.snapshot_path:
             print("")
             print(f"snapshot_saved_to: {res.snapshot_path}")
+        emit_workflow_event(conn, workflow="REWRITE", event_type="JOB_FINISHED", job_id=job_id, plan_id=str(plan_id), message="rewrite finished")
         return 0
 
     # dry-run human output
@@ -878,6 +940,7 @@ def cmd_rewrite(
     print(md.rstrip())
     print("")
     print("hint: re-run with `agent_cli.py rewrite --apply` to apply (writes snapshot + DB changes).")
+    emit_workflow_event(conn, workflow="REWRITE", event_type="JOB_FINISHED", job_id=job_id, plan_id=str(plan_id), message="rewrite finished")
     return 0
 
 
@@ -886,6 +949,15 @@ def cmd_cleanup(db_path: Path, *, apply: bool = False, as_json: bool = False) ->
     apply_migrations(conn, config.MIGRATIONS_DIR)
     cfg = get_runtime_config()
     dry_run = not apply
+    job_id = str(uuid.uuid4())
+    emit_workflow_event(
+        conn,
+        workflow="CLEANUP",
+        event_type="JOB_STARTED",
+        job_id=job_id,
+        message="cleanup started",
+        payload={"dry_run": bool(dry_run)},
+    )
 
     with conn:
         plan = plan_cleanup(
@@ -896,8 +968,24 @@ def cmd_cleanup(db_path: Path, *, apply: bool = False, as_json: bool = False) ->
             max_review_versions_per_check=int(cfg.max_review_versions_per_check),
             dry_run=dry_run,
         )
+        emit_workflow_event(
+            conn,
+            workflow="CLEANUP",
+            event_type="CLEANUP_APPLIED" if not dry_run else "CLEANUP_PLANNED",
+            job_id=job_id,
+            message="cleanup planned" if dry_run else "cleanup applied",
+            payload={
+                "llm_calls_delete": int(plan.llm_calls_delete),
+                "task_events_delete": int(plan.task_events_delete),
+                "audit_events_delete": int(plan.audit_events_delete),
+                "reviews_delete": int(plan.reviews_delete),
+                "artifacts_delete": int(plan.artifacts_delete),
+                "artifact_files_delete": int(plan.artifact_files_delete),
+            },
+        )
 
     if as_json:
+        emit_workflow_event(conn, workflow="CLEANUP", event_type="JOB_FINISHED", job_id=job_id, message="cleanup finished")
         print(json.dumps(plan.__dict__, ensure_ascii=False, indent=2))
         return 0
 
@@ -912,6 +1000,7 @@ def cmd_cleanup(db_path: Path, *, apply: bool = False, as_json: bool = False) ->
         print(f"- artifact_files: deleted={plan.artifact_files_delete}")
     print("- keep approved: always keep approved artifacts and reviewed artifacts")
     print("hint: re-run with `agent_cli.py cleanup --apply` to actually delete (default is dry-run).")
+    emit_workflow_event(conn, workflow="CLEANUP", event_type="JOB_FINISHED", job_id=job_id, message="cleanup finished")
     return 0
 
 
@@ -970,15 +1059,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_run.add_argument("--plan", type=Path, default=config.PLAN_PATH_DEFAULT)
     p_run.add_argument("--max-iterations", type=int, default=10_000)
     p_run.add_argument("--skip-doctor", action="store_true", help="Skip preflight doctor checks (debug only)")
+    p_run.add_argument("--job-id", type=str, default=None, help="Optional external job id (used by dashboard backend for event-first progress).")
 
     p_create = sub.add_parser("create-plan", help="Generate tasks/plan.json from a top task and approve it (xiaojing>=90).")
     p_create.add_argument("--top-task", type=str, default=None, help="Top task text")
     p_create.add_argument("--top-task-file", type=Path, default=None, help="Read top task text from file")
     p_create.add_argument("--priority", type=str, default="HIGH", choices=["LOW", "MED", "HIGH"])
     p_create.add_argument("--deadline", type=str, default=None, help="ISO8601 deadline or null")
-    p_create.add_argument("--max-attempts", type=int, default=3)
+    p_create.add_argument("--max-attempts", type=int, default=None, help="Override create_plan_max_attempts in runtime_config.json")
     p_create.add_argument("--keep-trying", action="store_true", help="Keep retrying after max-attempts until max-total-attempts.")
     p_create.add_argument("--max-total-attempts", type=int, default=None, help="Total attempts cap when --keep-trying is set.")
+    p_create.add_argument("--job-id", type=str, default=None, help="Optional external job id (used by dashboard backend for event-first progress).")
     p_create.add_argument("--out", type=Path, default=config.PLAN_PATH_DEFAULT)
 
     p_status = sub.add_parser("status", help="Show plan/task status from state.db")
@@ -1084,6 +1175,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         argv2 = ["--plan", str(args.plan), "--db", str(args.db), "--max-iterations", str(args.max_iterations)]
         if bool(getattr(args, "skip_doctor", False)):
             argv2.append("--skip-doctor")
+        if getattr(args, "job_id", None):
+            argv2 += ["--job-id", str(getattr(args, "job_id"))]
         return run_mod.main(argv2)
     if args.cmd == "create-plan":
         if bool(args.top_task) == bool(args.top_task_file):
@@ -1099,6 +1192,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         llm = LLMClient()
 
         try:
+            cfg = get_runtime_config()
+            max_attempts_eff = int(args.max_attempts) if args.max_attempts is not None else int(cfg.create_plan_max_attempts)
             res = generate_and_review_plan(
                 conn,
                 prompts=prompts,
@@ -1106,19 +1201,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                 top_task=top_task,
                 constraints=constraints,
                 available_skills=sorted(skills.keys()),
-                max_plan_attempts=int(args.max_attempts),
+                max_plan_attempts=max_attempts_eff,
                 keep_trying=bool(getattr(args, "keep_trying", False)),
                 max_total_attempts=getattr(args, "max_total_attempts", None),
+                job_id=getattr(args, "job_id", None),
                 plan_output_path=args.out,
             )
             plan_id = str(res.plan_json["plan"]["plan_id"])
-            cfg = get_runtime_config()
             if cfg.workflow_mode == "v2":
                 # Converge structural v2 constraints (no real LLM): rewrite until doctor+feasibility OK, or request external input.
                 conv = converge_v2_plan(
                     conn,
                     plan_id=plan_id,
-                    max_rounds=max(1, int(args.max_attempts)),
+                    max_rounds=max(1, int(max_attempts_eff)),
                     threshold_person_days=float(cfg.one_shot_threshold_person_days),
                     max_depth=int(cfg.max_decomposition_depth),
                 )

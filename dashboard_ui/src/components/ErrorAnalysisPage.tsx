@@ -86,15 +86,30 @@ export default function ErrorAnalysisPage(props: Props) {
                   <div className="v mono">{job.status}</div>
                   <div className="k">plan_id</div>
                   <div className="v mono">{job.plan_id ?? "-"}</div>
+                  {job.current_step ? (
+                    <>
+                      <div className="k">step</div>
+                      <div className="v mono">{job.current_step}</div>
+                    </>
+                  ) : null}
                   <div className="k">phase</div>
                   <div className="v mono">
                     attempt={job.attempt} phase={job.phase}
                     {job.phase === "PLAN_REVIEW" ? ` review_attempt=${job.review_attempt}` : ""}
                   </div>
+                  {job.last_decision ? (
+                    <>
+                      <div className="k">decision</div>
+                      <div className="v mono">
+                        {String(job.last_decision.payload?.why ?? "DECISION")} → {String(job.last_decision.payload?.next ?? "-")}
+                      </div>
+                    </>
+                  ) : null}
                   <div className="k">exit_code</div>
                   <div className="v mono">{job.exit_code ?? "-"}</div>
                 </div>
                 {job.hint ? <div className="muted">{job.hint}</div> : null}
+                {job.retry_reason ? <div className="muted">retry_reason: {job.retry_reason}</div> : null}
                 {job.log_path ? (
                   <div className="muted">
                     log_path: <span className="mono">{job.log_path}</span>
@@ -133,4 +148,3 @@ export default function ErrorAnalysisPage(props: Props) {
     </div>
   );
 }
-

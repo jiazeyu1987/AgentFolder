@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -28,7 +29,10 @@ from core.runtime_config import get_runtime_config
 from core.util import ensure_dir, safe_read_text, stable_hash_text, utc_now_iso
 from core.workflow_mode import WorkflowModeGuardError, ensure_mode_supported_for_action
 from core.v2_review_gate import ReviewContractMismatch, run_check_once as run_v2_check_once
+from core.workflow_events import emit_workflow_event
 from skills.registry import load_registry, run_skill
+
+RUN_JOB_ID: Optional[str] = None
 
 
 def _ensure_layout() -> None:
@@ -97,6 +101,21 @@ def _set_status(conn, *, plan_id: str, task_id: str, status: str, blocked_reason
             status_after=status,
             ok=True,
             payload={"blocked_reason": blocked_reason},
+        )
+    except Exception:
+        pass
+    # Event-first: best-effort status change event for RUN workflow (SSOT reads from workflow_events).
+    try:
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STATUS_CHANGED",
+            severity="INFO",
+            message=f"status: {before or '-'} -> {status}",
+            job_id=RUN_JOB_ID,
+            plan_id=plan_id,
+            task_id=task_id,
+            payload={"status_before": before, "status_after": status, "blocked_reason": blocked_reason, "source": "run.py"},
         )
     except Exception:
         pass
@@ -374,7 +393,21 @@ def xiaobo_round(
         if result_type == "NEEDS_INPUT":
             required_docs = ((obj.get("needs_input") or {}).get("required_docs") or [])
             if isinstance(required_docs, list):
-                _write_required_docs(task_id, required_docs)
+                req_path = _write_required_docs(task_id, required_docs)
+                try:
+                    emit_workflow_event(
+                        conn,
+                        workflow="RUN",
+                        event_type="INPUT_REQUIRED",
+                        severity="WARN",
+                        message="missing required input(s)",
+                        job_id=RUN_JOB_ID,
+                        plan_id=plan_id,
+                        task_id=task_id,
+                        payload={"required_docs_path": str(req_path), "required_docs": required_docs},
+                    )
+                except Exception:
+                    pass
             _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="INPUT_MISSING", message="Missing required input(s).", context={"required_docs": required_docs})
             continue
 
@@ -385,6 +418,20 @@ def xiaobo_round(
             content = str(artifact.get("content") or "")
             path = write_artifact_file(config.ARTIFACTS_DIR, task_id=task_id, name=name, fmt=fmt, content=content)
             insert_artifact_and_activate(conn, plan_id=plan_id, task_id=task_id, name=name, fmt=fmt, path=path)
+            try:
+                emit_workflow_event(
+                    conn,
+                    workflow="RUN",
+                    event_type="ARTIFACT_CREATED",
+                    severity="INFO",
+                    message=f"artifact created: {Path(path).name}",
+                    job_id=RUN_JOB_ID,
+                    plan_id=plan_id,
+                    task_id=task_id,
+                    payload={"name": name, "format": fmt, "path": str(path)},
+                )
+            except Exception:
+                pass
             _set_status(conn, plan_id=plan_id, task_id=task_id, status="READY_TO_CHECK")
             continue
 
@@ -528,6 +575,17 @@ def v2_check_round(
     This replaces legacy reviewer flows (xiaojing_round/xiaojing_check_round/xiaoxie_check_round) in v2 mode.
     """
     checks = pick_v2_check_tasks(conn, plan_id=plan_id, limit=10)
+    if checks:
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_STARTED",
+            severity="INFO",
+            message="V2_CHECK_ROUND started",
+            job_id=RUN_JOB_ID,
+            plan_id=plan_id,
+            payload={"step": "V2_CHECK_ROUND", "count": int(len(checks))},
+        )
     for chk in checks:
         check_task_id = chk["check_task_id"]
         target_task_id = chk["target_task_id"]
@@ -627,8 +685,19 @@ def v2_check_round(
             out["verdict"] = verdict
             return out
 
-        run_v2_check_once(conn, plan_id=plan_id, check_task_id=check_task_id, reviewer_fn=reviewer_fn)
+        run_v2_check_once(conn, plan_id=plan_id, check_task_id=check_task_id, reviewer_fn=reviewer_fn, job_id=RUN_JOB_ID)
 
+    if checks:
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="INFO",
+            message="V2_CHECK_ROUND finished",
+            job_id=RUN_JOB_ID,
+            plan_id=plan_id,
+            payload={"step": "V2_CHECK_ROUND", "ok": True},
+        )
     return llm_calls
 
 
@@ -1119,6 +1188,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--db", type=Path, default=config.DB_PATH_DEFAULT, help="Path to state/state.db")
     parser.add_argument("--max-iterations", type=int, default=10_000, help="Safety limit")
     parser.add_argument("--skip-doctor", action="store_true", help="Skip preflight doctor checks (debug only)")
+    parser.add_argument("--job-id", type=str, default=None, help="Optional external job id (used by dashboard backend for event-first progress).")
     args = parser.parse_args(argv)
 
     _ensure_layout()
@@ -1132,6 +1202,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     apply_migrations(conn, config.MIGRATIONS_DIR)
 
     plan_id = load_plan_into_db_if_needed(conn, args.plan)
+    global RUN_JOB_ID
+    RUN_JOB_ID = str(args.job_id).strip() if isinstance(args.job_id, str) and str(args.job_id).strip() else str(uuid.uuid4())
+    emit_workflow_event(
+        conn,
+        workflow="RUN",
+        event_type="JOB_STARTED",
+        severity="INFO",
+        message="run job started",
+        job_id=RUN_JOB_ID,
+        plan_id=plan_id,
+        payload={"max_iterations": int(args.max_iterations)},
+    )
     cfg = get_runtime_config()
     if not bool(getattr(args, "skip_doctor", False)):
         from core.doctor import format_findings_human, run_doctor
@@ -1141,6 +1223,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("doctor failed (preflight):")
             print(format_findings_human(findings))
             print("hint: fix the above issues, or re-run with --skip-doctor for debugging.")
+            emit_workflow_event(
+                conn,
+                workflow="RUN",
+                event_type="JOB_FINISHED",
+                severity="ERROR",
+                message="run job stopped: doctor failed",
+                job_id=RUN_JOB_ID,
+                plan_id=plan_id,
+                payload={"ok": False, "why": "DOCTOR_FAILED"},
+            )
             return 2
     prompts = register_prompt_versions(conn, load_prompts(config.PROMPTS_SHARED_PATH, config.PROMPTS_AGENTS_DIR))
     rubric_all = json.loads(config.REVIEW_RUBRIC_PATH.read_text(encoding="utf-8"))
@@ -1161,9 +1253,21 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     max_llm_calls_run = int(cfg.guardrails.max_llm_calls_per_run)
 
+    emit_workflow_event(
+        conn,
+        workflow="RUN",
+        event_type="STEP_STARTED",
+        severity="INFO",
+        message="RUN_LOOP started",
+        job_id=RUN_JOB_ID,
+        plan_id=plan_id,
+        payload={"step": "RUN_LOOP"},
+    )
+    exit_reason = "UNKNOWN"
     for _ in range(max_iters):
         if time.time() - t0 > config.MAX_PLAN_RUNTIME_SECONDS:
             record_error(conn, plan_id=plan_id, task_id=None, error_code="PLAN_TIMEOUT", message="Plan runtime exceeded")
+            exit_reason = "GUARDRAIL_HIT"
             break
 
         if llm_calls >= max_llm_calls_run:
@@ -1174,6 +1278,26 @@ def main(argv: Optional[List[str]] = None) -> int:
                 event_type="GUARDRAIL_HIT",
                 payload={"guardrail": "max_llm_calls_per_run", "limit": max_llm_calls_run, "llm_calls": llm_calls},
             )
+            emit_workflow_event(
+                conn,
+                workflow="RUN",
+                event_type="GUARDRAIL_HIT",
+                severity="WARN",
+                message="guardrail hit: max_llm_calls_per_run",
+                job_id=RUN_JOB_ID,
+                plan_id=plan_id,
+                payload={"guardrail": "max_llm_calls_per_run", "limit": int(max_llm_calls_run), "llm_calls": int(llm_calls)},
+            )
+            emit_workflow_event(
+                conn,
+                workflow="RUN",
+                event_type="DECISION_MADE",
+                severity="WARN",
+                message="stop run: guardrail reached",
+                job_id=RUN_JOB_ID,
+                plan_id=plan_id,
+                payload={"step": "RUN_LOOP", "why": "GUARDRAIL_HIT", "next": "STOP"},
+            )
             print(f"guardrail hit: max_llm_calls_per_run={max_llm_calls_run}, stopping run loop.")
             print(f"hint: fix blockers, then re-run `agent_cli.py run --max-iterations {max_iters}` (or raise guardrails in runtime_config.json).")
             break
@@ -1183,6 +1307,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             detect_removed_input_files_all(conn, plan_id=plan_id, inputs_dirs=[config.INPUTS_DIR, config.BASELINE_INPUTS_DIR])
             maybe_reset_failed_to_ready(conn, plan_id=plan_id)
             recompute_readiness_for_plan(conn, plan_id=plan_id)
+
+        if is_plan_done(conn, plan_id):
+            exit_reason = "PLAN_DONE"
+            break
+        if is_plan_blocked_waiting_user(conn, plan_id):
+            exit_reason = "WAITING_USER"
+            break
             llm_calls = xiaobo_round(
                 conn=conn,
                 plan_id=plan_id,
@@ -1207,6 +1338,26 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         time.sleep(config.POLL_INTERVAL_SECONDS)
 
+    emit_workflow_event(
+        conn,
+        workflow="RUN",
+        event_type="STEP_FINISHED",
+        severity="INFO",
+        message="RUN_LOOP finished",
+        job_id=RUN_JOB_ID,
+        plan_id=plan_id,
+        payload={"step": "RUN_LOOP", "ok": True, "reason": exit_reason},
+    )
+    emit_workflow_event(
+        conn,
+        workflow="RUN",
+        event_type="JOB_FINISHED",
+        severity="INFO",
+        message="run job finished",
+        job_id=RUN_JOB_ID,
+        plan_id=plan_id,
+        payload={"ok": True, "reason": exit_reason, "llm_calls": int(llm_calls)},
+    )
     return 0
 
 

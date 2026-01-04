@@ -66,6 +66,9 @@ def _parse_stage(meta_json: Optional[str], *, scope: str) -> Tuple[str, int]:
             stage = "STRUCTURE"
         elif scope == "PLAN_REVIEW":
             stage = "STRUCTURE"
+        elif scope == "PLAN_RUBRIC":
+            # Rubric is a pre-step for structure; keep it in the STRUCTURE lane to avoid an "UNKNOWN" lane.
+            stage = "STRUCTURE"
         else:
             stage = "UNKNOWN"
     try:

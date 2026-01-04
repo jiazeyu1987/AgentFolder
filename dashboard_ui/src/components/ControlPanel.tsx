@@ -23,13 +23,13 @@ export default function ControlPanel(props: {
   onRefresh: () => void;
   onLog: (s: string) => void;
 }) {
-  const [maxAttempts, setMaxAttempts] = useState(3);
   const [maxIterations, setMaxIterations] = useState(10000);
   const [includeReviews, setIncludeReviews] = useState(false);
   const [keepTrying, setKeepTrying] = useState(false);
   const [maxTotalAttempts, setMaxTotalAttempts] = useState<number | "">("");
   const [maxDepth, setMaxDepth] = useState<number>(5);
   const [oneShotDays, setOneShotDays] = useState<number>(10);
+  const [createPlanMaxAttempts, setCreatePlanMaxAttempts] = useState<number>(3);
   const [planPassScore, setPlanPassScore] = useState<number>(90);
   const [planReviewNotesMaxChars, setPlanReviewNotesMaxChars] = useState<number>(500);
   const [createPlanPending, setCreatePlanPending] = useState(false);
@@ -61,10 +61,12 @@ export default function ControlPanel(props: {
     if (!cfgRaw) return;
     const md = getNumber(cfgRaw, "max_decomposition_depth");
     const os = getNumber(cfgRaw, "one_shot_threshold_person_days");
+    const ca = getNumber(cfgRaw, "create_plan_max_attempts");
     const ps = getNumber(cfgRaw, "plan_review_pass_score");
     const rn = getNumber(cfgRaw, "plan_review_notes_max_chars");
     if (md !== null) setMaxDepth(md);
     if (os !== null) setOneShotDays(os);
+    if (ca !== null) setCreatePlanMaxAttempts(ca);
     if (ps !== null) setPlanPassScore(ps);
     if (rn !== null) setPlanReviewNotesMaxChars(rn);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -96,10 +98,6 @@ export default function ControlPanel(props: {
         <div className="row">
           <button onClick={() => onCopy(props.topTask)}>TopTask</button>
           <div className="spacer" />
-          <label className="inline">
-            max-attempts
-            <input type="number" value={maxAttempts} min={1} max={50} onChange={(e) => setMaxAttempts(Number(e.target.value))} />
-          </label>
         </div>
       </div>
 
@@ -111,7 +109,10 @@ export default function ControlPanel(props: {
             setCreatePlanPending(true);
             setCreatePlanAck("sending...");
             try {
-              const res = await api.createPlanAsync(props.topTask, maxAttempts, keepTrying, maxTotalAttempts === "" ? undefined : maxTotalAttempts);
+              const res = await api.createPlanAsync(props.topTask, {
+                keep_trying: keepTrying,
+                max_total_attempts: maxTotalAttempts === "" ? undefined : maxTotalAttempts,
+              });
               if (res.job_id) props.onCreatePlanJobId(res.job_id);
               setCreatePlanAck(res.started ? "started" : "already running");
               props.onRefresh();
@@ -293,6 +294,12 @@ export default function ControlPanel(props: {
       </div>
       <div className="field">
         <label className="inline">
+          create_plan_max_attempts (default max-attempts)
+          <input type="number" value={createPlanMaxAttempts} min={1} max={100} onChange={(e) => setCreatePlanMaxAttempts(Number(e.target.value))} />
+        </label>
+      </div>
+      <div className="field">
+        <label className="inline">
           plan_review_pass_score (pass if score ≥ this)
           <input type="number" value={planPassScore} min={1} max={100} onChange={(e) => setPlanPassScore(Number(e.target.value))} />
         </label>
@@ -310,6 +317,7 @@ export default function ControlPanel(props: {
             const res = await api.updateRuntimeConfig({
               max_decomposition_depth: maxDepth,
               one_shot_threshold_person_days: oneShotDays,
+              create_plan_max_attempts: createPlanMaxAttempts,
               plan_review_pass_score: planPassScore,
               plan_review_notes_max_chars: planReviewNotesMaxChars,
             });
@@ -322,7 +330,13 @@ export default function ControlPanel(props: {
         <div className="spacer" />
         <button
           onClick={() => {
-            const payload = { max_decomposition_depth: maxDepth, one_shot_threshold_person_days: oneShotDays, plan_review_pass_score: planPassScore, plan_review_notes_max_chars: planReviewNotesMaxChars };
+            const payload = {
+              max_decomposition_depth: maxDepth,
+              one_shot_threshold_person_days: oneShotDays,
+              create_plan_max_attempts: createPlanMaxAttempts,
+              plan_review_pass_score: planPassScore,
+              plan_review_notes_max_chars: planReviewNotesMaxChars,
+            };
             onCopy(JSON.stringify(payload));
           }}
         >

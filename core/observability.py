@@ -12,9 +12,32 @@ from core.feasibility_v2 import feasibility_check
 from core.reporting import generate_plan_report, render_plan_report_md
 from core.runtime_config import get_runtime_config
 from core.util import utc_now_iso
+from core.workflow_events import WorkflowEvent, fetch_workflow_events
 
 
 ReasonCode = str
+
+SNAPSHOT_SCHEMA_SUMMARY: Dict[str, Any] = {
+    "schema_version": "plan_snapshot_v1",
+    "required_top_level_keys": [
+        "schema_version",
+        "ts",
+        "plan",
+        "job",
+        "summary",
+        "reasons",
+        "inputs_needed",
+        "waiting_review",
+        "recent_errors",
+        "final_deliverable",
+        "doctor",
+        "feasibility",
+        "report",
+        "manifest",
+    ],
+    "reason_codes": ["WAITING_REVIEW", "WAITING_INPUT", "WAITING_EXTERNAL", "BLOCKED", "FAILED", "RUNNABLE", "DONE"],
+    "notes": "SSOT snapshot for CLI/backend/UI; adapters must not re-infer reasons.",
+}
 
 
 def _read_json(path: Path) -> Optional[Dict[str, Any]]:
@@ -63,6 +86,86 @@ def _summarize_reasons(report: Dict[str, Any]) -> List[Dict[str, Any]]:
     return reasons
 
 
+def _job_from_events(events: List[WorkflowEvent]) -> Dict[str, Any]:
+    """
+    Infer the latest active job (if any) from workflow_events for this plan.
+    """
+    finished: set[str] = set()
+    active_job: Optional[WorkflowEvent] = None
+    for e in events:
+        jid = str(e.job_id or "").strip()
+        if not jid:
+            continue
+        if e.event_type == "JOB_FINISHED":
+            finished.add(jid)
+            continue
+        if e.event_type == "JOB_STARTED" and jid not in finished:
+            active_job = e
+            break
+
+    def _brief(e: WorkflowEvent) -> Dict[str, Any]:
+        return {
+            "created_at": e.created_at,
+            "workflow": e.workflow,
+            "event_type": e.event_type,
+            "severity": e.severity,
+            "message": e.message,
+            "payload": e.payload,
+        }
+
+    if not active_job:
+        last = events[0] if events else None
+        return {
+            "active": False,
+            "workflow": str(last.workflow) if last else None,
+            "job_id": str(last.job_id) if (last and last.job_id) else None,
+            "current_step": None,
+            "step_started_at": None,
+            "last_event": _brief(last) if last else None,
+            "last_decision": next((_brief(e) for e in events if e.event_type == "DECISION_MADE"), None),
+            "last_error": next((_brief(e) for e in events if e.event_type == "ERROR_RAISED"), None),
+        }
+
+    jid = str(active_job.job_id)
+    step_finished: set[str] = set()
+    current_step: Optional[str] = None
+    step_started_at: Optional[str] = None
+    last_event: Optional[Dict[str, Any]] = None
+    last_decision: Optional[Dict[str, Any]] = None
+    last_error: Optional[Dict[str, Any]] = None
+
+    for e in events:
+        if str(e.job_id or "") != jid:
+            continue
+        if last_event is None:
+            last_event = _brief(e)
+        if last_decision is None and e.event_type == "DECISION_MADE":
+            last_decision = _brief(e)
+        if last_error is None and e.event_type == "ERROR_RAISED":
+            last_error = _brief(e)
+        if e.event_type == "STEP_FINISHED":
+            step = str(e.payload.get("step") or "").strip()
+            if step:
+                step_finished.add(step)
+        if e.event_type == "STEP_STARTED" and current_step is None:
+            step = str(e.payload.get("step") or "").strip()
+            if step and step not in step_finished:
+                current_step = step
+                step_started_at = e.created_at
+                break
+
+    return {
+        "active": True,
+        "workflow": active_job.workflow,
+        "job_id": jid,
+        "current_step": current_step,
+        "step_started_at": step_started_at,
+        "last_event": last_event,
+        "last_decision": last_decision,
+        "last_error": last_error,
+    }
+
+
 def get_plan_snapshot(conn: sqlite3.Connection, plan_id: str, *, workflow_mode: str) -> Dict[str, Any]:
     """
     Single Source of Truth snapshot used by:
@@ -99,9 +202,11 @@ def get_plan_snapshot(conn: sqlite3.Connection, plan_id: str, *, workflow_mode: 
     plan_meta["workflow_mode"] = str(workflow_mode)
 
     snapshot = {
+        "schema_version": SNAPSHOT_SCHEMA_SUMMARY["schema_version"],
         "ts": utc_now_iso(),
         "plan": plan_meta,
-        "summary": report.get("summary"),
+        "job": _job_from_events(fetch_workflow_events(conn, plan_id=str(plan_id), limit=500)),
+        "summary": report.get("summary") or {},
         "reasons": _summarize_reasons(report),
         "inputs_needed": report.get("inputs_needed") or [],
         "waiting_review": (report.get("nodes") or {}).get("waiting_review") or [],
@@ -117,6 +222,7 @@ def get_plan_snapshot(conn: sqlite3.Connection, plan_id: str, *, workflow_mode: 
 
 def render_snapshot_brief(snapshot: Dict[str, Any]) -> str:
     plan = snapshot.get("plan") or {}
+    job = snapshot.get("job") or {}
     summary = snapshot.get("summary") or {}
     reasons = snapshot.get("reasons") or []
     final_deliverable = snapshot.get("final_deliverable") or {}
@@ -125,6 +231,11 @@ def render_snapshot_brief(snapshot: Dict[str, Any]) -> str:
     lines.append(f"plan: {plan.get('title','')}")
     lines.append(f"plan_id: {plan.get('plan_id','')}")
     lines.append(f"workflow_mode: {plan.get('workflow_mode','')}")
+    if bool(job.get("active")):
+        wf = str(job.get("workflow") or "")
+        step = str(job.get("current_step") or "")
+        if wf or step:
+            lines.append(f"job: {wf} step={step}".rstrip())
     lines.append("")
 
     if bool(summary.get("is_done")):
