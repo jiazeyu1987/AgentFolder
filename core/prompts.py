@@ -197,13 +197,35 @@ def build_xiaobo_plan_prompt(
     skills: List[str],
     review_notes: Optional[str] = None,
     gen_notes: Optional[str] = None,
+    previous_plan_json: Optional[Dict[str, Any]] = None,
+    previous_plan_gen_llm_call_id: Optional[str] = None,
+    remediation_source_review_llm_call_id: Optional[str] = None,
 ) -> str:
+    review_notes_text = (review_notes or "").strip()
+    iterative = bool(previous_plan_json) and bool(review_notes_text)
+    mode = "ITERATIVE_REMEDIATION" if iterative else "INITIAL"
+    iteration_rules = ""
+    if iterative:
+        iteration_rules = "\n".join(
+            [
+                "ITERATIVE REMEDIATION RULES (must follow):",
+                "1) You MUST modify PREVIOUS_PLAN_JSON in-place; do NOT generate an unrelated new plan.",
+                "2) You MUST address every item in review_notes (problems/steps/acceptance_criteria).",
+                "3) Output MUST be a single JSON object with schema_version=xiaobo_plan_v1 and a FULL plan_json (not a patch).",
+                "4) Keep IDs stable: reuse existing task_id/edge_id when possible; only add/remove nodes when required by review_notes.",
+            ]
+        )
     context = {
         "top_task": top_task,
         "constraints": constraints,
         "available_skills": skills,
-        "review_notes": (review_notes or "").strip(),
+        "mode": mode,
+        "iteration_rules": iteration_rules,
+        "review_notes": review_notes_text,
         "generation_notes": (gen_notes or "").strip(),
+        "previous_plan_json": previous_plan_json,
+        "previous_plan_gen_llm_call_id": (previous_plan_gen_llm_call_id or "").strip(),
+        "remediation_source_review_llm_call_id": (remediation_source_review_llm_call_id or "").strip(),
     }
     return "\n\n".join(
         [

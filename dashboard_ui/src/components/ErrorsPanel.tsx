@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import * as api from "../api";
 import type { ErrorsResp } from "../types";
+import { formatLocalDateTime, formatLocalTime } from "../time";
 
 type Props = {
   title?: string;
@@ -13,9 +14,7 @@ type Props = {
 };
 
 function shortTs(ts: string) {
-  // 2026-01-02T07:51:04Z -> 07:51:04
-  const m = ts.match(/T(\d\d:\d\d:\d\d)/);
-  return m ? m[1] : ts;
+  return formatLocalTime(ts);
 }
 
 export default function ErrorsPanel({
@@ -128,7 +127,9 @@ export default function ErrorsPanel({
               <>
                 <div className="kv">
                   <div className="k">time</div>
-                  <div className="v mono">{selected.created_at}</div>
+                  <div className="v mono" title={selected.created_at}>
+                    {formatLocalDateTime(selected.created_at)}
+                  </div>
                   <div className="k">source</div>
                   <div className="v mono">{selected.source}</div>
                   <div className="k">scope</div>
@@ -201,4 +202,3 @@ export default function ErrorsPanel({
     </div>
   );
 }
-

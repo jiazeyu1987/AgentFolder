@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
 import type { CreatePlanJobResp } from "../types";
+import { formatLocalDateTime } from "../time";
 
 export default function CreatePlanProgress(props: {
   job: CreatePlanJobResp | null;
@@ -59,7 +60,9 @@ export default function CreatePlanProgress(props: {
           {props.job.last_llm_call ? (
             <div className="muted" style={{ marginTop: 8 }}>
               last: <span className="mono">{props.job.last_llm_call.scope}</span> @{" "}
-              <span className="mono">{props.job.last_llm_call.created_at}</span>
+              <span className="mono" title={props.job.last_llm_call.created_at}>
+                {formatLocalDateTime(props.job.last_llm_call.created_at)}
+              </span>
               {props.job.last_llm_call.error_code ? (
                 <>
                   {" "}

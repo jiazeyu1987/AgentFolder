@@ -31,6 +31,7 @@ export default function ControlPanel(props: {
   const [maxDepth, setMaxDepth] = useState<number>(5);
   const [oneShotDays, setOneShotDays] = useState<number>(10);
   const [planPassScore, setPlanPassScore] = useState<number>(90);
+  const [planReviewNotesMaxChars, setPlanReviewNotesMaxChars] = useState<number>(500);
   const [createPlanPending, setCreatePlanPending] = useState(false);
   const [createPlanCooldown, setCreatePlanCooldown] = useState(false);
   const [createPlanAck, setCreatePlanAck] = useState<string | null>(null);
@@ -61,9 +62,11 @@ export default function ControlPanel(props: {
     const md = getNumber(cfgRaw, "max_decomposition_depth");
     const os = getNumber(cfgRaw, "one_shot_threshold_person_days");
     const ps = getNumber(cfgRaw, "plan_review_pass_score");
+    const rn = getNumber(cfgRaw, "plan_review_notes_max_chars");
     if (md !== null) setMaxDepth(md);
     if (os !== null) setOneShotDays(os);
     if (ps !== null) setPlanPassScore(ps);
+    if (rn !== null) setPlanReviewNotesMaxChars(rn);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.config?.runtime_config]);
 
@@ -294,6 +297,12 @@ export default function ControlPanel(props: {
           <input type="number" value={planPassScore} min={1} max={100} onChange={(e) => setPlanPassScore(Number(e.target.value))} />
         </label>
       </div>
+      <div className="field">
+        <label className="inline">
+          plan_review_notes_max_chars (review_notes max chars)
+          <input type="number" value={planReviewNotesMaxChars} min={50} max={20000} step={50} onChange={(e) => setPlanReviewNotesMaxChars(Number(e.target.value))} />
+        </label>
+      </div>
       <div className="row">
         <button
           onClick={async () => {
@@ -302,6 +311,7 @@ export default function ControlPanel(props: {
               max_decomposition_depth: maxDepth,
               one_shot_threshold_person_days: oneShotDays,
               plan_review_pass_score: planPassScore,
+              plan_review_notes_max_chars: planReviewNotesMaxChars,
             });
             props.onLog(JSON.stringify(res, null, 2));
             props.onRefresh();
@@ -312,7 +322,7 @@ export default function ControlPanel(props: {
         <div className="spacer" />
         <button
           onClick={() => {
-            const payload = { max_decomposition_depth: maxDepth, one_shot_threshold_person_days: oneShotDays, plan_review_pass_score: planPassScore };
+            const payload = { max_decomposition_depth: maxDepth, one_shot_threshold_person_days: oneShotDays, plan_review_pass_score: planPassScore, plan_review_notes_max_chars: planReviewNotesMaxChars };
             onCopy(JSON.stringify(payload));
           }}
         >

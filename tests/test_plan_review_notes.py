@@ -83,7 +83,7 @@ def test_plan_review_generates_bounded_notes_and_feeds_next_gen(tmp_path: Path, 
     monkeypatch.setattr(config, "PLAN_PATH_DEFAULT", tmp_path / "plan.json")
     # Isolate runtime_config so external local changes (e.g., plan_review_pass_score) don't affect this test.
     rc_path = tmp_path / "runtime_config.json"
-    rc_path.write_text("{}", encoding="utf-8")
+    rc_path.write_text(json.dumps({"plan_review_notes_max_chars": 120}, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(config, "RUNTIME_CONFIG_PATH", rc_path)
     from core.runtime_config import reset_runtime_config_cache
 
@@ -124,16 +124,25 @@ def test_plan_review_generates_bounded_notes_and_feeds_next_gen(tmp_path: Path, 
     note_paths = list((tmp_path / "review_notes").glob("*/plan_review_attempt_1.md"))
     assert len(note_paths) == 1
     note = note_paths[0].read_text(encoding="utf-8")
-    assert len(note) <= 500
+    assert len(note) <= 120
 
     # The second PLAN_GEN prompt must include this note in RUNTIME_CONTEXT_JSON.
     # fake.prompts[0] = PLAN_GEN attempt1, fake.prompts[1] = PLAN_REVIEW attempt1,
     # fake.prompts[2] = PLAN_GEN attempt2
     prompt2 = fake.prompts[2]
     assert "review_notes" in prompt2
+    assert "previous_plan_json" in prompt2
     # Extract RUNTIME_CONTEXT_JSON and compare normalized value.
     marker = "RUNTIME_CONTEXT_JSON:"
     assert marker in prompt2
     ctx_text = prompt2.split(marker, 1)[1].strip()
     ctx = json.loads(ctx_text)
+    assert ctx.get("mode") == "ITERATIVE_REMEDIATION"
+    assert "ITERATIVE REMEDIATION RULES" in (ctx.get("iteration_rules") or "")
     assert ctx.get("review_notes") == note
+    prev = ctx.get("previous_plan_json")
+    assert isinstance(prev, dict)
+    assert isinstance(prev.get("plan"), dict)
+    assert prev.get("plan", {}).get("title") == "T"
+    nodes = prev.get("nodes") or []
+    assert any(isinstance(n, dict) and n.get("node_type") == "GOAL" and n.get("goal_statement") == "X" for n in nodes)

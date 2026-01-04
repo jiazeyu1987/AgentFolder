@@ -39,6 +39,7 @@ class RuntimeConfig:
     max_decomposition_depth: int
     one_shot_threshold_person_days: float
     plan_review_pass_score: int
+    plan_review_notes_max_chars: int
     export_include_candidates: bool
     max_artifact_versions_per_task: int
     max_review_versions_per_check: int
@@ -64,6 +65,7 @@ def _load_json(path: Path) -> Dict[str, Any]:
             "max_decomposition_depth": 5,
             "one_shot_threshold_person_days": 10,
             "plan_review_pass_score": 90,
+            "plan_review_notes_max_chars": 500,
             "export_include_candidates": False,
             "max_artifact_versions_per_task": 50,
             "max_review_versions_per_check": 50,
@@ -116,6 +118,10 @@ def load_runtime_config(path: Optional[Path] = None) -> RuntimeConfig:
     plan_review_pass_score = int(data.get("plan_review_pass_score") or 90)
     if plan_review_pass_score <= 0 or plan_review_pass_score > 100:
         raise RuntimeConfigError("plan_review_pass_score must be 1..100")
+
+    plan_review_notes_max_chars = int(data.get("plan_review_notes_max_chars") or 500)
+    if plan_review_notes_max_chars <= 0 or plan_review_notes_max_chars > 20_000:
+        raise RuntimeConfigError("plan_review_notes_max_chars must be 1..20000")
 
     export_include_candidates = bool(data.get("export_include_candidates") or False)
 
@@ -180,6 +186,7 @@ def load_runtime_config(path: Optional[Path] = None) -> RuntimeConfig:
         max_decomposition_depth=max_decomposition_depth,
         one_shot_threshold_person_days=one_shot_threshold_person_days,
         plan_review_pass_score=plan_review_pass_score,
+        plan_review_notes_max_chars=plan_review_notes_max_chars,
         export_include_candidates=export_include_candidates,
         max_artifact_versions_per_task=max_artifact_versions_per_task,
         max_review_versions_per_check=max_review_versions_per_check,

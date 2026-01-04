@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import ReactFlow, { Background, Controls, Edge, Handle, MarkerType, MiniMap, Node, Position } from "reactflow";
 import type { WorkflowResp } from "../types";
+import { formatLocalDateTime, formatLocalTime } from "../time";
 
 function nodeColor(n: WorkflowResp["nodes"][number]): string {
   if (n.error_code || n.validator_error) return "#ef4444";
@@ -39,7 +40,9 @@ function LlmNode(props: { id: string; data: { n: WorkflowResp["nodes"][number] }
         {(isGenClone ? "GEN" : n.scope)} {stage ? <span className="muted">[{stage}]</span> : null}
       </div>
       <div className="muted" style={{ fontSize: 12 }}>
-        <span className="mono">{n.created_at}</span>
+        <span className="mono" title={formatLocalDateTime(n.created_at)}>
+          {formatLocalTime(n.created_at)}
+        </span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
         <span className="pill" style={{ background: nodeColor(n) }}>

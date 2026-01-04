@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import * as api from "../api";
 import type { AuditResp, LlmCallsQueryResp, TopTasksResp } from "../types";
+import { formatLocalDateTime, formatLocalTime } from "../time";
 
 type Props = {
   selectedPlanId: string | null;
@@ -12,8 +13,7 @@ type Props = {
 };
 
 function shortTs(ts: string) {
-  const m = ts.match(/T(\d\d:\d\d:\d\d)/);
-  return m ? m[1] : ts;
+  return formatLocalTime(ts);
 }
 
 function parsePayload(payloadJson: string | null): Record<string, any> | null {
@@ -219,7 +219,9 @@ export default function AuditLogPage(props: Props) {
             <>
               <div className="kv">
                 <div className="k">time</div>
-                <div className="v mono">{selected.created_at}</div>
+                <div className="v mono" title={selected.created_at}>
+                  {formatLocalDateTime(selected.created_at)}
+                </div>
                 <div className="k">category</div>
                 <div className="v mono">{selected.category}</div>
                 <div className="k">action</div>
@@ -326,7 +328,9 @@ export default function AuditLogPage(props: Props) {
               <>
                 <div className="kv">
                   <div className="k">time</div>
-                  <div className="v mono">{ioCall.created_at}</div>
+                  <div className="v mono" title={ioCall.created_at}>
+                    {formatLocalDateTime(ioCall.created_at)}
+                  </div>
                   <div className="k">agent</div>
                   <div className="v mono">{ioCall.agent}</div>
                   <div className="k">scope</div>

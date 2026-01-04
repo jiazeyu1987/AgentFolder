@@ -405,6 +405,7 @@ class RuntimeConfigUpdateIn(BaseModel):
     max_decomposition_depth: Optional[int] = None
     one_shot_threshold_person_days: Optional[float] = None
     plan_review_pass_score: Optional[int] = None
+    plan_review_notes_max_chars: Optional[int] = None
 
 
 class ResetFailedIn(BaseModel):
@@ -806,6 +807,8 @@ def update_runtime_config(body: RuntimeConfigUpdateIn) -> Dict[str, Any]:
         patch["one_shot_threshold_person_days"] = float(body.one_shot_threshold_person_days)
     if body.plan_review_pass_score is not None:
         patch["plan_review_pass_score"] = int(body.plan_review_pass_score)
+    if body.plan_review_notes_max_chars is not None:
+        patch["plan_review_notes_max_chars"] = int(body.plan_review_notes_max_chars)
 
     merged = dict(cur)
     merged.update(patch)

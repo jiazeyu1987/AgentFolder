@@ -344,6 +344,9 @@ def generate_and_review_plan(
     max_total_attempts = max(1, int(max_total_attempts))
 
     attempt = 0
+    last_plan_json_for_remediation: Optional[Dict[str, Any]] = None
+    last_plan_gen_call_id_for_remediation: Optional[str] = None
+    last_review_call_id_for_remediation: Optional[str] = None
     while True:
         attempt += 1
         if attempt > max_total_attempts:
@@ -470,6 +473,9 @@ def generate_and_review_plan(
                         )
                     except Exception:
                         pass
+                    # For iterative remediation: remember the last valid PLAN_REVIEW call id.
+                    nonlocal last_review_call_id_for_remediation
+                    last_review_call_id_for_remediation = str(review_call_id)
                     break
 
                 detailed = _review_invalid_reason(review_json=review_json, expected_target="PLAN")
@@ -506,6 +512,10 @@ def generate_and_review_plan(
 
             return review_json
 
+        prev_json = last_plan_json_for_remediation if (last_plan_json_for_remediation and (review_notes or "").strip()) else None
+        prev_gen_id = last_plan_gen_call_id_for_remediation if prev_json is not None else None
+        prev_review_id = last_review_call_id_for_remediation if prev_json is not None else None
+
         plan_prompt = build_xiaobo_plan_prompt(
             prompts,
             top_task=user_top_task,
@@ -513,6 +523,9 @@ def generate_and_review_plan(
             skills=available_skills,
             review_notes=review_notes,
             gen_notes=gen_notes,
+            previous_plan_json=prev_json,
+            previous_plan_gen_llm_call_id=prev_gen_id,
+            remediation_source_review_llm_call_id=prev_review_id,
         )
         plan_res = llm.call_json(plan_prompt)
         # NOTE: plan_workflow doesn't track llm_calls budget, but we still record extra_calls in telemetry/logs via meta.
@@ -540,6 +553,8 @@ def generate_and_review_plan(
             error_message=plan_res.error,
             meta={"attempt": attempt, "stage": "STRUCTURE", "extra_calls": int(getattr(plan_res, "extra_calls", 0)), "repair_used": bool(getattr(plan_res, "repair_used", False))},
         )
+        if plan_gen_call_id and plan_gen_call_id != "UNKNOWN":
+            last_plan_gen_call_id_for_remediation = str(plan_gen_call_id)
         _append_llm_run(
             config.LLM_RUNS_LOG_PATH,
             {
@@ -623,23 +638,20 @@ def generate_and_review_plan(
                 backfill_audit_llm_call_plan_id(conn, llm_call_id=str(plan_gen_call_id), plan_id=str(plan_id))
             except Exception:
                 pass
-        # Update latest PLAN_GEN telemetry row with normalized_json (best-effort).
+        # Update the matching PLAN_GEN telemetry row with plan_id + normalized_json (best-effort).
         try:
             conn.execute(
                 """
                 UPDATE llm_calls
-                SET normalized_json = ?, validator_error = NULL
-                WHERE llm_call_id = (
-                  SELECT llm_call_id FROM llm_calls
-                  WHERE scope='PLAN_GEN'
-                  ORDER BY created_at DESC
-                  LIMIT 1
-                )
+                SET plan_id = ?, normalized_json = ?, validator_error = NULL
+                WHERE llm_call_id = ?
                 """,
-                (json.dumps(plan_json, ensure_ascii=False),),
+                (str(plan_id), json.dumps(plan_json, ensure_ascii=False), str(plan_gen_call_id)),
             )
         except Exception:
             pass
+
+        last_plan_json_for_remediation = plan_json
 
         review_json = _review_stage(stage="STRUCTURE", plan_id=plan_id, plan_json=plan_json)
         last_review = review_json
@@ -650,11 +662,12 @@ def generate_and_review_plan(
         if total_score >= int(cfg.plan_review_pass_score):
             # Stage 2: deterministic artifact bindings based on DEPENDS_ON edges, then review again.
             plan_json = add_default_upstream_bindings(plan_json)
+            last_plan_json_for_remediation = plan_json
             # Record a stage-specific GEN node so the workflow view shows distinct lanes
             # (STRUCTURE/BINDINGS/EXECUTION) rather than cloning the same STRUCTURE PLAN_GEN.
             try:
                 now = time.time()
-                record_llm_call(
+                stage_gen_id = record_llm_call(
                     conn,
                     plan_id=plan_id,
                     task_id=None,
@@ -678,6 +691,8 @@ def generate_and_review_plan(
                     error_message=None,
                     meta={"attempt": attempt, "stage": "BINDINGS", "stage_attempt": 1, "kind": "AUTO_STAGE_GEN"},
                 )
+                if stage_gen_id and stage_gen_id != "UNKNOWN":
+                    last_plan_gen_call_id_for_remediation = str(stage_gen_id)
             except Exception:
                 pass
             try:
@@ -704,7 +719,7 @@ def generate_and_review_plan(
             if int(bindings_review.get("total_score") or 0) < int(cfg.plan_review_pass_score):
                 with transaction(conn):
                     emit_event(conn, plan_id=plan_id, event_type="PLAN_REVIEWED", payload={"total_score": int(bindings_review.get("total_score") or 0), "action_required": str(bindings_review.get("action_required") or ""), "attempt": attempt, "stage": "BINDINGS"})
-                review_notes = _build_plan_remediation_note(bindings_review, max_chars=500)
+                review_notes = _build_plan_remediation_note(bindings_review, max_chars=int(cfg.plan_review_notes_max_chars))
                 try:
                     ensure_dir(config.REVIEW_NOTES_DIR / plan_id)
                     (config.REVIEW_NOTES_DIR / plan_id / f"stage_bindings_attempt_{attempt}.md").write_text(review_notes, encoding="utf-8")
@@ -718,7 +733,7 @@ def generate_and_review_plan(
             # Stage 3: record a distinct EXECUTION GEN node for workflow visibility (even if no plan_json change).
             try:
                 now = time.time()
-                record_llm_call(
+                stage_gen_id = record_llm_call(
                     conn,
                     plan_id=plan_id,
                     task_id=None,
@@ -742,6 +757,8 @@ def generate_and_review_plan(
                     error_message=None,
                     meta={"attempt": attempt, "stage": "EXECUTION", "stage_attempt": 1, "kind": "AUTO_STAGE_GEN"},
                 )
+                if stage_gen_id and stage_gen_id != "UNKNOWN":
+                    last_plan_gen_call_id_for_remediation = str(stage_gen_id)
             except Exception:
                 pass
 
@@ -759,7 +776,7 @@ def generate_and_review_plan(
             if int(exec_review.get("total_score") or 0) < int(cfg.plan_review_pass_score):
                 with transaction(conn):
                     emit_event(conn, plan_id=plan_id, event_type="PLAN_REVIEWED", payload={"total_score": int(exec_review.get("total_score") or 0), "action_required": str(exec_review.get("action_required") or ""), "attempt": attempt, "stage": "EXECUTION"})
-                review_notes = _build_plan_remediation_note(exec_review, max_chars=500)
+                review_notes = _build_plan_remediation_note(exec_review, max_chars=int(cfg.plan_review_notes_max_chars))
                 try:
                     ensure_dir(config.REVIEW_NOTES_DIR / plan_id)
                     (config.REVIEW_NOTES_DIR / plan_id / f"stage_execution_attempt_{attempt}.md").write_text(review_notes, encoding="utf-8")
@@ -819,7 +836,7 @@ def generate_and_review_plan(
             emit_event(conn, plan_id=plan_id, event_type="PLAN_REVIEWED", payload={"total_score": total_score, "action_required": action_required, "attempt": attempt, "stage": "STRUCTURE"})
 
         # Feed reviewer conclusions back into the next PLAN_GEN attempt as a bounded remediation note.
-        review_notes = _build_plan_remediation_note(review_json, max_chars=500)
+        review_notes = _build_plan_remediation_note(review_json, max_chars=int(cfg.plan_review_notes_max_chars))
         try:
             ensure_dir(config.REVIEW_NOTES_DIR / plan_id)
             (config.REVIEW_NOTES_DIR / plan_id / f"plan_review_attempt_{attempt}.md").write_text(review_notes, encoding="utf-8")

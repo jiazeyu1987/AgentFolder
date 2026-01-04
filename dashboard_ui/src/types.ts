@@ -80,6 +80,7 @@ export type RuntimeConfigPatch = {
   max_decomposition_depth?: number;
   one_shot_threshold_person_days?: number;
   plan_review_pass_score?: number;
+  plan_review_notes_max_chars?: number;
 };
 
 export interface TaskLlmCallsResp {

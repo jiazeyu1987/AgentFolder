@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import * as api from "../api";
-import type { LlmCallsQueryResp, PromptFileResp } from "../types";
+import type { LlmCallsQueryResp } from "../types";
+import { formatLocalDateTime } from "../time";
 
 function safeJsonParse(s: string | null): any {
   if (!s) return null;
@@ -26,8 +27,8 @@ async function copyText(text: string) {
   await navigator.clipboard.writeText(text);
 }
 
-function preview(s: string | null, n = 160): string {
-  const t = (s ?? "").replace(/\s+/g, " ").trim();
+function preview(s: string, n = 180): string {
+  const t = s.replace(/\s+/g, " ").trim();
   if (!t) return "-";
   return t.length > n ? t.slice(0, n - 1) + "…" : t;
 }
@@ -35,16 +36,10 @@ function preview(s: string | null, n = 160): string {
 export default function LLMCallDetails(props: { llmCallId: string | null }) {
   const [call, setCall] = useState<LlmCallsQueryResp["calls"][number] | null>(null);
   const [err, setErr] = useState<string>("");
-  const [shared, setShared] = useState<PromptFileResp | null>(null);
-  const [agentPrompt, setAgentPrompt] = useState<PromptFileResp | null>(null);
-  const [reviewNote, setReviewNote] = useState<PromptFileResp | null>(null);
 
   useEffect(() => {
     setCall(null);
     setErr("");
-    setShared(null);
-    setAgentPrompt(null);
-    setReviewNote(null);
     if (!props.llmCallId) return;
     api
       .getLlmCallsQuery({ llm_call_id: props.llmCallId, limit: 1 })
@@ -64,23 +59,8 @@ export default function LLMCallDetails(props: { llmCallId: string | null }) {
     return first.length ? first.join(" | ") : "-";
   }, [review]);
 
-  async function loadShared() {
-    if (!call?.shared_prompt_path) return;
-    const r = await api.getPromptFile(call.shared_prompt_path);
-    setShared(r);
-  }
-
-  async function loadAgent() {
-    if (!call?.agent_prompt_path) return;
-    const r = await api.getPromptFile(call.agent_prompt_path);
-    setAgentPrompt(r);
-  }
-
-  async function loadReviewNote() {
-    if (!call?.plan_review_attempt_path) return;
-    const r = await api.getPromptFile(call.plan_review_attempt_path);
-    setReviewNote(r);
-  }
+  const promptText = useMemo(() => (call?.prompt_text ?? "").replace(/\r\n/g, "\n"), [call?.prompt_text]);
+  const responseText = useMemo(() => (call?.response_text ?? "").replace(/\r\n/g, "\n"), [call?.response_text]);
 
   if (!props.llmCallId) {
     return (
@@ -102,7 +82,7 @@ export default function LLMCallDetails(props: { llmCallId: string | null }) {
             <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
               <span style={{ fontSize: 18, fontWeight: 900, color: "#38bdf8" }}>{call.agent}</span>
               <span className="mono" style={{ fontSize: 12, color: "#94a3b8" }}>
-                scope={call.scope} · {call.created_at}
+                scope={call.scope} · <span title={call.created_at}>{formatLocalDateTime(call.created_at)}</span>
               </span>
               {call.error_code ? (
                 <span className="mono" style={{ fontSize: 12, color: "#fca5a5" }}>
@@ -125,93 +105,32 @@ export default function LLMCallDetails(props: { llmCallId: string | null }) {
                 {suggestionSummary}
               </span>
             </div>
+
+            <details style={{ marginTop: 10 }} open>
+              <summary>LLM Input</summary>
+              <div className="muted" style={{ marginTop: 6 }}>
+                {preview(promptText)}
+              </div>
+              <div className="row" style={{ marginTop: 8 }}>
+                <button onClick={() => copyText(promptText)}>Copy</button>
+                <div className="spacer" />
+              </div>
+              <pre className="pre">{promptText}</pre>
+            </details>
+
+            <details style={{ marginTop: 8 }} open>
+              <summary>LLM Output</summary>
+              <div className="muted" style={{ marginTop: 6 }}>
+                {preview(responseText)}
+              </div>
+              <div className="row" style={{ marginTop: 8 }}>
+                <button onClick={() => copyText(responseText)}>Copy</button>
+                <div className="spacer" />
+              </div>
+              <pre className="pre">{responseText}</pre>
+            </details>
             {call.validator_error ? <div className="muted" style={{ marginTop: 6 }}>validator_error: {String(call.validator_error).slice(0, 400)}</div> : null}
           </div>
-
-          <h4 style={{ marginTop: 12 }}>Other</h4>
-          <div className="muted">
-            shared: <span className="mono">{call.shared_prompt_path ?? "-"}</span>{" "}
-            {call.shared_prompt_path ? (
-              <>
-                <button onClick={loadShared}>Load</button> <button onClick={() => copyText(call.shared_prompt_path!)}>Copy Path</button>
-              </>
-            ) : null}
-          </div>
-          {shared ? (
-            <details open>
-              <summary>Shared Prompt Content</summary>
-              <div className="row">
-                <button onClick={() => copyText(shared.content)}>Copy</button>
-                <div className="spacer" />
-                {shared.truncated ? <span className="muted">TRUNCATED</span> : null}
-              </div>
-              <pre className="pre">{shared.content}</pre>
-            </details>
-          ) : null}
-
-          <div className="muted" style={{ marginTop: 8 }}>
-            agent: <span className="mono">{call.agent_prompt_path ?? "-"}</span>{" "}
-            {call.agent_prompt_path ? (
-              <>
-                <button onClick={loadAgent}>Load</button> <button onClick={() => copyText(call.agent_prompt_path!)}>Copy Path</button>
-              </>
-            ) : null}
-          </div>
-          {agentPrompt ? (
-            <details open>
-              <summary>Agent Prompt Content</summary>
-              <div className="row">
-                <button onClick={() => copyText(agentPrompt.content)}>Copy</button>
-                <div className="spacer" />
-                {agentPrompt.truncated ? <span className="muted">TRUNCATED</span> : null}
-              </div>
-              <pre className="pre">{agentPrompt.content}</pre>
-            </details>
-          ) : null}
-
-          {review ? (
-            <details style={{ marginTop: 8 }}>
-              <summary>Review details</summary>
-              <div className="kv" style={{ marginTop: 8 }}>
-                <div className="k">summary</div>
-                <div className="v">{String((review as any).summary ?? "-")}</div>
-              </div>
-              {(review as any).dimension_scores ? (
-                <details>
-                  <summary>dimension_scores</summary>
-                  <pre className="pre">{JSON.stringify((review as any).dimension_scores, null, 2)}</pre>
-                </details>
-              ) : null}
-            </details>
-          ) : null}
-
-          {call.scope === "PLAN_REVIEW" ? (
-            <>
-              <h4>plan_review_attempt.md</h4>
-              <div className="muted">
-                path: <span className="mono">{call.plan_review_attempt_path ?? "-"}</span>{" "}
-                {call.plan_review_attempt_path ? (
-                  <>
-                    <button onClick={loadReviewNote}>Load</button>{" "}
-                    <button onClick={() => copyText(call.plan_review_attempt_path!)}>Copy Path</button>
-                  </>
-                ) : (
-                  <span className="muted">(not generated yet)</span>
-                )}
-              </div>
-              {reviewNote ? (
-                <details open>
-                  <summary>整改说明（≤500字）</summary>
-                  <div className="row">
-                    <button onClick={() => copyText(reviewNote.content)}>Copy</button>
-                    <div className="spacer" />
-                    {reviewNote.truncated ? <span className="muted">TRUNCATED</span> : null}
-                  </div>
-                  <pre className="pre">{reviewNote.content}</pre>
-                </details>
-              ) : null}
-            </>
-          ) : null}
         </>
       ) : null}
     </div>

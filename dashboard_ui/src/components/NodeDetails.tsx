@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { ErrorsResp, GraphNode, TaskDetailsResp, TaskLlmCallsResp } from "../types";
 import * as api from "../api";
+import { formatLocalDateTime } from "../time";
 
 type UiError = ErrorsResp["errors"][number];
 
@@ -51,11 +52,11 @@ function groupErrorsForDisplay(errors: UiError[], opts: { primaryTaskTitle: stri
     for (let i = 0; i < reviewGroups.length; i++) {
       const g = reviewGroups[i];
       const ts = g.items[0]?.created_at ?? "";
-      out.push({ header: `${taskTitle} · Review #${i + 1} · ${ts}`, taskTitle, isTaskLevel: false, items: g.items });
+      out.push({ header: `${taskTitle} · Review #${i + 1} · ${formatLocalDateTime(ts)}`, taskTitle, isTaskLevel: false, items: g.items });
     }
     for (const g of taskLevelGroups) {
       const ts = g.items[0]?.created_at ?? "";
-      out.push({ header: `${taskTitle} · Task-level · ${ts}`, taskTitle, isTaskLevel: true, items: g.items });
+      out.push({ header: `${taskTitle} · Task-level · ${formatLocalDateTime(ts)}`, taskTitle, isTaskLevel: true, items: g.items });
     }
   }
 
@@ -179,7 +180,7 @@ export default function NodeDetails(props: NodeDetailsProps) {
               return (
                 <div style={{ marginTop: 8 }}>
                   <div style={{ color: "#fb923c", fontWeight: 900 }}>
-                    {latest.created_at} {latest.error_code ?? "ERROR"} {latest.agent ? `· ${latest.agent}` : ""} {latest.scope ? `· ${latest.scope}` : ""}
+                    {formatLocalDateTime(latest.created_at)} {latest.error_code ?? "ERROR"} {latest.agent ? `· ${latest.agent}` : ""} {latest.scope ? `· ${latest.scope}` : ""}
                   </div>
                   {latest.message ? <div style={{ color: "#fb923c" }}>{latest.message}</div> : null}
                   {latest.validator_error ? <div className="mono" style={{ color: "#fdba74" }}>{latest.validator_error}</div> : null}
@@ -284,7 +285,7 @@ export default function NodeDetails(props: NodeDetailsProps) {
                       {g.items.slice(0, 20).map((e, j) => (
                         <li key={j}>
                           <div style={{ color: "#ef4444", fontWeight: 900 }}>
-                            {e.created_at} {e.error_code ?? "ERROR"} {e.agent ? `· ${e.agent}` : ""} {e.scope ? `· ${e.scope}` : ""}
+                            {formatLocalDateTime(e.created_at)} {e.error_code ?? "ERROR"} {e.agent ? `· ${e.agent}` : ""} {e.scope ? `· ${e.scope}` : ""}
                           </div>
                           {e.message ? <div style={{ color: "#ef4444" }}>{e.message}</div> : null}
                           {e.validator_error ? (
@@ -349,7 +350,7 @@ export default function NodeDetails(props: NodeDetailsProps) {
           {g.items.slice(0, 30).map((c) => (
             <details key={c.llm_call_id} className="call">
               <summary className="muted">
-                {c.created_at} scope={c.scope} {c.error_code ? ` error=${c.error_code}` : ""}
+                {formatLocalDateTime(c.created_at)} scope={c.scope} {c.error_code ? ` error=${c.error_code}` : ""}
               </summary>
               <div className="callGrid">
                 <div className="callLabel">Prompt</div>
@@ -387,7 +388,7 @@ export default function NodeDetails(props: NodeDetailsProps) {
                         {extra.slice(0, 10).map((e, idx) => (
                           <li key={idx}>
                             <div style={{ color: "#ef4444", fontWeight: 900 }}>
-                              {e.created_at} {e.error_code ?? "ERROR"} {e.scope ? `· ${e.scope}` : ""}
+                              {formatLocalDateTime(e.created_at)} {e.error_code ?? "ERROR"} {e.scope ? `· ${e.scope}` : ""}
                             </div>
                             {e.message ? <div style={{ color: "#ef4444" }}>{e.message}</div> : null}
                             {e.validator_error ? <div className="mono" style={{ color: "#fca5a5" }}>{e.validator_error}</div> : null}
