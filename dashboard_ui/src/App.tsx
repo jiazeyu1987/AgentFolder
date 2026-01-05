@@ -77,18 +77,8 @@ export default function App() {
   }, []);
 
   // polling: lightweight graph+snapshot refresh (UI-only; SSOT for explanations is snapshot)
-  useEffect(() => {
-    if (!selectedPlanId) return;
-    const t = setInterval(() => {
-      Promise.all([api.getGraph(selectedPlanId), api.getPlanSnapshot(selectedPlanId)])
-        .then(([g, snap]) => {
-          setGraph(g);
-          setSnapshot(snap);
-        })
-        .catch(() => {});
-    }, 2000);
-    return () => clearInterval(t);
-  }, [selectedPlanId]);
+  // Note: Task Graph auto-refresh is intentionally disabled (manual refresh button) to avoid
+  // interrupting user interactions like node clicking/dragging/zooming.
 
   useEffect(() => {
     if (viewMode !== "WORKFLOW") return;
@@ -359,8 +349,15 @@ export default function App() {
             </div>
           </div>
         ) : (
-          <div className="panel graphWrap">
-            {graph ? <TaskGraph nodes={graph.nodes} edges={graph.edges} onSelectNode={(id) => setSelectedTaskId(id)} /> : <div className="muted">no graph</div>}
+          <div className="panel graphWrap" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+            <div className="row" style={{ gap: 8, padding: "10px 10px 0 10px" }}>
+              <div style={{ fontWeight: 900 }}>Task Graph</div>
+              <div className="spacer" />
+              <button onClick={() => refresh().catch((e) => log(String(e)))}>Refresh</button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              {graph ? <TaskGraph nodes={graph.nodes} edges={graph.edges} onSelectNode={(id) => setSelectedTaskId(id)} /> : <div className="muted">no graph</div>}
+            </div>
           </div>
         )}
       </div>

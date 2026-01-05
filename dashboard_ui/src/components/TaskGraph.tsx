@@ -119,7 +119,8 @@ export default function TaskGraph(props: {
         fitView
         onNodeClick={(_, node) => props.onSelectNode(node.id)}
         nodeTypes={NODE_TYPES}
-        preventScrolling={false}
+        zoomOnScroll
+        preventScrolling
       >
         <MiniMap nodeColor={(n) => (nodeById.get(n.id) ? statusColor(nodeById.get(n.id)!.status) : "#94a3b8")} maskColor="rgba(2,6,23,0.7)" />
         <Controls />
