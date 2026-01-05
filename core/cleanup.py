@@ -58,6 +58,10 @@ def _gather_deliverables_artifact_ids(deliverables_dir: Path, *, max_files: int 
             for f in files:
                 if not isinstance(f, dict):
                     continue
+                # Prefer keeping only approved deliverables when the manifest exposes this flag.
+                approved = f.get("approved")
+                if isinstance(approved, bool) and not approved:
+                    continue
                 art = f.get("artifact")
                 if isinstance(art, dict):
                     aid = art.get("artifact_id")

@@ -45,6 +45,11 @@
     "enums": {
       "stage_checklists.keys": ["STRUCTURE", "BINDINGS", "EXECUTION"]
     }
+  },
+  "TASK_RUBRIC": {
+    "schema_version": "xiaojing_task_rubric_v1",
+    "required_keys": ["schema_version", "task_id", "dimensions"],
+    "enums": {}
   }
 }
 <!-- CONTRACT_SUMMARY_JSON_END -->

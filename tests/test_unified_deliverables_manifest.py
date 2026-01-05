@@ -7,6 +7,7 @@ import config
 from core.db import apply_migrations, connect
 from core.manifest import write_manifest_json
 from core.prompts import build_xiaobo_prompt, load_prompts
+from core.deliverables_paths import deliverables_root, artifact_output_filename
 
 
 def _uuid() -> str:
@@ -30,9 +31,10 @@ def test_manifest_written_and_upstream_paths_injected(monkeypatch) -> None:
             upstream_task_id = _uuid()
             downstream_task_id = _uuid()
 
+            top_task = "我要做一个2048小游戏"
             conn.execute(
-                "INSERT INTO plans(plan_id, title, owner_agent_id, root_task_id, created_at, constraints_json) VALUES(?, 'Plan', 'xiaobo', ?, datetime('now'), '{}')",
-                (plan_id, root_id),
+                "INSERT INTO plans(plan_id, title, owner_agent_id, root_task_id, created_at, constraints_json) VALUES(?, ?, 'xiaobo', ?, datetime('now'), '{}')",
+                (plan_id, top_task, root_id),
             )
             conn.execute(
                 "INSERT INTO task_nodes(task_id, plan_id, node_type, title, goal_statement, owner_agent_id, status, created_at, updated_at) VALUES(?, ?, 'GOAL', 'Root', 'Top', 'xiaobo', 'READY', datetime('now'), datetime('now'))",
@@ -51,9 +53,15 @@ def test_manifest_written_and_upstream_paths_injected(monkeypatch) -> None:
                 (_uuid(), plan_id, upstream_task_id, downstream_task_id),
             )
 
-            deliver_dir = config.DELIVERABLES_DIR / plan_id / "tasks" / f"Upstream_{upstream_task_id[:8]}"
+            deliver_dir = deliverables_root(plan_id)
             deliver_dir.mkdir(parents=True, exist_ok=True)
-            upstream_file = deliver_dir / "spec.md"
+            upstream_file = deliver_dir / artifact_output_filename(
+                task_title="Upstream",
+                task_id=upstream_task_id,
+                name="spec",
+                fmt="md",
+                artifact_id=f"{upstream_task_id}_approved",
+            )
             upstream_file.write_text("hello upstream", encoding="utf-8")
             conn.execute(
                 "INSERT INTO artifacts(artifact_id, task_id, name, path, format, version, sha256, created_at) VALUES(?, ?, 'spec', ?, 'md', 1, 'x', datetime('now'))",
@@ -68,8 +76,10 @@ def test_manifest_written_and_upstream_paths_injected(monkeypatch) -> None:
             prompts = load_prompts(config.PROMPTS_SHARED_PATH, config.PROMPTS_AGENTS_DIR)
             prompt_downstream = build_xiaobo_prompt(prompts, conn=conn, plan_id=plan_id, task_id=downstream_task_id)
             assert str(upstream_file).replace("\\", "\\\\") in prompt_downstream
+            assert top_task in prompt_downstream
 
             prompt_upstream = build_xiaobo_prompt(prompts, conn=conn, plan_id=plan_id, task_id=upstream_task_id)
             assert "UPSTREAM_ARTIFACTS (local paths" not in prompt_upstream
+            assert top_task in prompt_upstream
         finally:
             conn.close()

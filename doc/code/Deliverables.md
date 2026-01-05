@@ -13,11 +13,11 @@
 
 ## 输出目录结构
 默认目录：`workspace/deliverables/<plan_id>/`
-- `artifacts/`：拷贝所有 `DONE` 的 `ACTION` 节点交付物（默认只导出 approved 版本；按 task 分子目录）
+- `*.{html,js,css,md,...}`：拷贝所有 `DONE` 的 `ACTION` 节点交付物（默认只导出 approved 版本；**全部平铺在根目录，不再按 task 分子目录**）
 - `manifest.json`：交付清单（task → artifact 映射、sha256、源路径/目标路径 + entrypoint）
 - `final.json`：最终交付单一入口（用户只需要看这个文件）
 - `plan_meta.json`：计划信息与导出时间
-- `reviews/`（可选）：若 `--include-reviews`，会尝试拷贝 `workspace/reviews/<task_id>/review_*.json`
+- `review__*`（可选）：若 `--include-reviews`，会尝试拷贝 `workspace/reviews/<task_id>/review_*.json`（同样平铺在根目录）
 
 ## final.json（单一入口）
 
@@ -34,3 +34,58 @@
 
 ## 交付建议
 - 直接把 `workspace/deliverables/<plan_id>/` 整个目录打包即可（含 manifest 可追溯）。
+
+唯一入口（代码）：
+- Export/manifest/final 的唯一 writer：`core/deliverables.py`（`export_deliverables` + `write_manifest_json`）
+- Final 选择逻辑：`core/final_picker.py:pick_final_deliverable`
+
+## Schema（machine-readable）
+
+### manifest.json
+<!-- MANIFEST_SCHEMA_JSON_START -->
+{
+  "schema_version": "deliverables_manifest_v1",
+  "required_top_level_keys": [
+    "schema_version",
+    "plan",
+    "files",
+    "bundle_mode",
+    "entrypoint"
+  ],
+  "bundle_mode_enum": [
+    "SINGLE",
+    "MANIFEST"
+  ],
+  "file_required_keys": [
+    "task_id",
+    "task_title",
+    "node_type",
+    "status",
+    "owner_agent_id",
+    "artifact"
+  ],
+  "artifact_required_keys": [
+    "artifact_id",
+    "format",
+    "sha256",
+    "source_path",
+    "dest_path"
+  ],
+  "notes": "deliverables manifest used by export/cleanup/UI; default export lists DONE ACTION approved artifacts."
+}
+<!-- MANIFEST_SCHEMA_JSON_END -->
+
+### final.json
+<!-- FINAL_SCHEMA_JSON_START -->
+{
+  "schema_version": "deliverables_final_v1",
+  "required_top_level_keys": [
+    "schema_version",
+    "final_entrypoint",
+    "final_task_title",
+    "final_artifact_id",
+    "how_to_run"
+  ],
+  "notes": "deliverables final.json is the single entrypoint for users; points to one file under deliverables dir."
+}
+<!-- FINAL_SCHEMA_JSON_END -->

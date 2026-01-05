@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -24,6 +24,7 @@ class PromptBundle:
     xiaobo: PromptDoc
     xiaojing: PromptDoc
     xiaoxie: PromptDoc
+    variants: Dict[str, PromptDoc] = field(default_factory=dict)
 
 
 def _load_prompt(path: Path, *, default_version: str) -> PromptDoc:
@@ -36,7 +37,17 @@ def load_prompts(shared_path: Path, agents_dir: Path) -> PromptBundle:
     xiaobo = _load_prompt(agents_dir / "xiaobo_prompt.md", default_version="xiaobo_v1")
     xiaojing = _load_prompt(agents_dir / "xiaojing_prompt.md", default_version="xiaojing_v1")
     xiaoxie = _load_prompt(agents_dir / "xiaoxie_prompt.md", default_version="xiaoxie_v1")
-    return PromptBundle(shared=shared, xiaobo=xiaobo, xiaojing=xiaojing, xiaoxie=xiaoxie)
+    variants: Dict[str, PromptDoc] = {}
+    variant_files = {
+        "xiaobo_task_action_init": agents_dir / "xiaobo_task_action_init.md",
+        "xiaobo_task_action_iterate": agents_dir / "xiaobo_task_action_iterate.md",
+        "xiaojing_task_review_rubric_build": agents_dir / "xiaojing_task_review_rubric_build.md",
+        "xiaojing_task_review_score": agents_dir / "xiaojing_task_review_score.md",
+    }
+    for name, path in variant_files.items():
+        if path.exists():
+            variants[name] = _load_prompt(path, default_version=f"{name}_v1")
+    return PromptBundle(shared=shared, xiaobo=xiaobo, xiaojing=xiaojing, xiaoxie=xiaoxie, variants=variants)
 
 
 def register_prompt_versions(conn: sqlite3.Connection, bundle: PromptBundle) -> PromptBundle:
@@ -47,11 +58,17 @@ def register_prompt_versions(conn: sqlite3.Connection, bundle: PromptBundle) -> 
     xiaoxie_id, xiaoxie_v = get_or_create_prompt_version(conn, kind="AGENT", name="default", agent="xiaoxie", path=bundle.xiaoxie.path, sha256=bundle.xiaoxie.sha256)
 
     # Version strings follow spec: shared_prompt_vN / agent_{name}_prompt_vN
+    variants: Dict[str, PromptDoc] = {}
+    for name, doc in (bundle.variants or {}).items():
+        agent = "xiaobo" if name.startswith("xiaobo_") else ("xiaojing" if name.startswith("xiaojing_") else None)
+        prompt_id, v = get_or_create_prompt_version(conn, kind="AGENT", name=name, agent=agent, path=doc.path, sha256=doc.sha256)
+        variants[name] = PromptDoc(path=doc.path, content=doc.content, version=f"agent_{agent}_{name}_prompt_v{v}" if agent else f"agent_{name}_prompt_v{v}", sha256=doc.sha256)
     return PromptBundle(
         shared=PromptDoc(path=bundle.shared.path, content=bundle.shared.content, version=f"shared_prompt_v{shared_v}", sha256=bundle.shared.sha256),
         xiaobo=PromptDoc(path=bundle.xiaobo.path, content=bundle.xiaobo.content, version=f"agent_xiaobo_prompt_v{xiaobo_v}", sha256=bundle.xiaobo.sha256),
         xiaojing=PromptDoc(path=bundle.xiaojing.path, content=bundle.xiaojing.content, version=f"agent_xiaojing_prompt_v{xiaojing_v}", sha256=bundle.xiaojing.sha256),
         xiaoxie=PromptDoc(path=bundle.xiaoxie.path, content=bundle.xiaoxie.content, version=f"agent_xiaoxie_prompt_v{xiaoxie_v}", sha256=bundle.xiaoxie.sha256),
+        variants=variants,
     )
 
 
@@ -128,6 +145,7 @@ def build_xiaobo_prompt(
 
     upstream: List[Dict[str, Any]] = []
     upstream_paths_text = ""
+    plan_title = str(plan["title"] or "").strip() if plan else ""
     try:
         rows = conn.execute(
             """
@@ -176,8 +194,30 @@ def build_xiaobo_prompt(
     except Exception:
         upstream = []
         upstream_paths_text = ""
+    is_initial_action = not bool(upstream)
+    attempt_count_i = int(task["attempt_count"]) if task and task["attempt_count"] is not None else 0
+    status_s = str(task["status"] or "") if task else ""
+    iterative = attempt_count_i > 0 or status_s == "TO_BE_MODIFY"
+    prompt_variant = "TASK_ACTION_ITERATE" if iterative else "TASK_ACTION_INIT"
+
+    prev_path = ""
+    try:
+        row = conn.execute("SELECT approved_artifact_id, active_artifact_id FROM task_nodes WHERE task_id = ?", (task_id,)).fetchone()
+        approved_id = str(row["approved_artifact_id"] or "").strip() if row else ""
+        active_id = str(row["active_artifact_id"] or "").strip() if row else ""
+        preferred_id = approved_id or active_id
+        if preferred_id:
+            r2 = conn.execute("SELECT path FROM artifacts WHERE artifact_id = ?", (preferred_id,)).fetchone()
+            prev_path = str(r2["path"] or "").strip() if r2 else ""
+    except Exception:
+        prev_path = ""
+
+    agent_prompt = bundle.variants.get("xiaobo_task_action_iterate" if iterative else "xiaobo_task_action_init") if bundle.variants else None
+    agent_prompt_text = (agent_prompt.content.strip() if agent_prompt else bundle.xiaobo.content.strip())
+
     context = {
         "plan_id": plan_id,
+        "user_request": plan_title,
         "plan": {
             "title": (plan["title"] if plan else None),
             "root_task_id": (plan["root_task_id"] if plan else None),
@@ -188,20 +228,23 @@ def build_xiaobo_prompt(
             "task_id": task_id,
             "title": task["title"],
             "status": task["status"],
-            "attempt_count": int(task["attempt_count"]),
+            "attempt_count": attempt_count_i,
             "priority": int(task["priority"]),
         },
+        "is_initial_action": bool(is_initial_action),
         "requirements": requirements,
         "evidences": evidences,
         "upstream_artifacts": upstream,
         "upstream_artifacts_paths_text": upstream_paths_text,
         "suggestions": suggestions_text or "",
+        "previous_output_path": prev_path,
+        "prompt_variant": prompt_variant,
         "extracted_text_snippets": artifact_text_snippets or [],
     }
     return "\n\n".join(
         [
             bundle.shared.content.strip(),
-            bundle.xiaobo.content.strip(),
+            agent_prompt_text,
             "RUNTIME_CONTEXT_JSON:",
             json.dumps(context, ensure_ascii=False, indent=2),
         ]
@@ -435,6 +478,8 @@ def build_xiaojing_check_prompt(
     target_task_id: str,
     target_artifacts: List[Dict[str, Any]],
     reviewer: str = "xiaojing",
+    prompt_variant: Optional[str] = None,
+    notes_max_chars: int = 500,
 ) -> str:
     check_task = conn.execute(
         "SELECT title, attempt_count, priority, status, tags_json FROM task_nodes WHERE task_id = ?",
@@ -456,6 +501,7 @@ def build_xiaojing_check_prompt(
         },
         "review_target": "NODE",
         "rubric": rubric_json,
+        "notes_max_chars": int(notes_max_chars),
         "target_task": {
             "task_id": target_task_id,
             "title": target_task["title"],
@@ -467,11 +513,57 @@ def build_xiaojing_check_prompt(
         "artifacts": target_artifacts,
         "instructions": "This is a CHECK task. If you request modifications, they should be applied to the target_task output.",
     }
+    pv = str(prompt_variant or "").strip()
+    agent_key = None
+    if pv == "TASK_REVIEW_SCORE":
+        agent_key = "xiaojing_task_review_score"
+    agent_prompt = (bundle.variants.get(agent_key) if (agent_key and bundle.variants) else None) if reviewer == "xiaojing" else None
+    reviewer_text = (agent_prompt.content.strip() if agent_prompt else bundle.xiaojing.content.strip()) if reviewer == "xiaojing" else bundle.xiaoxie.content.strip()
+
     return "\n\n".join(
         [
             bundle.shared.content.strip(),
-            (bundle.xiaojing.content.strip() if reviewer == "xiaojing" else bundle.xiaoxie.content.strip()),
+            reviewer_text,
             "RUNTIME_CONTEXT_JSON:",
             json.dumps(context, ensure_ascii=False, indent=2),
+        ]
+    ).strip() + "\n"
+
+
+def build_xiaojing_task_rubric_prompt(
+    bundle: PromptBundle,
+    *,
+    task_id: str,
+    deliverable_spec: Dict[str, Any],
+    acceptance_criteria: List[Dict[str, Any]],
+    pass_score: int,
+) -> str:
+    agent_prompt = bundle.variants.get("xiaojing_task_review_rubric_build") if bundle.variants else None
+    agent_prompt_text = (agent_prompt.content.strip() if agent_prompt else bundle.xiaojing.content.strip())
+    context = {
+        "task_id": task_id,
+        "deliverable_spec": deliverable_spec,
+        "acceptance_criteria": acceptance_criteria,
+        "pass_score": int(pass_score),
+        "instructions": "Define a stable rubric (dimensions sum to 100) for scoring this task deliverable.",
+    }
+    tmpl = {
+        "schema_version": "xiaojing_task_rubric_v1",
+        "task_id": str(task_id),
+        "dimensions": [
+            {"dimension": "Completeness", "max_score": 40, "description": "Meets deliverable spec and scope", "scoring_guide": "How to score 0..40"},
+            {"dimension": "Correctness", "max_score": 30, "description": "Meets acceptance criteria", "scoring_guide": "How to score 0..30"},
+            {"dimension": "Quality", "max_score": 20, "description": "Code/text quality and maintainability", "scoring_guide": "How to score 0..20"},
+            {"dimension": "Clarity", "max_score": 10, "description": "Clear structure and instructions", "scoring_guide": "How to score 0..10"},
+        ],
+    }
+    return "\n\n".join(
+        [
+            bundle.shared.content.strip(),
+            agent_prompt_text,
+            "RUNTIME_CONTEXT_JSON:",
+            json.dumps(context, ensure_ascii=False, indent=2),
+            "OUTPUT_JSON_TEMPLATE (copy exactly, fill values; do not wrap inside another object):",
+            json.dumps(tmpl, ensure_ascii=False, indent=2),
         ]
     ).strip() + "\n"

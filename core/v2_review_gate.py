@@ -9,8 +9,22 @@ from core.runtime_config import get_runtime_config
 from core.errors import apply_error_outcome, map_error_to_outcome, record_error
 from core.events import emit_event
 from core.reviews import insert_review, write_review_json
-from core.util import utc_now_iso
+from core.util import ensure_dir, utc_now_iso
 from core.workflow_events import emit_workflow_event
+
+
+def _truncate_text(s: str, *, max_chars: int) -> str:
+    if max_chars <= 0:
+        return s
+    if len(s) <= max_chars:
+        return s
+    return s[: max_chars - 1] + "…"
+
+
+def _write_suggestions_md(*, task_id: str, text: str) -> None:
+    p = config.REVIEWS_DIR / str(task_id) / "suggestions.md"
+    ensure_dir(p.parent)
+    p.write_text(text, encoding="utf-8")
 
 
 ReviewerFn = Callable[[Dict[str, Any]], Dict[str, Any]]
@@ -626,6 +640,7 @@ def run_check_once(
         "action_required": "APPROVE" if verdict == "APPROVED" else "MODIFY",
         "verdict": verdict,
         "acceptance_results": review_payload.get("acceptance_results") or [],
+        "remediation_text": review_payload.get("remediation_text") or "",
         "meta": {
             "review_target_task_id": target_id,
             "reviewed_artifact_id": reviewed_artifact_id,
@@ -749,6 +764,18 @@ def run_check_once(
             task_id=target_id,
             payload={"step": step, "why": "REJECTED", "next": "TO_BE_MODIFY", "reviewed_artifact_id": reviewed_artifact_id},
         )
+        # Write remediation note for the executor (target ACTION), capped by config.
+        try:
+            cfg = get_runtime_config()
+            max_chars = int(getattr(cfg, "task_review_notes_max_chars", 500) or 500)
+            rt = str(normalized_review.get("remediation_text") or "").strip()
+            if not rt:
+                # Fallback: include summary + suggestions as plain text.
+                rt = str(normalized_review.get("summary") or "").strip()
+            if rt:
+                _write_suggestions_md(task_id=target_id, text=_truncate_text(rt, max_chars=max_chars))
+        except Exception:
+            pass
         _set_status(conn, plan_id=plan_id, task_id=target_id, status="TO_BE_MODIFY", job_id=job_id)
 
     _set_status(conn, plan_id=plan_id, task_id=check_task_id, status="DONE", job_id=job_id)

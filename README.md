@@ -109,4 +109,4 @@ LLM selection is controlled by `runtime_config.json`:
 ## Review loops
 
 - Any review score `< 90` transitions the target task to `TO_BE_MODIFY` and increments `attempt_count`.
-- When `attempt_count >= MAX_TASK_ATTEMPTS`, the task escalates to `BLOCKED(WAITING_EXTERNAL)` via `MAX_ATTEMPTS_EXCEEDED`.
+- When `attempt_count >= task_max_attempts` (from `runtime_config.json`), the task escalates to `BLOCKED(WAITING_EXTERNAL)` via `MAX_ATTEMPTS_EXCEEDED`.

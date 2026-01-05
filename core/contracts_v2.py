@@ -243,6 +243,40 @@ def _val_plan_rubric(obj: Any, ctx: Dict[str, Any]) -> Tuple[bool, str]:
     return True, ""
 
 
+def _norm_task_rubric(raw: Any, ctx: Dict[str, Any]) -> Any:
+    if not isinstance(raw, dict):
+        return raw
+    return raw
+
+
+def _val_task_rubric(obj: Any, ctx: Dict[str, Any]) -> Tuple[bool, str]:
+    if not isinstance(obj, dict):
+        return False, "expected object"
+    if str(obj.get("schema_version") or "") != "xiaojing_task_rubric_v1":
+        return False, "schema_version mismatch (expected xiaojing_task_rubric_v1)"
+    task_id = str(obj.get("task_id") or "").strip()
+    if not task_id:
+        return False, "missing required key: task_id"
+    dims = obj.get("dimensions")
+    if not isinstance(dims, list) or not dims:
+        return False, "missing required key: dimensions"
+    total = 0
+    for d in dims:
+        if not isinstance(d, dict):
+            return False, "dimensions items must be objects"
+        for k in ("dimension", "max_score", "description", "scoring_guide"):
+            if k not in d:
+                return False, f"missing required key: {k}"
+        try:
+            ms = int(d.get("max_score"))
+        except Exception:
+            return False, "dimensions[*].max_score must be int"
+        total += ms
+    if total != 100:
+        return False, "dimensions[*].max_score must sum to 100"
+    return True, ""
+
+
 CONTRACTS: Dict[str, ContractSpec] = {
     "TASK_ACTION": ContractSpec(
         name="TASK_ACTION",
@@ -300,6 +334,17 @@ CONTRACTS: Dict[str, ContractSpec] = {
             "schema_version": "xiaojing_plan_rubric_v1",
             "required_keys": ["schema_version", "top_task_hash", "pass_score", "dimensions", "stage_checklists"],
             "enums": {"stage_checklists.keys": ["STRUCTURE", "BINDINGS", "EXECUTION"]},
+        },
+    ),
+    "TASK_RUBRIC": ContractSpec(
+        name="TASK_RUBRIC",
+        schema_version="xiaojing_task_rubric_v1",
+        normalize=_norm_task_rubric,
+        validate=_val_task_rubric,
+        summary={
+            "schema_version": "xiaojing_task_rubric_v1",
+            "required_keys": ["schema_version", "task_id", "dimensions"],
+            "enums": {},
         },
     ),
 }

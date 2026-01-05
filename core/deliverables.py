@@ -8,10 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.util import ensure_dir, utc_now_iso
+from core.util import ensure_dir, stable_hash_text, utc_now_iso
 from core.final_picker import FinalDeliverableError, pick_final_deliverable
 from core.events import emit_event
-from core.deliverables_paths import rel_to_deliverables, task_slug
+from core.deliverables_paths import deliverables_root, rel_to_deliverables, task_slug
+from core.ssot.types import DELIVERABLES_FINAL_SCHEMA_VERSION, DELIVERABLES_MANIFEST_SCHEMA_VERSION
 
 
 _BAD_CHARS_RE = re.compile(r"[^a-zA-Z0-9\u4e00-\u9fff._ -]+")
@@ -34,6 +35,110 @@ class ExportResult:
     files_copied: int
 
 
+def write_manifest_json(
+    conn: sqlite3.Connection,
+    *,
+    plan_id: str,
+    include_candidates: bool = True,
+    out_dir: Optional[Path] = None,
+    done_only: bool = False,
+) -> Path:
+    """
+    Single writer for deliverables `manifest.json`.
+
+    Used in two contexts:
+    - Runtime (plan deliverables folder): done_only=False to expose current artifacts for UI/debug/cleanup.
+    - Export: done_only=True to list only DONE ACTION deliverables.
+    """
+    out_dir = out_dir or deliverables_root(plan_id)
+    ensure_dir(out_dir)
+
+    plan = conn.execute("SELECT plan_id, title, root_task_id, created_at FROM plans WHERE plan_id=?", (plan_id,)).fetchone()
+    plan_meta = {
+        "plan_id": str(plan["plan_id"]) if plan else str(plan_id),
+        "title": str(plan["title"] if plan else ""),
+        "root_task_id": str(plan["root_task_id"] if plan else ""),
+        "created_at": str(plan["created_at"] if plan else ""),
+        "updated_at": utc_now_iso(),
+    }
+
+    status_filter = "AND n.status = 'DONE'" if bool(done_only) else ""
+    rows = conn.execute(
+        f"""
+        SELECT
+          n.task_id,
+          n.title,
+          n.node_type,
+          n.status,
+          n.owner_agent_id,
+          n.tags_json,
+          n.approved_artifact_id,
+          n.active_artifact_id,
+          a.artifact_id,
+          a.name AS artifact_name,
+          a.format AS artifact_format,
+          a.path AS artifact_path,
+          a.sha256 AS artifact_sha256,
+          a.created_at AS artifact_created_at
+        FROM task_nodes n
+        LEFT JOIN artifacts a ON a.artifact_id = (
+          CASE
+            WHEN n.approved_artifact_id IS NOT NULL THEN n.approved_artifact_id
+            WHEN ? THEN n.active_artifact_id
+            ELSE NULL
+          END
+        )
+        WHERE n.plan_id = ?
+          AND n.active_branch = 1
+          AND n.node_type = 'ACTION'
+          {status_filter}
+          AND a.artifact_id IS NOT NULL
+        ORDER BY a.created_at ASC
+        """,
+        (1 if include_candidates else 0, plan_id),
+    ).fetchall()
+
+    files: List[Dict[str, Any]] = []
+    for r in rows:
+        artifact_id = str(r["artifact_id"] or "")
+        artifact_path = str(r["artifact_path"] or "")
+        if not artifact_id or not artifact_path:
+            continue
+        p = Path(artifact_path)
+        files.append(
+            {
+                "task_id": str(r["task_id"] or ""),
+                "task_title": str(r["title"] or ""),
+                "node_type": str(r["node_type"] or ""),
+                "status": str(r["status"] or ""),
+                "owner_agent_id": str(r["owner_agent_id"] or ""),
+                "tags_json": str(r["tags_json"] or "[]"),
+                "approved": bool(r["approved_artifact_id"]) and str(r["approved_artifact_id"]) == artifact_id,
+                "artifact": {
+                    "artifact_id": artifact_id,
+                    "name": str(r["artifact_name"] or ""),
+                    "format": str(r["artifact_format"] or ""),
+                    "sha256": str(r["artifact_sha256"] or ""),
+                    "created_at": str(r["artifact_created_at"] or ""),
+                    "source_path": str(p),
+                    "dest_path": rel_to_deliverables(str(plan_id), p),
+                },
+            }
+        )
+
+    manifest: Dict[str, Any] = {
+        "schema_version": DELIVERABLES_MANIFEST_SCHEMA_VERSION,
+        "plan": plan_meta,
+        "files": files,
+        "bundle_mode": "SINGLE" if len(files) <= 1 else "MANIFEST",
+        "entrypoint": "",
+        "final_candidates": [],
+    }
+    out_path = Path(out_dir) / "manifest.json"
+    out_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return out_path
+
+
 def export_deliverables(
     conn: sqlite3.Connection,
     *,
@@ -54,10 +159,7 @@ def export_deliverables(
     - Write final.json pointing to a single entrypoint deliverable.
     """
     ensure_dir(out_dir)
-    tasks_dir = out_dir / "tasks"
-    ensure_dir(tasks_dir)
-    if include_reviews:
-        ensure_dir(out_dir / "reviews")
+    # All deliverables are flattened directly under `out_dir` (no subfolders).
 
     plan = conn.execute("SELECT plan_id, title, root_task_id, created_at FROM plans WHERE plan_id=?", (plan_id,)).fetchone()
     if not plan:
@@ -117,22 +219,40 @@ def export_deliverables(
         (1 if include_candidates else 0, plan_id),
     ).fetchall()
 
-    manifest: Dict[str, Any] = {"plan": plan_meta, "files": [], "bundle_mode": "MANIFEST", "entrypoint": "", "final_candidates": []}
+    manifest: Dict[str, Any] = {
+        "schema_version": DELIVERABLES_MANIFEST_SCHEMA_VERSION,
+        "plan": plan_meta,
+        "files": [],
+        "bundle_mode": "MANIFEST",
+        "entrypoint": "",
+        "final_candidates": [],
+    }
     files_copied = 0
 
     for t in tasks:
         src = Path(str(t["artifact_path"] or ""))
         if not src.exists():
             continue
-        slug = task_slug(str(t["title"] or "task"), task_id=str(t["task_id"]))
-        dest_dir = tasks_dir / slug
-        ensure_dir(dest_dir)
+        from core.deliverables_paths import artifact_output_filename
 
-        dest = src
-        if not str(src.resolve()).lower().startswith(str(out_dir.resolve()).lower()):
-            dest = dest_dir / src.name
+        task_title = str(t["title"] or "task")
+        task_id = str(t["task_id"] or "")
+        artifact_id = str(t["artifact_id"] or "")
+        artifact_name = str(t["artifact_name"] or src.stem or "artifact")
+        artifact_fmt = str(t["artifact_format"] or src.suffix.lstrip(".") or "txt")
+
+        dest_name = artifact_output_filename(
+            task_title=task_title,
+            task_id=task_id or "task",
+            name=artifact_name,
+            fmt=artifact_fmt,
+            artifact_id=artifact_id or None,
+        )
+        dest = out_dir / dest_name
+
+        if src.resolve() != dest.resolve():
             if dest.exists():
-                dest = dest_dir / f"{src.stem}_{str(t['artifact_id'])[:8]}{src.suffix}"
+                dest = out_dir / f"{Path(dest_name).stem}_{artifact_id[:8] or '00000000'}{Path(dest_name).suffix}"
             shutil.copy2(str(src), str(dest))
             files_copied += 1
 
@@ -144,6 +264,7 @@ def export_deliverables(
                 "status": t["status"],
                 "owner_agent_id": t["owner_agent_id"],
                 "tags_json": t["tags_json"],
+                "approved": bool(t["approved_artifact_id"]) and str(t["approved_artifact_id"]) == str(t["artifact_id"]),
                 "artifact": {
                     "artifact_id": t["artifact_id"],
                     "name": t["artifact_name"],
@@ -158,21 +279,17 @@ def export_deliverables(
 
         if include_reviews:
             # Copy any review files under workspace/reviews/<task_id>/ (if present).
-            review_src_dir = out_dir.parent / "reviews"  # workspace/reviews if out_dir is workspace/deliverables/...
-            # If caller provides out_dir elsewhere, fallback to sibling "reviews" won't exist; try DB path instead.
-            # We'll still attempt a best-effort copy from workspace/reviews based on the repository layout.
-            # (No hard failure.)
             try:
-                workspace_reviews = Path("workspace") / "reviews" / str(t["task_id"])
+                slug = task_slug(task_title, task_id=task_id)
+                workspace_reviews = Path("workspace") / "reviews" / task_id
                 if workspace_reviews.exists():
-                    dest_reviews_dir = out_dir / "reviews" / slug
-                    ensure_dir(dest_reviews_dir)
                     for f in sorted(workspace_reviews.glob("review_*.json")):
-                        shutil.copy2(str(f), str(dest_reviews_dir / f.name))
+                        dst = out_dir / f"review__{slug}__{_safe_name(f.name, max_len=80)}"
+                        if dst.exists():
+                            dst = out_dir / f"review__{slug}__{_safe_name(f.stem, max_len=70)}_{stable_hash_text(str(f))[:6]}{f.suffix}"
+                        shutil.copy2(str(f), str(dst))
             except Exception:
                 pass
-
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # final.json: single-entrypoint deliverable pointer
     try:
@@ -246,6 +363,7 @@ def export_deliverables(
         how_to_run = [f"Open `{final_entrypoint}` and follow its instructions."]
 
     final_json = {
+        "schema_version": DELIVERABLES_FINAL_SCHEMA_VERSION,
         "final_entrypoint": final_entrypoint,
         "final_task_title": final_task_title,
         "final_artifact_id": final_artifact_id,

@@ -35,10 +35,38 @@ def task_slug(task_title: str, *, task_id: Optional[str] = None, max_len: int = 
 
 
 def task_output_dir(plan_id: str, *, task_title: str, task_id: Optional[str] = None) -> Path:
-    root = ensure_deliverables_root(plan_id)
-    out = root / "tasks" / task_slug(task_title, task_id=task_id)
-    ensure_dir(out)
-    return out
+    # All artifacts for a plan live in a single folder (no per-task subfolders).
+    return ensure_deliverables_root(plan_id)
+
+
+def artifact_output_filename(
+    *,
+    task_title: str,
+    task_id: str,
+    name: str,
+    fmt: str,
+    artifact_id: Optional[str] = None,
+    max_slug_len: int = 50,
+    max_name_len: int = 50,
+) -> str:
+    """
+    Build a collision-safe filename for a task artifact stored in the plan deliverables folder.
+
+    We keep task context in the filename to avoid collisions when multiple tasks output the same `name`.
+    We also include an artifact_id prefix to preserve previous versions on retries.
+    """
+
+    def _safe_component(text: str, *, max_len: int) -> str:
+        t = (text or "").strip()
+        t = _BAD_CHARS_RE.sub("_", t)
+        t = t.replace(" ", "_").strip("._-")
+        return (t or "item")[:max_len]
+
+    safe_fmt = (fmt or "md").lower().lstrip(".") or "md"
+    task_part = _safe_component(task_slug(task_title or "task", task_id=task_id, max_len=max_slug_len), max_len=max_slug_len)
+    name_part = _safe_component(name or "artifact", max_len=max_name_len)
+    id_part = (str(artifact_id or task_id)[:8] or "00000000")
+    return f"{task_part}__{name_part}_{id_part}.{safe_fmt}"
 
 
 def rel_to_deliverables(plan_id: str, abs_path: Path) -> str:

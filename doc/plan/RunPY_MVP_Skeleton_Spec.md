@@ -51,7 +51,7 @@ agent_root/
 
 ```python
 MAX_PLAN_RUNTIME_SECONDS = 2 * 60 * 60     # 2h 总运行时长保险丝
-MAX_TASK_ATTEMPTS = 3                      # 同一节点最多修改轮次
+MAX_TASK_ATTEMPTS = 13                     # 同一节点最多修改轮次（默认；实际以 runtime_config.json.task_max_attempts 为准）
 MAX_LLM_CALLS = 200                        # 防止 prompt 循环爆炸
 POLL_INTERVAL_SECONDS = 3                  # 无 READY 时轮询
 ```
@@ -297,7 +297,7 @@ def xiaojing_round(plan_id, prompts, llm_calls):
             recompute_dependents_and_parents(t.task_id)
         else:
             increment_attempt(t.task_id)
-            if get_attempt(t.task_id) >= MAX_TASK_ATTEMPTS:
+            if get_attempt(t.task_id) >= task_max_attempts:  # from runtime_config.json
                 set_status(t.task_id, "BLOCKED", "WAITING_EXTERNAL")
                 emit_status_change(t.task_id, "BLOCKED", {"reason":"WAITING_EXTERNAL"})
                 write_blocked_reason_file(t.task_id, resp)

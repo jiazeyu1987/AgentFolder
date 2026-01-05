@@ -39,6 +39,9 @@ export function updateRuntimeConfig(patch: {
   max_decomposition_depth?: number;
   one_shot_threshold_person_days?: number;
   create_plan_max_attempts?: number;
+  task_max_attempts?: number;
+  task_review_pass_score?: number;
+  task_review_notes_max_chars?: number;
   plan_review_pass_score?: number;
   plan_review_notes_max_chars?: number;
 }): Promise<unknown> {

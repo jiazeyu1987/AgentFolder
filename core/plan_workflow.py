@@ -355,6 +355,19 @@ def generate_and_review_plan(
     cfg = get_runtime_config()
     from core.workflow_events import emit_workflow_event
 
+    def _flush_telemetry() -> None:
+        """
+        Persist best-effort telemetry (llm_calls/workflow_events) promptly.
+        record_llm_call() opens an implicit sqlite transaction; if a later exception triggers a rollback,
+        the UI can look "stuck" because recent LLM/workflow rows never commit.
+        Must never raise.
+        """
+        try:
+            if bool(getattr(conn, "in_transaction", False)):
+                conn.commit()
+        except Exception:
+            pass
+
     def _wf(
         *,
         event_type: str,
@@ -518,6 +531,7 @@ def generate_and_review_plan(
                         "repair_used": bool(getattr(review_res, "repair_used", False)),
                     },
                 )
+                _flush_telemetry()
                 _wf(
                     event_type="LLM_CALL_RECORDED",
                     severity="INFO",
@@ -719,6 +733,7 @@ def generate_and_review_plan(
             error_message=plan_res.error,
             meta={"attempt": attempt, "stage": "STRUCTURE", "extra_calls": int(getattr(plan_res, "extra_calls", 0)), "repair_used": bool(getattr(plan_res, "repair_used", False))},
         )
+        _flush_telemetry()
         _wf(
             event_type="LLM_CALL_RECORDED",
             severity="INFO",
@@ -948,6 +963,7 @@ def generate_and_review_plan(
                     error_message=None,
                     meta={"attempt": attempt, "stage": "BINDINGS", "stage_attempt": 1, "kind": "AUTO_STAGE_GEN"},
                 )
+                _flush_telemetry()
                 if stage_gen_id and stage_gen_id != "UNKNOWN":
                     last_plan_gen_call_id_for_remediation = str(stage_gen_id)
             except Exception:
@@ -1058,6 +1074,7 @@ def generate_and_review_plan(
                     error_message=None,
                     meta={"attempt": attempt, "stage": "EXECUTION", "stage_attempt": 1, "kind": "AUTO_STAGE_GEN"},
                 )
+                _flush_telemetry()
                 if stage_gen_id and stage_gen_id != "UNKNOWN":
                     last_plan_gen_call_id_for_remediation = str(stage_gen_id)
             except Exception:

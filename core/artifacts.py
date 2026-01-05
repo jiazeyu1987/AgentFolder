@@ -19,14 +19,17 @@ def write_artifact_file(base_dir: Path, *, task_id: str, name: str, fmt: str, co
     return path
 
 
-def write_artifact_file_in_dir(out_dir: Path, *, name: str, fmt: str, content: str) -> Path:
+def write_artifact_file_in_dir(out_dir: Path, *, name: str, fmt: str, content: str, filename: Optional[str] = None) -> Path:
     """
     Write an artifact to a specific directory (used for unified per-plan deliverables).
     """
     ensure_dir(out_dir)
-    safe_fmt = fmt.lower().lstrip(".")
-    safe_name = name.replace("/", "_").replace("\\", "_").strip() or "artifact"
-    path = out_dir / f"{safe_name}.{safe_fmt}"
+    if filename:
+        path = out_dir / filename
+    else:
+        safe_fmt = fmt.lower().lstrip(".")
+        safe_name = name.replace("/", "_").replace("\\", "_").strip() or "artifact"
+        path = out_dir / f"{safe_name}.{safe_fmt}"
     path.write_text(content, encoding="utf-8")
     return path
 
@@ -39,8 +42,9 @@ def insert_artifact_and_activate(
     name: str,
     fmt: str,
     path: Path,
+    artifact_id: Optional[str] = None,
 ) -> str:
-    artifact_id = str(uuid.uuid4())
+    artifact_id = str(artifact_id or uuid.uuid4())
     sha = sha256_file(path)
     now = utc_now_iso()
     conn.execute(

@@ -96,7 +96,7 @@ The system follows a **serial workflow** with three main phases:
 - `xiaojing` reviews `READY_TO_CHECK` tasks
 - Quality gate ≥90% required for `DONE` status
 - Failed reviews trigger `TO_BE_MODIFY` → increment `attempt_count`
-- When `attempt_count >= MAX_TASK_ATTEMPTS`: escalates to `BLOCKED(WAITING_EXTERNAL)`
+- When `attempt_count >= task_max_attempts` (from `runtime_config.json`): escalates to `BLOCKED(WAITING_EXTERNAL)`
 
 ## Core Design Principles
 

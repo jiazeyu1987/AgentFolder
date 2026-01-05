@@ -10,6 +10,51 @@ from core.util import utc_now_iso
 
 
 MAX_EVENT_MESSAGE_CHARS = 500
+MAX_EVENT_PAYLOAD_CHARS = 50_000
+
+
+# Event types (string constants). Keep stable: UI/SSOT reads these values.
+JOB_STARTED = "JOB_STARTED"
+JOB_FINISHED = "JOB_FINISHED"
+STEP_STARTED = "STEP_STARTED"
+STEP_FINISHED = "STEP_FINISHED"
+DECISION_MADE = "DECISION_MADE"
+ERROR_RAISED = "ERROR_RAISED"
+LLM_CALL_REQUESTED = "LLM_CALL_REQUESTED"
+LLM_CALL_RECORDED = "LLM_CALL_RECORDED"
+STATUS_CHANGED = "STATUS_CHANGED"
+INPUT_REQUIRED = "INPUT_REQUIRED"
+GUARDRAIL_HIT = "GUARDRAIL_HIT"
+REVIEW_WRITTEN = "REVIEW_WRITTEN"
+ARTIFACT_APPROVED = "ARTIFACT_APPROVED"
+EXPORT_STARTED = "EXPORT_STARTED"
+EXPORT_DONE = "EXPORT_DONE"
+REWRITE_PROPOSED = "REWRITE_PROPOSED"
+REWRITE_APPLIED = "REWRITE_APPLIED"
+CLEANUP_DRY_RUN = "CLEANUP_DRY_RUN"
+CLEANUP_APPLIED = "CLEANUP_APPLIED"
+
+KNOWN_EVENT_TYPES = {
+    JOB_STARTED,
+    JOB_FINISHED,
+    STEP_STARTED,
+    STEP_FINISHED,
+    DECISION_MADE,
+    ERROR_RAISED,
+    LLM_CALL_REQUESTED,
+    LLM_CALL_RECORDED,
+    STATUS_CHANGED,
+    INPUT_REQUIRED,
+    GUARDRAIL_HIT,
+    REVIEW_WRITTEN,
+    ARTIFACT_APPROVED,
+    EXPORT_STARTED,
+    EXPORT_DONE,
+    REWRITE_PROPOSED,
+    REWRITE_APPLIED,
+    CLEANUP_DRY_RUN,
+    CLEANUP_APPLIED,
+}
 
 
 def _truncate_message(message: Optional[str]) -> Optional[str]:
@@ -19,6 +64,36 @@ def _truncate_message(message: Optional[str]) -> Optional[str]:
     if len(s) <= MAX_EVENT_MESSAGE_CHARS:
         return s
     return s[: MAX_EVENT_MESSAGE_CHARS - 12] + "…[TRUNCATED]"
+
+
+def _truncate_payload(payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        return {"_payload": str(payload)[:500]}
+    try:
+        raw = json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        # Best-effort: stringify any non-serializable values.
+        safe: Dict[str, Any] = {}
+        for k, v in payload.items():
+            try:
+                json.dumps(v, ensure_ascii=False)
+                safe[str(k)] = v
+            except Exception:
+                safe[str(k)] = str(v)[:500]
+        payload = safe
+        try:
+            raw = json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            return {"_payload": "UNSERIALIZABLE"}
+    if len(raw) <= MAX_EVENT_PAYLOAD_CHARS:
+        return payload
+    # Avoid huge payloads; keep head/tail to preserve context for debugging.
+    head_len = MAX_EVENT_PAYLOAD_CHARS // 2
+    tail_len = MAX_EVENT_PAYLOAD_CHARS - head_len - 40
+    clipped = raw[:head_len] + "\n...[TRUNCATED]...\n" + raw[-tail_len:]
+    return {"_truncated_json": clipped}
 
 
 def emit_workflow_event(
@@ -44,6 +119,7 @@ def emit_workflow_event(
     """
     event_id = str(uuid.uuid4())
     try:
+        payload2 = _truncate_payload(payload)
         conn.execute(
             """
             INSERT INTO workflow_events(
@@ -66,7 +142,7 @@ def emit_workflow_event(
                 str(plan_id) if plan_id else None,
                 str(task_id) if task_id else None,
                 str(llm_call_id) if llm_call_id else None,
-                json.dumps(payload, ensure_ascii=False) if payload is not None else None,
+                json.dumps(payload2, ensure_ascii=False) if payload2 is not None else None,
             ),
         )
         if not getattr(conn, "in_transaction", False):

@@ -547,6 +547,9 @@ class RuntimeConfigUpdateIn(BaseModel):
     max_decomposition_depth: Optional[int] = None
     one_shot_threshold_person_days: Optional[float] = None
     create_plan_max_attempts: Optional[int] = None
+    task_max_attempts: Optional[int] = None
+    task_review_pass_score: Optional[int] = None
+    task_review_notes_max_chars: Optional[int] = None
     plan_review_pass_score: Optional[int] = None
     plan_review_notes_max_chars: Optional[int] = None
 
@@ -583,7 +586,7 @@ def _truncate(s: Optional[str], *, max_chars: int) -> Optional[str]:
     return s[: max_chars - 1] + "..."
 
 
-def resolve_prompt_sources(agent: str, scope: str) -> Dict[str, Any]:
+def resolve_prompt_sources(agent: str, scope: str, *, prompt_variant: Optional[str] = None) -> Dict[str, Any]:
     """
     Best-effort mapping from an agent/scope to shared/private prompt files.
     MVP convention:
@@ -592,6 +595,16 @@ def resolve_prompt_sources(agent: str, scope: str) -> Dict[str, Any]:
     """
     shared = ROOT_DIR / "shared_prompt.md"
     agent_file = ROOT_DIR / "agents" / f"{str(agent).strip()}_prompt.md"
+    pv = str(prompt_variant or "").strip()
+    if pv:
+        mapping = {
+            "TASK_ACTION_INIT": ROOT_DIR / "agents" / "xiaobo_task_action_init.md",
+            "TASK_ACTION_ITERATE": ROOT_DIR / "agents" / "xiaobo_task_action_iterate.md",
+            "TASK_REVIEW_RUBRIC_BUILD": ROOT_DIR / "agents" / "xiaojing_task_review_rubric_build.md",
+            "TASK_REVIEW_SCORE": ROOT_DIR / "agents" / "xiaojing_task_review_score.md",
+        }
+        if pv in mapping:
+            agent_file = mapping[pv]
     out: Dict[str, Any] = {
         "shared_prompt_path": str(shared) if shared.exists() else None,
         "agent_prompt_path": str(agent_file) if agent_file.exists() else None,
@@ -950,10 +963,16 @@ def update_runtime_config(body: RuntimeConfigUpdateIn) -> Dict[str, Any]:
         patch["one_shot_threshold_person_days"] = float(body.one_shot_threshold_person_days)
     if body.create_plan_max_attempts is not None:
         patch["create_plan_max_attempts"] = int(body.create_plan_max_attempts)
+    if body.task_max_attempts is not None:
+        patch["task_max_attempts"] = int(body.task_max_attempts)
     if body.plan_review_pass_score is not None:
         patch["plan_review_pass_score"] = int(body.plan_review_pass_score)
     if body.plan_review_notes_max_chars is not None:
         patch["plan_review_notes_max_chars"] = int(body.plan_review_notes_max_chars)
+    if body.task_review_pass_score is not None:
+        patch["task_review_pass_score"] = int(body.task_review_pass_score)
+    if body.task_review_notes_max_chars is not None:
+        patch["task_review_notes_max_chars"] = int(body.task_review_notes_max_chars)
 
     merged = dict(cur)
     merged.update(patch)
@@ -1298,11 +1317,16 @@ def get_llm_calls(
         rows = conn.execute(sql, tuple(params)).fetchall()
         calls: List[Dict[str, Any]] = []
         for r in rows:
-            src = resolve_prompt_sources(agent=r["agent"], scope=r["scope"])
+            try:
+                meta_obj = json.loads(r["meta_json"] or "{}") if r["meta_json"] else {}
+            except Exception:
+                meta_obj = {}
+            pv = meta_obj.get("prompt_variant") if isinstance(meta_obj, dict) else None
+            src = resolve_prompt_sources(agent=r["agent"], scope=r["scope"], prompt_variant=pv)
             review_note_path = None
             if r["scope"] == "PLAN_REVIEW" and r["plan_id"]:
                 try:
-                    meta = json.loads(r["meta_json"] or "{}") if r["meta_json"] else {}
+                    meta = meta_obj if isinstance(meta_obj, dict) else {}
                 except Exception:
                     meta = {}
                 attempt = meta.get("attempt")

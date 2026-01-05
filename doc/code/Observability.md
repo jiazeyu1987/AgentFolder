@@ -37,6 +37,10 @@
 - Backend：`GET /api/plan_snapshot?plan_id=<PLAN_ID>`
   - 返回 JSON：summary/reasons/inputs_needed/waiting_review/recent_errors/final_deliverable/doctor/feasibility/report
 
+唯一入口（代码）：
+- Snapshot 入口：`core/ssot/snapshot.py:get_plan_snapshot`
+- 关键语义入口：`core/ssot/semantics.py`
+
 ### Snapshot Schema（machine-readable）
 <!-- SNAPSHOT_SCHEMA_JSON_START -->
 {

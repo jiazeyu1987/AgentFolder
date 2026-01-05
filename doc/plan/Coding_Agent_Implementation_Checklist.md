@@ -150,7 +150,7 @@ agent_root/
 ## 3. 逐文件 TODO（Coding Agent 按顺序实现）
 
 ### 3.1 config.py
-- 常量：MAX_PLAN_RUNTIME_SECONDS, MAX_TASK_ATTEMPTS, MAX_LLM_CALLS, POLL_INTERVAL_SECONDS
+- 常量：MAX_PLAN_RUNTIME_SECONDS, MAX_LLM_CALLS, POLL_INTERVAL_SECONDS（MAX_TASK_ATTEMPTS 已迁移为 runtime_config.json.task_max_attempts）
 - 路径：ROOT, WORKSPACE_INPUTS, WORKSPACE_ARTIFACTS, WORKSPACE_REVIEWS, WORKSPACE_REQUIRED_DOCS, LOGS_LLM_RUNS
 
 ### 3.2 state/migrations/001_init.sql
@@ -256,7 +256,7 @@ agent_root/
 ### 4.2 小京（监督者）
 - 对 READY_TO_CHECK 的 task 调用 LLM，必须返回 xiaojing_review_v1
 - score>=90：status -> DONE
-- score<90：status -> TO_BE_MODIFY，attempt+1；attempt>=MAX_TASK_ATTEMPTS -> BLOCKED(WAITING_EXTERNAL)
+- score<90：status -> TO_BE_MODIFY，attempt+1；attempt>=task_max_attempts（runtime_config.json）-> BLOCKED(WAITING_EXTERNAL)
 
 ---
 
@@ -288,7 +288,7 @@ agent_root/
 - 输入文件到达 -> evidence 绑定 -> READY 解锁
 - 小波产出 -> READY_TO_CHECK
 - 小京审查 -> DONE 或 TO_BE_MODIFY
-- 修改轮不超过 MAX_TASK_ATTEMPTS
+- 修改轮不超过 task_max_attempts（runtime_config.json）
 - 全流程 events 与 llm_runs 可追溯
 
 ---

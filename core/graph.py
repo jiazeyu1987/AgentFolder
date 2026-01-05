@@ -269,7 +269,7 @@ def build_plan_graph(conn: sqlite3.Connection, *, plan_id: Optional[str]) -> Gra
     nodes: List[Dict[str, Any]] = []
     for r in nodes_rows:
         req_path = config.REQUIRED_DOCS_DIR / f"{r['task_id']}.md"
-        artifact_dir = deliverables_root(str(plan_id)) / "tasks" / task_slug(str(r["title"] or "task"), task_id=str(r["task_id"]))
+        artifact_dir = deliverables_root(str(plan_id))
         review_dir = config.REVIEWS_DIR / str(r["task_id"])
         missing = _missing_requirements(conn, task_id=r["task_id"])
         # If required_docs exists, prefer its suggested_path and accepted_types.

@@ -24,13 +24,13 @@
 
 - `manifest.json`：交付物清单（唯一事实源）
 - `final.json`：最终交付入口（用户 1 秒定位）
-- `tasks/`：所有节点输出统一放置的子目录（可选，但推荐；仍属于同一根目录）
+- `tasks/`：（旧方案）按 task 分子目录。**已废弃**：新规则是所有节点交付物文件**全部平铺在 deliverables 根目录**，用 `manifest.json` 做索引区分。
 
 ### 节点输出路径（建议）
 
 所有节点输出文件落在：
 
-`workspace/deliverables/<plan_id>/tasks/<task_slug>/...`
+`workspace/deliverables/<plan_id>/<task_slug>__<artifact_name>_<id8>.<ext>`
 
 说明：
 - `task_slug` 由 `task_title` 规范化得到（去特殊字符、空格转下划线、截断长度），用于避免重名与跨平台路径问题。
@@ -59,7 +59,7 @@
       "owner_agent_id": "xiaobo",
       "approved": true,
       "files": [
-        { "path": "tasks/core_game_loop___structure/game.js", "format": "js", "sha256": "..." }
+        { "path": "core_game_loop___structure__game_logic_core_abc12345.js", "format": "js", "sha256": "..." }
       ],
       "acceptance_criteria": [ "..." ]
     }
@@ -85,7 +85,7 @@
   "schema_version": "final_deliverable_v1",
   "plan_id": "...",
   "final_task_title": "...",
-  "final_entrypoint": "tasks/<task_slug>/index.html",
+  "final_entrypoint": "<task_slug>__index_<id8>.html",
   "how_to_run": ["..."],
   "acceptance_criteria": ["..."],
   "source_artifacts": [
@@ -100,7 +100,7 @@
 
 - 下游节点不再生成类似 `workspace/inputs/upstream:*` 的缺输入提示。
 - Run 阶段根据 `DEPENDS_ON` 找到上游节点的 approved 交付物（优先）或 candidate（按策略），得到本地路径：
-  - `workspace/deliverables/<plan_id>/tasks/...`
+  - `workspace/deliverables/<plan_id>/...`
 - 把这些路径写入下游 prompt 的 “UPSTREAM_ARTIFACTS (local paths)” 区块，Claude Code 直接读取文件即可。
 
 ### 初始节点规则
@@ -121,4 +121,3 @@
 2) `workspace/deliverables/<plan_id>/manifest.json` 能列出所有节点的交付物，并标注 approved/candidate。
 3) 任一非初始节点的 prompt 都能看到上游交付物路径（来自 manifest），不再要求手工准备 `inputs/upstream:*`。
 4) 初始节点（入度=0）的 prompt 不会出现任何 upstream 输入要求。
-

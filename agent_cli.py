@@ -1191,6 +1191,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         skills = load_registry(config.SKILLS_REGISTRY_PATH)
         llm = LLMClient()
 
+        job_id = str(getattr(args, "job_id", "") or "").strip() or None
+        top_task_hash = None
+        try:
+            top_task_hash = stable_hash_text(normalize_title(top_task))
+        except Exception:
+            top_task_hash = None
+
+        if job_id:
+            try:
+                emit_workflow_event(
+                    conn,
+                    workflow="CREATE_PLAN",
+                    event_type="JOB_STARTED",
+                    job_id=job_id,
+                    top_task_hash=top_task_hash,
+                    message="create-plan started",
+                    payload={"max_attempts": int(args.max_attempts) if args.max_attempts is not None else None},
+                )
+                conn.commit()
+            except Exception:
+                pass
+
         try:
             cfg = get_runtime_config()
             max_attempts_eff = int(args.max_attempts) if args.max_attempts is not None else int(cfg.create_plan_max_attempts)
@@ -1204,7 +1226,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 max_plan_attempts=max_attempts_eff,
                 keep_trying=bool(getattr(args, "keep_trying", False)),
                 max_total_attempts=getattr(args, "max_total_attempts", None),
-                job_id=getattr(args, "job_id", None),
+                job_id=job_id,
                 plan_output_path=args.out,
             )
             plan_id = str(res.plan_json["plan"]["plan_id"])
@@ -1225,16 +1247,63 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"Approved plan written to: {res.plan_path}")
             print(f"plan_id: {plan_id}")
             print(f"score:   {res.review_json.get('total_score')}")
+            if job_id:
+                try:
+                    emit_workflow_event(
+                        conn,
+                        workflow="CREATE_PLAN",
+                        event_type="JOB_FINISHED",
+                        job_id=job_id,
+                        top_task_hash=top_task_hash,
+                        plan_id=plan_id,
+                        message="create-plan finished",
+                        payload={"status": "DONE", "score": int(res.review_json.get("total_score") or 0)},
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
             return 0
         except PlanNotApprovedError as exc:
             plan_id = exc.plan_id or "(unknown)"
             print(_summarize_plan_review(exc.last_review))
             print(f"plan_id: {plan_id}")
             print(f"max_attempts: {exc.max_attempts}")
+            if job_id:
+                try:
+                    emit_workflow_event(
+                        conn,
+                        workflow="CREATE_PLAN",
+                        event_type="JOB_FINISHED",
+                        severity="WARN",
+                        job_id=job_id,
+                        top_task_hash=top_task_hash,
+                        plan_id=None if plan_id == "(unknown)" else str(plan_id),
+                        message="create-plan finished: not approved",
+                        payload={"status": "NOT_APPROVED", "plan_id": None if plan_id == "(unknown)" else str(plan_id), "max_attempts": int(exc.max_attempts)},
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
             return 1
         except PlanWorkflowError as exc:
             print(f"create-plan 失败：{exc}", file=sys.stderr)
             print("建议：打开 UI 的 LLM Explorer 查看 PLAN_GEN/PLAN_REVIEW 的输入输出，或运行 `agent_cli.py llm-calls --limit 50`。", file=sys.stderr)
+            if job_id:
+                try:
+                    emit_workflow_event(
+                        conn,
+                        workflow="CREATE_PLAN",
+                        event_type="JOB_FINISHED",
+                        severity="ERROR",
+                        job_id=job_id,
+                        top_task_hash=top_task_hash,
+                        plan_id=None,
+                        message="create-plan failed",
+                        payload={"status": "FAILED", "error": str(exc)[:200]},
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
             return 1
     if args.cmd == "status":
         return cmd_status(args.db, args.plan_id, verbose=bool(getattr(args, "verbose", False)), brief=bool(getattr(args, "brief", False)))

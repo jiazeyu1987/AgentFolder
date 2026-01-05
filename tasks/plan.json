@@ -1,10 +1,21 @@
 {
-  "title": "Canvas 2D 弹幕射击游戏 (STG) 开发",
-  "summary": "基于 HTML5 Canvas 和原生 JavaScript 实现的单文件弹幕射击游戏，包含敌机、BOSS、弹幕系统、道具掉落及特效。本计划将开发过程拆解为多个依赖节点以确保逻辑清晰，并最终聚合为单一 HTML 文件。",
+  "title": "Canvas Danmaku Shooter Game (Single File)",
+  "description": "Create a complete, single-file HTML5 Canvas shooting game (Bullet Hell) with Boss battles, configurable bullet patterns, and a power-up system.",
+  "plan": {
+    "title": "请你用 HTML5 Canvas + 原生 JavaScript 实现一个“打飞机 / 弹幕射击”小游戏，要求一个 HTML 文件即可运行，复制到浏览器就能玩。",
+    "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+    "root_task_id": "46cf13b3-4bb3-47f4-90fe-9b6f660ba363",
+    "created_at": "2026-01-05T07:43:56Z",
+    "owner_agent_id": "xiaobo",
+    "constraints": {
+      "deadline": null,
+      "priority": "HIGH"
+    }
+  },
   "nodes": [
     {
-      "task_id": "273de94a-97d2-4154-8928-fac442e6fcc4",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "task_id": "46cf13b3-4bb3-47f4-90fe-9b6f660ba363",
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
       "node_type": "GOAL",
       "title": "Root Task",
       "goal_statement": "请你用 HTML5 Canvas + 原生 JavaScript 实现一个“打飞机 / 弹幕射击”小游戏，要求一个 HTML 文件即可运行，复制到浏览器就能玩。",
@@ -17,240 +28,283 @@
       ]
     },
     {
-      "task_id": "26b68a96-3af9-4ee9-8aab-4f95809a148f",
-      "title": "HTML/CSS Skeleton & Canvas Setup",
-      "type": "code_gen",
-      "estimated_duration_sec": 60,
-      "dependencies": [],
-      "details": "Create base HTML structure with full-screen Canvas. Add overlay DOM elements for UI (Start, HUD, Game Over). Write CSS to center overlays. Initialize Canvas 2D context. No external assets/images.",
+      "task_id": "4d6a62e7-0119-470b-97ea-3d07ed70180f",
+      "type": "ACTION",
+      "title": "Initialize Game Engine & Canvas",
+      "description": "Set up the HTML skeleton, Canvas context, RequestAnimationFrame loop, and global configuration (screen size, game state constants).",
       "node_type": "ACTION",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "deliverables": [
+        {
+          "name": "engine_core",
+          "description": "Canvas initialization, Loop logic (update/draw), Input handling (Keys state).",
+          "acceptance_criteria": [
+            "Canvas fills window or fixed 800x600",
+            "Input listener tracks Arrow keys/WASD/Space",
+            "Loop uses requestAnimationFrame"
+          ]
+        }
+      ],
       "owner_agent_id": "xiaobo",
       "priority": 1,
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
       "tags": []
     },
     {
-      "task_id": "bb3a954e-1bca-464b-ac8e-d9e06a60b835",
-      "title": "Game Loop & Input Handling",
-      "type": "code_gen",
-      "estimated_duration_sec": 90,
-      "dependencies": [
-        "26b68a96-3af9-4ee9-8aab-4f95809a148f"
-      ],
-      "details": "Implement Game Loop using requestAnimationFrame. Build InputHandler class to track key states (Arrow/WASD/Space). Manage Game States: START, PLAYING, GAMEOVER transitions.",
+      "task_id": "a011efe1-6471-444d-98e9-a9041be32d89",
+      "type": "ACTION",
+      "title": "Implement Player Class",
+      "description": "Create Player entity with movement, stats (HP, score), weapon state, and rendering logic (triangle/shape).",
       "node_type": "ACTION",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "deliverables": [
+        {
+          "name": "player_entity",
+          "description": "Player class with movement clamping, shooting timer, and weapon switching logic.",
+          "acceptance_criteria": [
+            "Player stays within screen bounds",
+            "Draws distinct color/shape",
+            "Invulnerability toggle implemented"
+          ]
+        }
+      ],
       "owner_agent_id": "xiaobo",
       "priority": 2,
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
       "tags": []
     },
     {
-      "task_id": "31e542ef-c642-41b0-a42d-b1f79d8979c2",
-      "title": "Player Class & Rendering",
-      "type": "code_gen",
-      "estimated_duration_sec": 90,
-      "dependencies": [
-        "bb3a954e-1bca-464b-ac8e-d9e06a60b835"
-      ],
-      "details": "Create Player class with update(x, y) and draw(ctx) methods. Draw using ctx.moveTo/lineTo to form a geometric fighter jet. Implement boundary checking and auto-fire timer.",
+      "task_id": "1af7b002-2855-4cb8-8b24-27956fd256d0",
+      "type": "ACTION",
+      "title": "Implement Enemy System",
+      "description": "Implement basic Enemy class (linear movement) and Enemy Spawner (timer-based, difficulty scaling).",
       "node_type": "ACTION",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "deliverables": [
+        {
+          "name": "enemy_system",
+          "description": "Enemy class and Spawner manager.",
+          "acceptance_criteria": [
+            "Enemies spawn at random X at top",
+            "Move downwards",
+            "Despawn when off-screen"
+          ]
+        }
+      ],
       "owner_agent_id": "xiaobo",
       "priority": 3,
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
       "tags": []
     },
     {
-      "task_id": "1974e7d8-df3a-4b4e-ac8c-8bf65f884dde",
-      "title": "Enemy & Bullet System Core",
-      "type": "code_gen",
-      "estimated_duration_sec": 120,
-      "dependencies": [
-        "bb3a954e-1bca-464b-ac8e-d9e06a60b835"
-      ],
-      "details": "Implement Enemy class (falling rocks/ships). Implement Bullet class with object pooling. Add 7 firing patterns: 1) Spiral, 2) Circle, 3) Random Scatter, 4) Aimed (Player dir), 5) Laser Beam, 6) Homing, 7) Falling Rain.",
+      "task_id": "e7db3817-df66-42e0-941c-80edc91d3791",
+      "type": "ACTION",
+      "title": "Implement Bullet Hell Patterns",
+      "description": "Create the configurable Bullet system and the 4 specific Boss patterns (Spiral, Burst, Aim, Ring).",
       "node_type": "ACTION",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "deliverables": [
+        {
+          "name": "bullet_patterns",
+          "description": "Bullet class + Pattern generators.",
+          "acceptance_criteria": [
+            "Pattern: Spiral (rotating angle)",
+            "Pattern: Burst (spread)",
+            "Pattern: Aim (at player)",
+            "Pattern: Ring (circle)"
+          ]
+        }
+      ],
       "owner_agent_id": "xiaobo",
       "priority": 4,
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
       "tags": []
     },
     {
-      "task_id": "313021b3-0549-4c68-adf4-d6678bcc913e",
-      "title": "Boss Logic & State Machine",
-      "type": "code_gen",
-      "estimated_duration_sec": 90,
-      "dependencies": [
-        "1974e7d8-df3a-4b4e-ac8c-8bf65f884dde"
-      ],
-      "details": "Implement Boss State Machine (Idle -> Attack -> Dash). Trigger phase transitions at 50% and 20% HP. Integrate bullet patterns. Draw Boss HP bar on UI.",
+      "task_id": "edf76358-214c-4caa-bbf9-a38e71ea4a95",
+      "type": "ACTION",
+      "title": "Implement Boss Entity",
+      "description": "Create Boss class with high HP, movement logic (sine wave/hover), and state machine to cycle through the 4 Danmaku patterns.",
       "node_type": "ACTION",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "deliverables": [
+        {
+          "name": "boss_entity",
+          "description": "Boss class with HP bar and pattern invoker.",
+          "acceptance_criteria": [
+            "Boss appears after timer/score",
+            "Cycles through patterns defined in node 04",
+            "Has visible HP bar",
+            "Boss HP Pool defined and managed (e.g. large value)"
+          ]
+        }
+      ],
       "owner_agent_id": "xiaobo",
       "priority": 5,
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "bindings": [
+        "bullet_patterns"
+      ],
       "tags": []
     },
     {
-      "task_id": "d67bb079-8bbf-400c-adc0-15ea15d9ae36",
-      "title": "Collision, Power-ups & FX",
-      "type": "code_gen",
-      "estimated_duration_sec": 120,
-      "dependencies": [
-        "31e542ef-c642-41b0-a42d-b1f79d8979c2",
-        "1974e7d8-df3a-4b4e-ac8c-8bf65f884dde",
-        "313021b3-0549-4c68-adf4-d6678bcc913e"
-      ],
-      "details": "Implement collision detection (Circle/Rect). Create PowerUp class with 4 effects: Apple (Triple), Chicken (Scatter), Grape (Piercing), Lemon (Laser). Add Particle class for explosion effects using simple canvas shapes.",
+      "task_id": "179e6511-11ed-4964-90ac-aa86a87a34d8",
+      "type": "ACTION",
+      "title": "Implement Collision & Powerups",
+      "description": "Implement Circle/Rectangle collision detection for Player vs Enemy/Bullet and Player vs Powerup. Define Powerup types (Apple, Chicken, Grape, Lemon) and their effects.",
       "node_type": "ACTION",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "deliverables": [
+        {
+          "name": "collision_system",
+          "description": "Collision resolver and Powerup class.",
+          "acceptance_criteria": [
+            "Player takes damage/hit enemy",
+            "Powerup Apple (🍎) triggers Triple Shot",
+            "Powerup Chicken (🍗) triggers Spread Shot (5-9 bullets)",
+            "Powerup Grape (🍇) triggers Piercing Shot (penetrates 2-3 enemies)",
+            "Powerup Lemon (🍋) triggers Laser/Beam (high damage beam)",
+            "Items have timeout timers (e.g. 8s)"
+          ]
+        }
+      ],
       "owner_agent_id": "xiaobo",
       "priority": 6,
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "bindings": [
+        "player_entity",
+        "enemy_system",
+        "bullet_patterns"
+      ],
       "tags": []
     },
     {
-      "task_id": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
-      "title": "Final HTML Export",
-      "type": "code_gen",
-      "estimated_duration_sec": 60,
-      "dependencies": [
-        "d67bb079-8bbf-400c-adc0-15ea15d9ae36"
-      ],
-      "details": "Aggregate all JS modules (Player, Enemy, Boss, Bullet, PowerUp) and CSS into a single HTML file. Ensure no external dependencies.",
+      "task_id": "e5eec5e9-94f2-4843-9552-faeea7a99727",
+      "type": "ACTION",
+      "title": "Implement FX & UI State",
+      "description": "Implement Particle system (explosions), Screen shake, and UI rendering (Score, HP, Game Over/Start screens).",
       "node_type": "ACTION",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "deliverables": [
+        {
+          "name": "fx_and_ui",
+          "description": "Particle manager and UI overlay renderer.",
+          "acceptance_criteria": [
+            "Particles spawn on destroy",
+            "Game Over screen allows restart",
+            "HUD updates live"
+          ]
+        }
+      ],
       "owner_agent_id": "xiaobo",
       "priority": 7,
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "bindings": [
+        "player_entity",
+        "boss_entity"
+      ],
+      "tags": []
+    },
+    {
+      "task_id": "94ed09fc-6f57-4f33-b3d4-4c822a252495",
+      "type": "ACTION",
+      "title": "Integrate & Generate HTML",
+      "description": "Integrate all modules (Engine, Player, Enemy, Boss, Patterns, Collision, FX) into the final single HTML file artifact.",
+      "node_type": "ACTION",
+      "deliverables": [
+        {
+          "name": "game.html",
+          "description": "A self-contained HTML file. Opening it in a browser launches the game.",
+          "acceptance_criteria": [
+            "File starts with <!DOCTYPE html>",
+            "Contains internal <style> block",
+            "Contains internal <script> block with game classes (Player, Enemy, Boss, Bullet, PowerUp, Game, Particle)",
+            "No external dependencies (CDN links or scripts)"
+          ]
+        }
+      ],
+      "owner_agent_id": "xiaobo",
+      "priority": 8,
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "bindings": [
+        "engine_core",
+        "player_entity",
+        "enemy_system",
+        "boss_entity",
+        "collision_system",
+        "fx_and_ui"
+      ],
       "tags": []
     }
   ],
   "edges": [
     {
-      "edge_id": "685ba672-76f9-4c19-b90d-b0f829b69873",
-      "from": "start",
-      "to": "step_1_setup",
-      "condition": "auto_start",
-      "from_task_id": "273de94a-97d2-4154-8928-fac442e6fcc4",
-      "to_task_id": "26b68a96-3af9-4ee9-8aab-4f95809a148f",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_id": "e09bc3b8-968b-4544-9f05-22e158085937",
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "from_task_id": "46cf13b3-4bb3-47f4-90fe-9b6f660ba363",
+      "to_task_id": "4d6a62e7-0119-470b-97ea-3d07ed70180f",
       "edge_type": "DECOMPOSE",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "f0aee27c-840f-4f4d-b7a3-98e0faf18f29",
-      "from": "step_1_setup",
-      "to": "step_2_loop",
-      "condition": "success",
-      "from_task_id": "26b68a96-3af9-4ee9-8aab-4f95809a148f",
-      "to_task_id": "bb3a954e-1bca-464b-ac8e-d9e06a60b835",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_id": "1677db19-9576-4c4f-a00e-b179e61501b4",
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "from_task_id": "4d6a62e7-0119-470b-97ea-3d07ed70180f",
+      "to_task_id": "a011efe1-6471-444d-98e9-a9041be32d89",
       "edge_type": "DEPENDS_ON",
-      "metadata": {
-        "and_or": "AND"
-      }
+      "metadata": {}
     },
     {
-      "edge_id": "333cbf14-72bf-44aa-b43f-17998446b423",
-      "from": "step_2_loop",
-      "to": "step_3_player",
-      "condition": "success",
-      "from_task_id": "bb3a954e-1bca-464b-ac8e-d9e06a60b835",
-      "to_task_id": "31e542ef-c642-41b0-a42d-b1f79d8979c2",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_id": "e902a7ef-78d3-4446-a6e4-d35ca405c209",
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "from_task_id": "4d6a62e7-0119-470b-97ea-3d07ed70180f",
+      "to_task_id": "1af7b002-2855-4cb8-8b24-27956fd256d0",
       "edge_type": "DEPENDS_ON",
-      "metadata": {
-        "and_or": "AND"
-      }
+      "metadata": {}
     },
     {
-      "edge_id": "b35a814a-e207-48a8-a757-bd66d8825418",
-      "from": "step_2_loop",
-      "to": "step_4_enemy_bullet",
-      "condition": "success",
-      "from_task_id": "bb3a954e-1bca-464b-ac8e-d9e06a60b835",
-      "to_task_id": "1974e7d8-df3a-4b4e-ac8c-8bf65f884dde",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_id": "a55aae2c-1166-4d07-b06b-546c1f2cf117",
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "from_task_id": "4d6a62e7-0119-470b-97ea-3d07ed70180f",
+      "to_task_id": "e7db3817-df66-42e0-941c-80edc91d3791",
       "edge_type": "DEPENDS_ON",
-      "metadata": {
-        "and_or": "AND"
-      }
+      "metadata": {}
     },
     {
-      "edge_id": "db0c7864-d9c4-4581-bf28-d40c4115c619",
-      "from": "step_4_enemy_bullet",
-      "to": "step_5_boss",
-      "condition": "success",
-      "from_task_id": "1974e7d8-df3a-4b4e-ac8c-8bf65f884dde",
-      "to_task_id": "313021b3-0549-4c68-adf4-d6678bcc913e",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_id": "2f2e8c94-7983-4c80-891e-fdd5bf3f5934",
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "from_task_id": "e7db3817-df66-42e0-941c-80edc91d3791",
+      "to_task_id": "edf76358-214c-4caa-bbf9-a38e71ea4a95",
       "edge_type": "DEPENDS_ON",
-      "metadata": {
-        "and_or": "AND"
-      }
+      "metadata": {}
     },
     {
-      "edge_id": "1a16b50b-b3ee-4993-ad2a-98e1ed73c655",
-      "from": "step_3_player",
-      "to": "step_6_collision_powerup",
-      "condition": "success",
-      "from_task_id": "31e542ef-c642-41b0-a42d-b1f79d8979c2",
-      "to_task_id": "d67bb079-8bbf-400c-adc0-15ea15d9ae36",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_id": "bf0e07ee-3e9f-463d-9c7e-360a0d13fec2",
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "from_task_id": "a011efe1-6471-444d-98e9-a9041be32d89",
+      "to_task_id": "179e6511-11ed-4964-90ac-aa86a87a34d8",
       "edge_type": "DEPENDS_ON",
-      "metadata": {
-        "and_or": "AND"
-      }
+      "metadata": {}
     },
     {
-      "edge_id": "839b58c1-5eb3-4d0a-8582-c434fc9bd213",
-      "from": "step_4_enemy_bullet",
-      "to": "step_6_collision_powerup",
-      "condition": "success",
-      "from_task_id": "1974e7d8-df3a-4b4e-ac8c-8bf65f884dde",
-      "to_task_id": "d67bb079-8bbf-400c-adc0-15ea15d9ae36",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_id": "619c67b5-867d-40e4-b5b3-6405521d10b6",
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "from_task_id": "edf76358-214c-4caa-bbf9-a38e71ea4a95",
+      "to_task_id": "179e6511-11ed-4964-90ac-aa86a87a34d8",
       "edge_type": "DEPENDS_ON",
-      "metadata": {
-        "and_or": "AND"
-      }
+      "metadata": {}
     },
     {
-      "edge_id": "10dd88b0-f1a5-44e8-a26a-f0e92d7aea8d",
-      "from": "step_5_boss",
-      "to": "step_6_collision_powerup",
-      "condition": "success",
-      "from_task_id": "313021b3-0549-4c68-adf4-d6678bcc913e",
-      "to_task_id": "d67bb079-8bbf-400c-adc0-15ea15d9ae36",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_id": "16a5debf-3d80-4a0e-8c5b-8525e85a09fc",
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "from_task_id": "179e6511-11ed-4964-90ac-aa86a87a34d8",
+      "to_task_id": "e5eec5e9-94f2-4843-9552-faeea7a99727",
       "edge_type": "DEPENDS_ON",
-      "metadata": {
-        "and_or": "AND"
-      }
+      "metadata": {}
     },
     {
-      "edge_id": "e11f2a3b-4c5d-4a6b-8c9d-0e1f2a3b4c5d",
-      "from": "step_6_collision_powerup",
-      "to": "step_7_final_export",
-      "condition": "success",
-      "from_task_id": "d67bb079-8bbf-400c-adc0-15ea15d9ae36",
-      "to_task_id": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
-      "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
+      "edge_id": "45d239f3-a360-4faa-aa35-bb36b24ecaa6",
+      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
+      "from_task_id": "e5eec5e9-94f2-4843-9552-faeea7a99727",
+      "to_task_id": "94ed09fc-6f57-4f33-b3d4-4c822a252495",
       "edge_type": "DEPENDS_ON",
-      "metadata": {
-        "and_or": "AND"
-      }
+      "metadata": {}
     }
   ],
-  "requirements": [],
-  "plan": {
-    "title": "请你用 HTML5 Canvas + 原生 JavaScript 实现一个“打飞机 / 弹幕射击”小游戏，要求一个 HTML 文件即可运行，复制到浏览器就能玩。",
-    "plan_id": "0beba4be-d298-4fbc-beef-c8297c4cae97",
-    "root_task_id": "273de94a-97d2-4154-8928-fac442e6fcc4",
-    "created_at": "2026-01-04T15:33:29Z",
-    "owner_agent_id": "xiaobo",
-    "constraints": {
-      "deadline": null,
-      "priority": "HIGH"
-    }
-  }
+  "requirements": []
 }

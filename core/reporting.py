@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import config
 from core.graph import _parse_required_docs_md
+from core.ssot.semantics import compute_inputs_needed, compute_node_buckets, compute_plan_completion
 from core.util import utc_now_iso
 
 
@@ -88,8 +89,8 @@ def _node_item(
 
 
 def _is_plan_done(conn: sqlite3.Connection, *, plan_id: str, root_task_id: str) -> bool:
-    row = conn.execute("SELECT status FROM task_nodes WHERE task_id = ?", (root_task_id,)).fetchone()
-    return bool(row and str(row["status"] or "") == "DONE")
+    # Single source of truth: a plan is DONE when all ACTION nodes are DONE/ABANDONED.
+    return bool(compute_plan_completion(conn, plan_id).get("is_done"))
 
 
 def _runnable_counts(conn: sqlite3.Connection, *, plan_id: str) -> Dict[str, Dict[str, int]]:
@@ -429,8 +430,9 @@ def generate_plan_report(conn: sqlite3.Connection, plan_id: str, *, workflow_mod
         > 0
     )
 
-    blocked, failed, ready = _blocked_failed_ready_nodes(conn, plan_id=plan_id)
-    waiting_review = _waiting_review_nodes(conn, plan_id=plan_id) if str(workflow_mode) == "v2" else []
+    buckets = compute_node_buckets(conn, plan_id=plan_id, workflow_mode=str(workflow_mode))
+    blocked, failed, ready = buckets.get("blocked") or [], buckets.get("failed") or [], buckets.get("ready") or []
+    waiting_review = buckets.get("waiting_review") or []
 
     report: Dict[str, Any] = {
         "plan": {"plan_id": str(plan["plan_id"]), "title": str(plan["title"]), "workflow_mode": str(workflow_mode)},
@@ -447,7 +449,7 @@ def generate_plan_report(conn: sqlite3.Connection, plan_id: str, *, workflow_mod
             "waiting_review": waiting_review,
             "ready": ready,
         },
-        "inputs_needed": _inputs_needed(conn, plan_id=plan_id, required_docs_dir=config.REQUIRED_DOCS_DIR),
+        "inputs_needed": compute_inputs_needed(conn, plan_id=plan_id, required_docs_dir=config.REQUIRED_DOCS_DIR),
         "recent_errors": _recent_errors(conn, plan_id=plan_id, limit=20),
         "review_trace": _review_trace(conn, plan_id=plan_id) if str(workflow_mode) == "v2" else [],
         "next_steps": [],
