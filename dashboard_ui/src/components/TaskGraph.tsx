@@ -1,5 +1,15 @@
-import React, { useMemo } from "react";
-import ReactFlow, { Background, Controls, Edge, Handle, MarkerType, MiniMap, Node, Position } from "reactflow";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import ReactFlow, {
+  Background,
+  Controls,
+  Edge,
+  Handle,
+  MarkerType,
+  MiniMap,
+  Node,
+  Position,
+  ReactFlowInstance,
+} from "reactflow";
 import type { GraphEdge, GraphNode } from "../types";
 import { layoutDagre } from "../graphLayout";
 
@@ -70,12 +80,21 @@ export default function TaskGraph(props: {
 }) {
   const nodeById = useMemo(() => new Map(props.nodes.map((n) => [n.task_id, n])), [props.nodes]);
 
-  const rfNodes: Node[] = useMemo(() => {
+  const topologyKey = useMemo(() => {
+    const nodeIds = props.nodes.map((n) => n.task_id).sort().join(",");
+    const edges = props.edges
+      .map((e) => `${e.from_task_id}>${e.to_task_id}:${e.edge_type}`)
+      .sort()
+      .join("|");
+    return `${nodeIds}::${edges}`;
+  }, [props.nodes, props.edges]);
+
+  const mkRfNodes = (positions?: Map<string, { x: number; y: number }>): Node[] => {
     return props.nodes.map((n) => ({
       id: n.task_id,
       type: "task",
       data: { label: n.title, status: n.status, color: statusColor(n.status), isRunning: n.is_running },
-      position: { x: 0, y: 0 },
+      position: positions?.get(n.task_id) ?? { x: 0, y: 0 },
       style: {
         border: n.is_running ? "2px solid #fbbf24" : "1px solid #334155",
         borderRadius: 10,
@@ -86,9 +105,9 @@ export default function TaskGraph(props: {
       },
       className: "taskNode",
     }));
-  }, [props.nodes]);
+  };
 
-  const rfEdges: Edge[] = useMemo(() => {
+  const mkRfEdges = (): Edge[] => {
     return props.edges.map((e) => ({
       id: e.edge_id,
       source: e.from_task_id,
@@ -107,16 +126,57 @@ export default function TaskGraph(props: {
       labelBgPadding: [4, 2],
       labelBgBorderRadius: 6,
     }));
-  }, [props.edges]);
+  };
 
-  const { nodes: laidNodes, edges: laidEdges } = useMemo(() => layoutDagre(rfNodes, rfEdges, "TB"), [rfNodes, rfEdges]);
+  const [laidNodes, setLaidNodes] = useState<Node[]>(() => []);
+  const [laidEdges, setLaidEdges] = useState<Edge[]>(() => []);
+  const rfRef = useRef<ReactFlowInstance | null>(null);
+  const [needsFitView, setNeedsFitView] = useState(false);
+
+  useEffect(() => {
+    // Topology changed (new nodes/edges): compute a fresh layout and fit view once.
+    const rfNodes = mkRfNodes();
+    const rfEdges = mkRfEdges();
+    const laid = layoutDagre(rfNodes, rfEdges, "TB");
+    setLaidNodes(laid.nodes);
+    setLaidEdges(laid.edges);
+    setNeedsFitView(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topologyKey]);
+
+  useEffect(() => {
+    // Status-only update: keep existing positions and avoid re-layout.
+    if (!laidNodes.length) return;
+    const pos = new Map<string, { x: number; y: number }>();
+    for (const n of laidNodes) pos.set(n.id, { x: n.position.x, y: n.position.y });
+    setLaidNodes(mkRfNodes(pos));
+    // edges rarely need style changes without topology changes, but keep in sync for safety
+    setLaidEdges(mkRfEdges());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.nodes]);
+
+  useEffect(() => {
+    if (!needsFitView) return;
+    const inst = rfRef.current;
+    if (!inst) return;
+    try {
+      inst.fitView({ padding: 0.2 });
+    } catch {
+      // ignore
+    }
+    setNeedsFitView(false);
+  }, [needsFitView]);
 
   return (
     <div className="graph">
       <ReactFlow
         nodes={laidNodes}
         edges={laidEdges}
-        fitView
+        onInit={(inst) => {
+          rfRef.current = inst;
+          // Fit view after first init when layout is ready.
+          setNeedsFitView(true);
+        }}
         onNodeClick={(_, node) => props.onSelectNode(node.id)}
         nodeTypes={NODE_TYPES}
         zoomOnScroll

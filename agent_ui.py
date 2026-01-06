@@ -530,7 +530,7 @@ class App(tk.Tk):
 
         self._out = scrolledtext.ScrolledText(out_frame, height=20, wrap="word")
         self._out.pack(fill=BOTH, expand=True)
-        self._out.insert(END, f"Using interpreter: {sys.executable}\n")
+        self._out.insert(END, f"Using interpreter: {self._python_executable()}\n")
         self._out.insert(END, f"agent_cli.py: {AGENT_CLI}\n\n")
 
     def _pick_db(self) -> None:
@@ -647,8 +647,19 @@ class App(tk.Tk):
     def _base_argv(self) -> list[str]:
         if not AGENT_CLI.exists():
             raise RuntimeError(f"Missing {AGENT_CLI}")
-        argv = [sys.executable, str(AGENT_CLI), "--db", self._db_path_var.get().strip()]
+        argv = [self._python_executable(), str(AGENT_CLI), "--db", self._db_path_var.get().strip()]
         return argv
+
+    def _python_executable(self) -> str:
+        try:
+            from core.runtime_config import get_runtime_config
+
+            v = str(get_runtime_config().python_executable or "").strip()
+            if v:
+                return v
+        except Exception:
+            pass
+        return sys.executable
 
     def _cmd_create_plan(self) -> None:
         top_task = self._top_task_var.get().strip()

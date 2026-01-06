@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple, Any
 
 from core.events import emit_event
 from core.util import utc_now_iso
+from core.state_machine.task_status import transition_task_status
 import config
 
 
@@ -206,31 +207,15 @@ def _deps_satisfied(conn: sqlite3.Connection, plan_id: str, task_id: str) -> boo
 
 
 def _set_status(conn: sqlite3.Connection, *, plan_id: str, task_id: str, status: str, blocked_reason: Optional[str]) -> None:
-    now = utc_now_iso()
-    row = conn.execute("SELECT status FROM task_nodes WHERE task_id = ?", (task_id,)).fetchone()
-    before = str(row["status"]) if row and row["status"] is not None else None
-    conn.execute(
-        "UPDATE task_nodes SET status = ?, blocked_reason = ?, updated_at = ? WHERE task_id = ?",
-        (status, blocked_reason, now, task_id),
+    transition_task_status(
+        conn,
+        plan_id=plan_id,
+        task_id=task_id,
+        to_status=str(status),
+        blocked_reason=blocked_reason,
+        workflow="RUN",
+        source="readiness",
     )
-    emit_event(conn, plan_id=plan_id, task_id=task_id, event_type="STATUS_CHANGED", payload={"status": status, "blocked_reason": blocked_reason})
-    try:
-        from core.audit_log import log_audit
-
-        log_audit(
-            conn,
-            category="STATUS_CHANGED",
-            action="TASK_STATUS_CHANGED",
-            message=f"Task status changed: {before or '-'} -> {status}",
-            plan_id=plan_id,
-            task_id=task_id,
-            status_before=before,
-            status_after=status,
-            ok=True,
-            payload={"blocked_reason": blocked_reason, "source": "readiness"},
-        )
-    except Exception:
-        pass
 
 
 def _set_active_branch(conn: sqlite3.Connection, *, plan_id: str, task_id: str, active_branch: int, reason: str) -> None:

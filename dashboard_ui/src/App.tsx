@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
-import type { ConfigResp, CreatePlanJobResp, GraphNode, GraphV1, PlansResp, PlanSnapshotResp } from "./types";
+import type { ConfigResp, GraphNode, PlansResp } from "./types";
 import ControlPanel from "./components/ControlPanel";
 import TaskGraph from "./components/TaskGraph";
 import NodeDetails from "./components/NodeDetails";
@@ -9,22 +9,30 @@ import LLMCallDetails from "./components/LLMCallDetails";
 import ReviewSuggestionsPanel from "./components/ReviewSuggestionsPanel";
 import ErrorAnalysisPage from "./components/ErrorAnalysisPage";
 import AuditLogPage from "./components/AuditLogPage";
-import type { WorkflowResp } from "./types";
+import { usePlanData } from "./hooks/usePlanData";
+import { useWorkflowData } from "./hooks/useWorkflowData";
+import { useCreatePlanJob } from "./hooks/useCreatePlanJob";
 
 export default function App() {
   const [config, setConfig] = useState<ConfigResp | null>(null);
   const [plans, setPlans] = useState<PlansResp["plans"]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [autoSelectPlanFromJob, setAutoSelectPlanFromJob] = useState<boolean>(false);
-  const [graph, setGraph] = useState<GraphV1 | null>(null);
-  const [snapshot, setSnapshot] = useState<PlanSnapshotResp | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [topTask, setTopTask] = useState<string>("");
   const [logText, setLogText] = useState<string>("");
   const [createPlanJobId, setCreatePlanJobId] = useState<string | null>(() => localStorage.getItem("create_plan_job_id"));
-  const [createPlanJob, setCreatePlanJob] = useState<CreatePlanJobResp | null>(null);
+  const createPlanJobState = useCreatePlanJob({
+    jobId: createPlanJobId,
+    enabled: Boolean(createPlanJobId),
+    pollMs: 800,
+    onJobNotFound: () => {
+      setCreatePlanJobId(null);
+      localStorage.removeItem("create_plan_job_id");
+    },
+  });
+  const createPlanJob = createPlanJobState.data;
   const [viewMode, setViewMode] = useState<"TASK" | "WORKFLOW" | "ERROR_ANALYSIS" | "AUDIT_LOG">("TASK");
-  const [workflow, setWorkflow] = useState<WorkflowResp | null>(null);
   const [selectedLlmCallId, setSelectedLlmCallId] = useState<string | null>(null);
   const [workflowScopes, setWorkflowScopes] = useState<string>("PLAN_RUBRIC,PLAN_GEN,PLAN_REVIEW");
   const [workflowAgent, setWorkflowAgent] = useState<string>("");
@@ -46,6 +54,19 @@ export default function App() {
     setLogText((prev) => (prev ? prev + "\n\n" + s : s));
   }
 
+  const planData = usePlanData(selectedPlanId, { enabled: Boolean(selectedPlanId), pollMs: viewMode === "TASK" ? 2000 : null });
+  const workflowState = useWorkflowData({
+    enabled: viewMode === "WORKFLOW",
+    pollMs: 1200,
+    createPlanJobId,
+    createPlanRunning: createPlanJob?.status === "RUNNING",
+    selectedPlanId,
+    selectedTopTaskHash,
+    scopes: workflowScopes,
+    agent: workflowAgent,
+    onlyErrors: workflowOnlyErrors,
+  });
+
   async function refresh() {
     const [cfg, pls] = await Promise.all([api.getConfig(), api.getPlans()]);
     setConfig(cfg);
@@ -57,18 +78,7 @@ export default function App() {
           ? pls.plans[0].plan_id
           : null;
     setSelectedPlanId(pid);
-    if (pid) {
-      const [g, snap] = await Promise.all([api.getGraph(pid), api.getPlanSnapshot(pid)]);
-      setGraph(g);
-      setSnapshot(snap);
-      if (selectedTaskId && !g.nodes.find((n) => n.task_id === selectedTaskId)) {
-        setSelectedTaskId(null);
-      }
-    } else {
-      setGraph(null);
-      setSnapshot(null);
-      setSelectedTaskId(null);
-    }
+    if (!pid) setSelectedTaskId(null);
   }
 
   useEffect(() => {
@@ -76,114 +86,38 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // polling: lightweight graph+snapshot refresh (UI-only; SSOT for explanations is snapshot)
-  // Note: Task Graph auto-refresh is intentionally disabled (manual refresh button) to avoid
-  // interrupting user interactions like node clicking/dragging/zooming.
-
-  useEffect(() => {
-    if (viewMode !== "WORKFLOW") return;
-    const t = setInterval(() => {
-      // When create-plan is running, follow its workflow only if the user hasn't switched to a different plan.
-      const followJob = createPlanJob?.status === "RUNNING" && (!selectedPlanId || selectedPlanId === createPlanJob?.plan_id);
-      const pidFallback = followJob ? undefined : selectedPlanId ?? undefined;
-      const topHash = followJob ? undefined : selectedTopTaskHash ?? undefined;
-      (async () => {
-        try {
-          if (followJob && createPlanJobId) {
-            const w = await api.getWorkflow({
-              job_id: createPlanJobId,
-              plan_id_missing: false,
-              scopes: workflowScopes.trim() ? workflowScopes : undefined,
-              agent: workflowAgent.trim() ? workflowAgent : undefined,
-              only_errors: workflowOnlyErrors,
-              limit: 200,
-            });
-            setWorkflow(w);
-            return;
-          }
-
-          if (topHash) {
-            const w = await api.getWorkflow({
-              top_task_hash: topHash,
-              plan_id_missing: false,
-              scopes: workflowScopes.trim() ? workflowScopes : undefined,
-              agent: workflowAgent.trim() ? workflowAgent : undefined,
-              only_errors: workflowOnlyErrors,
-              limit: 200,
-            });
-            // If there's no plan_id selected, still set an empty workflow so UI doesn't hang on "loading".
-            // If there is a selected plan_id, we can fallback to that for a more targeted view.
-            if (!pidFallback) {
-              setWorkflow(w);
-              return;
-            }
-            if ((w.returned_rows ?? w.nodes.length) > 0) {
-              setWorkflow(w);
-              return;
-            }
-          }
-
-          if (pidFallback) {
-            const w2 = await api.getWorkflow({
-              plan_id: pidFallback,
-              plan_id_missing: false,
-              scopes: workflowScopes.trim() ? workflowScopes : undefined,
-              agent: workflowAgent.trim() ? workflowAgent : undefined,
-              only_errors: workflowOnlyErrors,
-              limit: 200,
-            });
-            setWorkflow(w2);
-          }
-        } catch {
-          // ignore
-        }
-      })();
-    }, 1200);
-    return () => clearInterval(t);
-  }, [viewMode, selectedPlanId, createPlanJob?.status, createPlanJob?.plan_id, workflowScopes, workflowAgent, workflowOnlyErrors]);
+  // Polling moved to hooks (usePlanData/useWorkflowData). TaskGraph no longer re-layouts on status-only updates.
 
   useEffect(() => {
     if (!createPlanJobId) return;
     localStorage.setItem("create_plan_job_id", createPlanJobId);
-    const t = setInterval(() => {
-      api
-        .getJob(createPlanJobId)
-        .then((j) => {
-          setCreatePlanJob(j);
-          // Auto switch to the plan when done and plan_id is known.
-          if (autoSelectPlanFromJob && j.status !== "RUNNING" && j.plan_id) {
-            setSelectedPlanId(j.plan_id);
-            setAutoSelectPlanFromJob(false);
-          }
-        })
-        .catch((e) => {
-          const msg = String(e);
-          log(msg);
-          setCreatePlanJob(null);
-          // If backend says job not found (state overwritten / cleared), stop polling and let user start again.
-          if (msg.includes("404") || msg.toLowerCase().includes("job not found")) {
-            setCreatePlanJobId(null);
-            localStorage.removeItem("create_plan_job_id");
-          }
-        });
-    }, 800);
-    return () => clearInterval(t);
-  }, [createPlanJobId, autoSelectPlanFromJob]);
+  }, [createPlanJobId]);
 
   useEffect(() => {
-    if (!selectedPlanId) return;
-    Promise.all([api.getGraph(selectedPlanId), api.getPlanSnapshot(selectedPlanId)])
-      .then(([g, snap]) => {
-        setGraph(g);
-        setSnapshot(snap);
-      })
-      .catch((e) => log(String(e)));
-  }, [selectedPlanId]);
+    const j = createPlanJob;
+    if (!autoSelectPlanFromJob || !j) return;
+    if (j.status !== "RUNNING" && j.plan_id) {
+      setSelectedPlanId(j.plan_id);
+      setAutoSelectPlanFromJob(false);
+    }
+  }, [autoSelectPlanFromJob, createPlanJob]);
+
+  useEffect(() => {
+    const g = planData.data?.graph;
+    if (!g) return;
+    if (selectedTaskId && !g.nodes.find((n) => n.task_id === selectedTaskId)) {
+      setSelectedTaskId(null);
+    }
+  }, [planData.data?.graph, selectedTaskId]);
 
   const selectedNode: GraphNode | null = useMemo(() => {
-    if (!graph || !selectedTaskId) return null;
-    return graph.nodes.find((n) => n.task_id === selectedTaskId) ?? null;
-  }, [graph, selectedTaskId]);
+    const g = planData.data?.graph;
+    if (!g || !selectedTaskId) return null;
+    return g.nodes.find((n) => n.task_id === selectedTaskId) ?? null;
+  }, [planData.data?.graph, selectedTaskId]);
+
+  const graph = planData.data?.graph ?? null;
+  const snapshot = planData.data?.snapshot ?? null;
 
   const headerTitle = snapshot?.plan?.title ?? graph?.plan.title ?? "No Plan";
   const headerPlanId = snapshot?.plan?.plan_id ?? graph?.plan.plan_id ?? "";
@@ -309,43 +243,31 @@ export default function App() {
               </label>
               <button
                 onClick={() => {
-                  const pid = selectedTopTaskHash ? undefined : selectedPlanId ?? undefined;
-                  (async () => {
-                    try {
-                      if (selectedTopTaskHash) {
-                        const w = await api.getWorkflow({
-                          top_task_hash: selectedTopTaskHash,
-                          scopes: workflowScopes.trim() ? workflowScopes : undefined,
-                          agent: workflowAgent.trim() ? workflowAgent : undefined,
-                          only_errors: workflowOnlyErrors,
-                          limit: 200,
-                        });
-                        if ((w.returned_rows ?? w.nodes.length) > 0) {
-                          setWorkflow(w);
-                          return;
-                        }
-                      }
-                      if (pid) {
-                        const w2 = await api.getWorkflow({
-                          plan_id: pid,
-                          scopes: workflowScopes.trim() ? workflowScopes : undefined,
-                          agent: workflowAgent.trim() ? workflowAgent : undefined,
-                          only_errors: workflowOnlyErrors,
-                          limit: 200,
-                        });
-                        setWorkflow(w2);
-                      }
-                    } catch (e) {
-                      log(String(e));
-                    }
-                  })();
+                  workflowState.refresh();
                 }}
               >
                 Refresh
               </button>
             </div>
             <div style={{ flex: 1, minHeight: 0 }}>
-              {workflow ? <LLMWorkflowGraph workflow={workflow} onSelectCall={(id) => setSelectedLlmCallId(id)} /> : <div className="muted">loading workflow...</div>}
+              {workflowState.data ? (
+                <LLMWorkflowGraph workflow={workflowState.data} onSelectCall={(id) => setSelectedLlmCallId(id)} />
+              ) : workflowState.error ? (
+                <div className="muted">
+                  workflow error: {workflowState.error}
+                  <div style={{ marginTop: 8 }}>
+                    <button
+                      onClick={() => {
+                        workflowState.refresh();
+                      }}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="muted">loading workflow...</div>
+              )}
             </div>
           </div>
         ) : (
@@ -353,10 +275,37 @@ export default function App() {
             <div className="row" style={{ gap: 8, padding: "10px 10px 0 10px" }}>
               <div style={{ fontWeight: 900 }}>Task Graph</div>
               <div className="spacer" />
-              <button onClick={() => refresh().catch((e) => log(String(e)))}>Refresh</button>
+              <button
+                onClick={() => {
+                  refresh().catch((e) => log(String(e)));
+                  planData.refresh();
+                }}
+              >
+                Refresh
+              </button>
             </div>
             <div style={{ flex: 1, minHeight: 0 }}>
-              {graph ? <TaskGraph nodes={graph.nodes} edges={graph.edges} onSelectNode={(id) => setSelectedTaskId(id)} /> : <div className="muted">no graph</div>}
+              {graph ? (
+                <TaskGraph nodes={graph.nodes} edges={graph.edges} onSelectNode={(id) => setSelectedTaskId(id)} />
+              ) : planData.error ? (
+                <div className="muted">
+                  graph error: {planData.error}
+                  <div style={{ marginTop: 8 }}>
+                    <button
+                      onClick={() => {
+                        refresh().catch((e) => log(String(e)));
+                        planData.refresh();
+                      }}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </div>
+              ) : planData.loading ? (
+                <div className="muted">loading graph...</div>
+              ) : (
+                <div className="muted">no graph</div>
+              )}
             </div>
           </div>
         )}

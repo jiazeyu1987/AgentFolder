@@ -14,21 +14,70 @@ import type {
   AuditResp,
   ResetToPlanResp,
   PlanSnapshotResp,
+  RunStatusResp,
 } from "./types";
 
-async function httpJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status} ${res.statusText}: ${text}`);
+async function _readErrorBody(res: Response): Promise<string> {
+  const ct = res.headers.get("content-type") ?? "";
+  if (ct.includes("application/json")) {
+    try {
+      const j: any = await res.json();
+      const code = j?.code ?? j?.error_code ?? j?.reason ?? null;
+      const message = j?.message ?? j?.detail ?? null;
+      if (code && message) return `${String(code)}: ${String(message)}`;
+      if (code) return String(code);
+      if (message) return String(message);
+      return JSON.stringify(j);
+    } catch {
+      // fall through to text
+    }
   }
-  return (await res.json()) as T;
+  try {
+    return (await res.text()) || "";
+  } catch {
+    return "";
+  }
+}
+
+async function httpJson<T>(
+  url: string,
+  init?: (RequestInit & { timeoutMs?: number }) | undefined,
+): Promise<T> {
+  const timeoutMs = init?.timeoutMs ?? 15_000;
+  const controller = init?.signal ? null : new AbortController();
+  const timeout = controller
+    ? setTimeout(() => {
+        try {
+          controller.abort();
+        } catch {
+          // ignore
+        }
+      }, timeoutMs)
+    : null;
+  try {
+    const res = await fetch(url, {
+      ...init,
+      signal: init?.signal ?? controller?.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+    });
+    if (!res.ok) {
+      const body = await _readErrorBody(res);
+      const suffix = body ? `: ${body}` : "";
+      throw new Error(`${res.status} ${res.statusText} (${url})${suffix}`);
+    }
+    return (await res.json()) as T;
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    if (msg.includes("AbortError") || msg.includes("aborted")) {
+      throw new Error(`REQUEST_TIMEOUT (${timeoutMs}ms) (${url})`);
+    }
+    throw e;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 export function getConfig(): Promise<ConfigResp> {
@@ -71,6 +120,16 @@ export function runStop(): Promise<unknown> {
 
 export function runOnce(): Promise<unknown> {
   return httpJson("/api/run/once", { method: "POST" });
+}
+
+export function getRunStatus(): Promise<RunStatusResp> {
+  return httpJson<RunStatusResp>("/api/run/status");
+}
+
+export function getRunStatusForPlan(planId?: string | null): Promise<RunStatusResp> {
+  if (!planId) return getRunStatus();
+  const usp = new URLSearchParams({ plan_id: String(planId) });
+  return httpJson<RunStatusResp>(`/api/run/status?${usp.toString()}`);
 }
 
 export function createPlan(topTask: string, maxAttempts: number): Promise<unknown> {

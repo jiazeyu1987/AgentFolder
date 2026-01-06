@@ -1,310 +1,522 @@
 {
-  "title": "Canvas Danmaku Shooter Game (Single File)",
-  "description": "Create a complete, single-file HTML5 Canvas shooting game (Bullet Hell) with Boss battles, configurable bullet patterns, and a power-up system.",
-  "plan": {
-    "title": "请你用 HTML5 Canvas + 原生 JavaScript 实现一个“打飞机 / 弹幕射击”小游戏，要求一个 HTML 文件即可运行，复制到浏览器就能玩。",
-    "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-    "root_task_id": "46cf13b3-4bb3-47f4-90fe-9b6f660ba363",
-    "created_at": "2026-01-05T07:43:56Z",
-    "owner_agent_id": "xiaobo",
-    "constraints": {
-      "deadline": null,
-      "priority": "HIGH"
-    }
-  },
+  "title": "Canvas 2D 弹幕射击游戏 (细化架构版)",
+  "description": "实现单文件 HTML5 Canvas 弹幕射击游戏。本计划针对弹幕系统和道具系统进行了细化拆解，确保每种模式和效果都有独立的实现与验收节点，便于精确构建和验证。",
+  "requirements": [],
   "nodes": [
     {
-      "task_id": "46cf13b3-4bb3-47f4-90fe-9b6f660ba363",
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "node_type": "GOAL",
+      "task_id": "59f9c053-1dfe-49a9-bedb-85370257f162",
+      "type": "GOAL",
       "title": "Root Task",
       "goal_statement": "请你用 HTML5 Canvas + 原生 JavaScript 实现一个“打飞机 / 弹幕射击”小游戏，要求一个 HTML 文件即可运行，复制到浏览器就能玩。",
-      "rationale": "Autocreated placeholder node for referential integrity.",
+      "deliverable_spec": {
+        "type": "GOAL",
+        "acceptance_criteria": "交付单个 HTML 文件，包含所有 CSS/JS 逻辑，无外部依赖，功能完整（含 UI、操作、BOSS、道具），代码结构模块化。"
+      },
+      "node_type": "GOAL",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "owner_agent_id": "xiaobo",
       "priority": 0,
       "tags": [
-        "autofix",
-        "placeholder"
+        "root"
       ]
     },
     {
-      "task_id": "4d6a62e7-0119-470b-97ea-3d07ed70180f",
+      "task_id": "69f64a51-7644-4f4b-85a3-ecfdaf2d22f0",
       "type": "ACTION",
-      "title": "Initialize Game Engine & Canvas",
-      "description": "Set up the HTML skeleton, Canvas context, RequestAnimationFrame loop, and global configuration (screen size, game state constants).",
+      "title": "Core Game Loop & Class Structure",
+      "description": "创建 game.html 基础结构。定义全局 CONSTANTS，初始化 Canvas、主循环及 Game State。建立 Player, Enemy, Boss, Bullet, PowerUp 的空类结构。",
+      "acceptance_criteria": "HTML 框架完成，CONSTANTS 定义，五大核心类骨架存在。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
       "node_type": "ACTION",
-      "deliverables": [
-        {
-          "name": "engine_core",
-          "description": "Canvas initialization, Loop logic (update/draw), Input handling (Keys state).",
-          "acceptance_criteria": [
-            "Canvas fills window or fixed 800x600",
-            "Input listener tracks Arrow keys/WASD/Space",
-            "Loop uses requestAnimationFrame"
-          ]
-        }
-      ],
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "owner_agent_id": "xiaobo",
       "priority": 1,
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "tags": []
+      "tags": [
+        "core",
+        "arch"
+      ]
     },
     {
-      "task_id": "a011efe1-6471-444d-98e9-a9041be32d89",
+      "task_id": "d0e4d322-b77e-4824-8bb3-8b4baf28d025",
       "type": "ACTION",
-      "title": "Implement Player Class",
-      "description": "Create Player entity with movement, stats (HP, score), weapon state, and rendering logic (triangle/shape).",
+      "title": "Implement Player Module",
+      "description": "实现 Player 类：移动、自动射击、无敌帧、生命值管理。",
+      "acceptance_criteria": "玩家飞机控制流畅，发射子弹，受击有无敌闪烁。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
       "node_type": "ACTION",
-      "deliverables": [
-        {
-          "name": "player_entity",
-          "description": "Player class with movement clamping, shooting timer, and weapon switching logic.",
-          "acceptance_criteria": [
-            "Player stays within screen bounds",
-            "Draws distinct color/shape",
-            "Invulnerability toggle implemented"
-          ]
-        }
-      ],
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "owner_agent_id": "xiaobo",
       "priority": 2,
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "tags": []
+      "tags": [
+        "player",
+        "js"
+      ]
     },
     {
-      "task_id": "1af7b002-2855-4cb8-8b24-27956fd256d0",
+      "task_id": "fd422863-9e9c-479e-853b-db7c64833926",
       "type": "ACTION",
-      "title": "Implement Enemy System",
-      "description": "Implement basic Enemy class (linear movement) and Enemy Spawner (timer-based, difficulty scaling).",
+      "title": "Implement Enemy & Bullet Modules",
+      "description": "实现 Enemy 类和 Bullet 类。包含敌机生成、移动、绘制及基础碰撞检测。",
+      "acceptance_criteria": "敌机下落，子弹飞行，碰撞检测有效。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
       "node_type": "ACTION",
-      "deliverables": [
-        {
-          "name": "enemy_system",
-          "description": "Enemy class and Spawner manager.",
-          "acceptance_criteria": [
-            "Enemies spawn at random X at top",
-            "Move downwards",
-            "Despawn when off-screen"
-          ]
-        }
-      ],
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "owner_agent_id": "xiaobo",
       "priority": 3,
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "tags": []
+      "tags": [
+        "enemy",
+        "js"
+      ]
     },
     {
-      "task_id": "e7db3817-df66-42e0-941c-80edc91d3791",
+      "task_id": "58fd25ac-6af0-4585-a6a7-6f168c06fad1",
       "type": "ACTION",
-      "title": "Implement Bullet Hell Patterns",
-      "description": "Create the configurable Bullet system and the 4 specific Boss patterns (Spiral, Burst, Aim, Ring).",
+      "title": "Implement Boss Base & State Machine",
+      "description": "实现 Boss 基础类。包含 BOSS 状态机（闲置、入场、战斗、死亡）、血量管理、基础移动逻辑及血条 UI 渲染。预留弹幕发射接口。",
+      "acceptance_criteria": "Boss 能够出现、显示血条、移动并在被击败时触发死亡逻辑。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
       "node_type": "ACTION",
-      "deliverables": [
-        {
-          "name": "bullet_patterns",
-          "description": "Bullet class + Pattern generators.",
-          "acceptance_criteria": [
-            "Pattern: Spiral (rotating angle)",
-            "Pattern: Burst (spread)",
-            "Pattern: Aim (at player)",
-            "Pattern: Ring (circle)"
-          ]
-        }
-      ],
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "owner_agent_id": "xiaobo",
       "priority": 4,
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "tags": []
+      "tags": [
+        "boss",
+        "js"
+      ]
     },
     {
-      "task_id": "edf76358-214c-4caa-bbf9-a38e71ea4a95",
+      "task_id": "f5db5573-c241-4bad-9aa6-72f65344dda8",
       "type": "ACTION",
-      "title": "Implement Boss Entity",
-      "description": "Create Boss class with high HP, movement logic (sine wave/hover), and state machine to cycle through the 4 Danmaku patterns.",
+      "title": "Implement Danmaku: Fan",
+      "description": "实现扇形弹幕模式。基于向量旋转数学，在 Boss 正前方扇形区域内生成 7-15 发子弹。",
+      "acceptance_criteria": "Boss 发射的子弹呈现清晰的扇形扩散分布。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
       "node_type": "ACTION",
-      "deliverables": [
-        {
-          "name": "boss_entity",
-          "description": "Boss class with HP bar and pattern invoker.",
-          "acceptance_criteria": [
-            "Boss appears after timer/score",
-            "Cycles through patterns defined in node 04",
-            "Has visible HP bar",
-            "Boss HP Pool defined and managed (e.g. large value)"
-          ]
-        }
-      ],
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "owner_agent_id": "xiaobo",
       "priority": 5,
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "bindings": [
-        "bullet_patterns"
-      ],
-      "tags": []
+      "tags": [
+        "danmaku",
+        "js"
+      ]
     },
     {
-      "task_id": "179e6511-11ed-4964-90ac-aa86a87a34d8",
+      "task_id": "cf588c08-9618-4f28-a870-46e9b3a95915",
       "type": "ACTION",
-      "title": "Implement Collision & Powerups",
-      "description": "Implement Circle/Rectangle collision detection for Player vs Enemy/Bullet and Player vs Powerup. Define Powerup types (Apple, Chicken, Grape, Lemon) and their effects.",
+      "title": "Implement Danmaku: Ring",
+      "description": "实现环形弹幕模式。基于 360 度圆周等分，生成向外扩散的全向子弹环。",
+      "acceptance_criteria": "Boss 发射的子弹形成均匀的圆形环。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
       "node_type": "ACTION",
-      "deliverables": [
-        {
-          "name": "collision_system",
-          "description": "Collision resolver and Powerup class.",
-          "acceptance_criteria": [
-            "Player takes damage/hit enemy",
-            "Powerup Apple (🍎) triggers Triple Shot",
-            "Powerup Chicken (🍗) triggers Spread Shot (5-9 bullets)",
-            "Powerup Grape (🍇) triggers Piercing Shot (penetrates 2-3 enemies)",
-            "Powerup Lemon (🍋) triggers Laser/Beam (high damage beam)",
-            "Items have timeout timers (e.g. 8s)"
-          ]
-        }
-      ],
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "owner_agent_id": "xiaobo",
+      "priority": 5,
+      "tags": [
+        "danmaku",
+        "js"
+      ]
+    },
+    {
+      "task_id": "14f78463-fe39-4d76-9518-3b2c015122ef",
+      "type": "ACTION",
+      "title": "Implement Danmaku: Spiral",
+      "description": "实现螺旋弹幕模式。基于时间（帧数）递增发射角度，形成连续旋转的螺旋轨迹。",
+      "acceptance_criteria": "子弹呈现顺滑的螺旋形轨迹。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
+      "node_type": "ACTION",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "owner_agent_id": "xiaobo",
+      "priority": 5,
+      "tags": [
+        "danmaku",
+        "js"
+      ]
+    },
+    {
+      "task_id": "eb106fc3-d8f6-4d03-b409-22815f880f30",
+      "type": "ACTION",
+      "title": "Implement Danmaku: Tracking",
+      "description": "实现追踪弹幕模式。计算 Boss 指向 Player 的向量（使用 atan2），生成朝向玩家位置飞行的子弹，并可限制转向能力。",
+      "acceptance_criteria": "子弹能够朝玩家当前方向发射或追踪。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
+      "node_type": "ACTION",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "owner_agent_id": "xiaobo",
+      "priority": 5,
+      "tags": [
+        "danmaku",
+        "js"
+      ]
+    },
+    {
+      "task_id": "ebf0b805-6cdf-410d-9af6-d0c1ad8d3123",
+      "type": "ACTION",
+      "title": "Implement PowerUp Base Logic",
+      "description": "实现 PowerUp 类基础逻辑：随机掉落、移动、碰撞拾取。定义武器状态管理接口（计时器、当前激活效果）。",
+      "acceptance_criteria": "敌机/BOSS 掉落道具，玩家拾取后触发状态变化。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
+      "node_type": "ACTION",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "owner_agent_id": "xiaobo",
       "priority": 6,
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "bindings": [
-        "player_entity",
-        "enemy_system",
-        "bullet_patterns"
-      ],
-      "tags": []
+      "tags": [
+        "powerup",
+        "js"
+      ]
     },
     {
-      "task_id": "e5eec5e9-94f2-4843-9552-faeea7a99727",
+      "task_id": "b2b63c0f-5167-4b44-b622-e6d261822635",
       "type": "ACTION",
-      "title": "Implement FX & UI State",
-      "description": "Implement Particle system (explosions), Screen shake, and UI rendering (Score, HP, Game Over/Start screens).",
+      "title": "Implement PowerUp: Apple (Triple Shot)",
+      "description": "实现 🍎 苹果道具效果：三连发（前方 3 发，略微散开）。",
+      "acceptance_criteria": "拾取苹果后，玩家子弹变为 3 发平行/散射流。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
       "node_type": "ACTION",
-      "deliverables": [
-        {
-          "name": "fx_and_ui",
-          "description": "Particle manager and UI overlay renderer.",
-          "acceptance_criteria": [
-            "Particles spawn on destroy",
-            "Game Over screen allows restart",
-            "HUD updates live"
-          ]
-        }
-      ],
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "owner_agent_id": "xiaobo",
       "priority": 7,
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "bindings": [
-        "player_entity",
-        "boss_entity"
-      ],
-      "tags": []
+      "tags": [
+        "powerup",
+        "js"
+      ]
     },
     {
-      "task_id": "94ed09fc-6f57-4f33-b3d4-4c822a252495",
+      "task_id": "ab3de119-eb8f-48d2-a750-9a1d8e059064",
       "type": "ACTION",
-      "title": "Integrate & Generate HTML",
-      "description": "Integrate all modules (Engine, Player, Enemy, Boss, Patterns, Collision, FX) into the final single HTML file artifact.",
+      "title": "Implement PowerUp: Chicken (Shotgun)",
+      "description": "实现 🍗 鸡腿道具效果：散射霰弹（5-9 发大角度散射）。",
+      "acceptance_criteria": "拾取鸡腿后，玩家发射大范围扇形霰弹。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
       "node_type": "ACTION",
-      "deliverables": [
-        {
-          "name": "game.html",
-          "description": "A self-contained HTML file. Opening it in a browser launches the game.",
-          "acceptance_criteria": [
-            "File starts with <!DOCTYPE html>",
-            "Contains internal <style> block",
-            "Contains internal <script> block with game classes (Player, Enemy, Boss, Bullet, PowerUp, Game, Particle)",
-            "No external dependencies (CDN links or scripts)"
-          ]
-        }
-      ],
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "owner_agent_id": "xiaobo",
+      "priority": 7,
+      "tags": [
+        "powerup",
+        "js"
+      ]
+    },
+    {
+      "task_id": "aacc86a8-2ff0-4165-9aa2-d31673fc08f9",
+      "type": "ACTION",
+      "title": "Implement PowerUp: Grape (Piercing)",
+      "description": "实现 🍇 葡萄道具效果：穿透弹（击中敌机不消失，可穿透 2-3 个敌人）。",
+      "acceptance_criteria": "拾取葡萄后，子弹具有穿透特性，一次攻击可命中多个敌人。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
+      "node_type": "ACTION",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "owner_agent_id": "xiaobo",
+      "priority": 7,
+      "tags": [
+        "powerup",
+        "js"
+      ]
+    },
+    {
+      "task_id": "2961138a-e5b5-4efd-ab52-a273304dbde4",
+      "type": "ACTION",
+      "title": "Implement PowerUp: Lemon (Laser)",
+      "description": "实现 🍋 柠檬道具效果：激光/光束（短持续高伤害光束）。",
+      "acceptance_criteria": "拾取柠檬后，发射持续光束，命中期间造成持续伤害。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
+      "node_type": "ACTION",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "owner_agent_id": "xiaobo",
+      "priority": 7,
+      "tags": [
+        "powerup",
+        "js"
+      ]
+    },
+    {
+      "task_id": "3e65949d-6c8f-4ba4-bc55-f1425a1c2fb9",
+      "type": "ACTION",
+      "title": "Integration, Polish & QA",
+      "description": "集成 Boss 弹幕模式循环与 PowerUp 系统到主循环。完善视觉效果（粒子、CSS）。数值平衡。",
+      "acceptance_criteria": "Boss 完整运行，4 种弹幕循环触发；4 种道具效果明确；游戏手感顺滑。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "html",
+        "content_path": "game.html"
+      },
+      "node_type": "ACTION",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "owner_agent_id": "xiaobo",
       "priority": 8,
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "bindings": [
-        "engine_core",
-        "player_entity",
-        "enemy_system",
-        "boss_entity",
-        "collision_system",
-        "fx_and_ui"
-      ],
-      "tags": []
+      "tags": [
+        "qa",
+        "css"
+      ]
+    },
+    {
+      "task_id": "efe753f9-e37b-4535-b491-6a201ed1f3f9",
+      "type": "ACTION",
+      "title": "Generate README",
+      "description": "生成 README.md 文档，说明玩法、按键及架构特性。",
+      "acceptance_criteria": "文档清晰易懂。",
+      "deliverable_spec": {
+        "type": "ARTIFACT",
+        "format": "md",
+        "content_path": "README.md"
+      },
+      "node_type": "ACTION",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "owner_agent_id": "xiaobo",
+      "priority": 9,
+      "tags": [
+        "doc"
+      ]
     }
   ],
   "edges": [
     {
-      "edge_id": "e09bc3b8-968b-4544-9f05-22e158085937",
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "from_task_id": "46cf13b3-4bb3-47f4-90fe-9b6f660ba363",
-      "to_task_id": "4d6a62e7-0119-470b-97ea-3d07ed70180f",
+      "edge_id": "e74a2a31-33ea-406d-8339-5ea0516ca02c",
+      "from_task_id": "59f9c053-1dfe-49a9-bedb-85370257f162",
+      "to_task_id": "69f64a51-7644-4f4b-85a3-ecfdaf2d22f0",
       "edge_type": "DECOMPOSE",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "metadata": {
         "and_or": "AND"
       }
     },
     {
-      "edge_id": "1677db19-9576-4c4f-a00e-b179e61501b4",
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "from_task_id": "4d6a62e7-0119-470b-97ea-3d07ed70180f",
-      "to_task_id": "a011efe1-6471-444d-98e9-a9041be32d89",
+      "edge_id": "bfb5a952-3ed2-4019-8ebe-e8bbb990f962",
+      "from_task_id": "69f64a51-7644-4f4b-85a3-ecfdaf2d22f0",
+      "to_task_id": "d0e4d322-b77e-4824-8bb3-8b4baf28d025",
       "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "metadata": {}
     },
     {
-      "edge_id": "e902a7ef-78d3-4446-a6e4-d35ca405c209",
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "from_task_id": "4d6a62e7-0119-470b-97ea-3d07ed70180f",
-      "to_task_id": "1af7b002-2855-4cb8-8b24-27956fd256d0",
+      "edge_id": "83dc144d-67bb-4b1d-9142-18df70bb3200",
+      "from_task_id": "d0e4d322-b77e-4824-8bb3-8b4baf28d025",
+      "to_task_id": "fd422863-9e9c-479e-853b-db7c64833926",
       "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "metadata": {}
     },
     {
-      "edge_id": "a55aae2c-1166-4d07-b06b-546c1f2cf117",
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "from_task_id": "4d6a62e7-0119-470b-97ea-3d07ed70180f",
-      "to_task_id": "e7db3817-df66-42e0-941c-80edc91d3791",
+      "edge_id": "4b4b75ee-95e7-4da3-a8a9-dca26f389667",
+      "from_task_id": "69f64a51-7644-4f4b-85a3-ecfdaf2d22f0",
+      "to_task_id": "58fd25ac-6af0-4585-a6a7-6f168c06fad1",
       "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "metadata": {}
     },
     {
-      "edge_id": "2f2e8c94-7983-4c80-891e-fdd5bf3f5934",
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "from_task_id": "e7db3817-df66-42e0-941c-80edc91d3791",
-      "to_task_id": "edf76358-214c-4caa-bbf9-a38e71ea4a95",
+      "edge_id": "3796c667-fc71-4d78-bcdd-816bdc1717d4",
+      "from_task_id": "fd422863-9e9c-479e-853b-db7c64833926",
+      "to_task_id": "58fd25ac-6af0-4585-a6a7-6f168c06fad1",
       "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "metadata": {}
     },
     {
-      "edge_id": "bf0e07ee-3e9f-463d-9c7e-360a0d13fec2",
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "from_task_id": "a011efe1-6471-444d-98e9-a9041be32d89",
-      "to_task_id": "179e6511-11ed-4964-90ac-aa86a87a34d8",
+      "edge_id": "d49f9856-1e30-4b73-8b9e-76c4241d367b",
+      "from_task_id": "58fd25ac-6af0-4585-a6a7-6f168c06fad1",
+      "to_task_id": "f5db5573-c241-4bad-9aa6-72f65344dda8",
       "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "metadata": {}
     },
     {
-      "edge_id": "619c67b5-867d-40e4-b5b3-6405521d10b6",
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "from_task_id": "edf76358-214c-4caa-bbf9-a38e71ea4a95",
-      "to_task_id": "179e6511-11ed-4964-90ac-aa86a87a34d8",
+      "edge_id": "2d361c2b-6a9f-4159-a482-4c5a09ee4643",
+      "from_task_id": "58fd25ac-6af0-4585-a6a7-6f168c06fad1",
+      "to_task_id": "cf588c08-9618-4f28-a870-46e9b3a95915",
       "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "metadata": {}
     },
     {
-      "edge_id": "16a5debf-3d80-4a0e-8c5b-8525e85a09fc",
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "from_task_id": "179e6511-11ed-4964-90ac-aa86a87a34d8",
-      "to_task_id": "e5eec5e9-94f2-4843-9552-faeea7a99727",
+      "edge_id": "20299bfe-46da-4afa-8313-4d36b87f5458",
+      "from_task_id": "58fd25ac-6af0-4585-a6a7-6f168c06fad1",
+      "to_task_id": "14f78463-fe39-4d76-9518-3b2c015122ef",
       "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "metadata": {}
     },
     {
-      "edge_id": "45d239f3-a360-4faa-aa35-bb36b24ecaa6",
-      "plan_id": "2c6cdfe1-b699-4514-b854-4022efcdf0cc",
-      "from_task_id": "e5eec5e9-94f2-4843-9552-faeea7a99727",
-      "to_task_id": "94ed09fc-6f57-4f33-b3d4-4c822a252495",
+      "edge_id": "95435267-8ada-4824-b4af-803a9d935c33",
+      "from_task_id": "58fd25ac-6af0-4585-a6a7-6f168c06fad1",
+      "to_task_id": "eb106fc3-d8f6-4d03-b409-22815f880f30",
       "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "2f39f18b-8434-4a93-92e0-0f6fab8be2da",
+      "from_task_id": "69f64a51-7644-4f4b-85a3-ecfdaf2d22f0",
+      "to_task_id": "ebf0b805-6cdf-410d-9af6-d0c1ad8d3123",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "ee8dafeb-34b0-4dcd-8bac-512bf842dbe2",
+      "from_task_id": "ebf0b805-6cdf-410d-9af6-d0c1ad8d3123",
+      "to_task_id": "b2b63c0f-5167-4b44-b622-e6d261822635",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "c8849ac6-d348-417a-a32c-3187d3699f8e",
+      "from_task_id": "ebf0b805-6cdf-410d-9af6-d0c1ad8d3123",
+      "to_task_id": "ab3de119-eb8f-48d2-a750-9a1d8e059064",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "21ac5d06-28fe-411e-ae68-df308de63798",
+      "from_task_id": "ebf0b805-6cdf-410d-9af6-d0c1ad8d3123",
+      "to_task_id": "aacc86a8-2ff0-4165-9aa2-d31673fc08f9",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "049cb64e-2069-4a41-8d84-75941cc2f7c7",
+      "from_task_id": "ebf0b805-6cdf-410d-9af6-d0c1ad8d3123",
+      "to_task_id": "2961138a-e5b5-4efd-ab52-a273304dbde4",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "5bac9a67-c921-4b36-a749-e0e173ef3da0",
+      "from_task_id": "f5db5573-c241-4bad-9aa6-72f65344dda8",
+      "to_task_id": "3e65949d-6c8f-4ba4-bc55-f1425a1c2fb9",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "a6698824-872f-48f8-847f-f06680f7ef01",
+      "from_task_id": "cf588c08-9618-4f28-a870-46e9b3a95915",
+      "to_task_id": "3e65949d-6c8f-4ba4-bc55-f1425a1c2fb9",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "3aced89e-38f9-4599-83b7-cfcc117a1c15",
+      "from_task_id": "14f78463-fe39-4d76-9518-3b2c015122ef",
+      "to_task_id": "3e65949d-6c8f-4ba4-bc55-f1425a1c2fb9",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "503dc9d1-9698-4c2f-9eb7-5fcdf7db7996",
+      "from_task_id": "eb106fc3-d8f6-4d03-b409-22815f880f30",
+      "to_task_id": "3e65949d-6c8f-4ba4-bc55-f1425a1c2fb9",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "caf4cdf9-2d87-49d9-9d92-4734719bd090",
+      "from_task_id": "b2b63c0f-5167-4b44-b622-e6d261822635",
+      "to_task_id": "3e65949d-6c8f-4ba4-bc55-f1425a1c2fb9",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "de30a2f0-29ef-4eb4-97af-ec14ad2a278b",
+      "from_task_id": "ab3de119-eb8f-48d2-a750-9a1d8e059064",
+      "to_task_id": "3e65949d-6c8f-4ba4-bc55-f1425a1c2fb9",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "f17f1054-a198-42b4-a983-c855742c0bdc",
+      "from_task_id": "aacc86a8-2ff0-4165-9aa2-d31673fc08f9",
+      "to_task_id": "3e65949d-6c8f-4ba4-bc55-f1425a1c2fb9",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "6d5b29f8-2d7a-4627-b93a-e967340900e1",
+      "from_task_id": "2961138a-e5b5-4efd-ab52-a273304dbde4",
+      "to_task_id": "3e65949d-6c8f-4ba4-bc55-f1425a1c2fb9",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+      "metadata": {}
+    },
+    {
+      "edge_id": "9248f36d-e262-49e5-9706-e3b5bf18e416",
+      "from_task_id": "3e65949d-6c8f-4ba4-bc55-f1425a1c2fb9",
+      "to_task_id": "efe753f9-e37b-4535-b491-6a201ed1f3f9",
+      "edge_type": "DEPENDS_ON",
+      "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
       "metadata": {}
     }
   ],
-  "requirements": []
+  "plan": {
+    "title": "Canvas 2D 弹幕射击游戏 (优化版)",
+    "plan_id": "7ef84769-0f09-44d9-b3ea-eb9cc56b975e",
+    "root_task_id": "59f9c053-1dfe-49a9-bedb-85370257f162",
+    "created_at": "2026-01-05T15:40:00Z",
+    "owner_agent_id": "xiaobo",
+    "constraints": {
+      "deadline": null,
+      "priority": "HIGH"
+    }
+  }
 }

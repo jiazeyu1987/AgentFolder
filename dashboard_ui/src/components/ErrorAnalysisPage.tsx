@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
-import * as api from "../api";
-import type { CreatePlanJobResp, PromptFileResp } from "../types";
+import React, { useMemo } from "react";
+import type { CreatePlanJobResp } from "../types";
 import ErrorsPanel from "./ErrorsPanel";
+import { useCreatePlanJob } from "../hooks/useCreatePlanJob";
+import { useJobLog } from "../hooks/useJobLog";
 
 type Props = {
   jobId: string | null;
@@ -13,42 +14,13 @@ type Props = {
 };
 
 export default function ErrorAnalysisPage(props: Props) {
-  const [job, setJob] = useState<CreatePlanJobResp | null>(null);
-  const [jobLog, setJobLog] = useState<PromptFileResp | null>(null);
-  const [err, setErr] = useState<string>("");
+  const jobState = useCreatePlanJob({ jobId: props.jobId, enabled: Boolean(props.jobId), pollMs: 1500 });
+  const job = (jobState.data as CreatePlanJobResp | null) ?? null;
 
-  useEffect(() => {
-    if (!props.jobId) {
-      setJob(null);
-      setJobLog(null);
-      return;
-    }
-    let stopped = false;
-    const tick = async () => {
-      try {
-        const j = await api.getJob(props.jobId!);
-        if (stopped) return;
-        setJob(j);
-        // Only load log after job ends or if exit_code exists.
-        if (j.status !== "RUNNING" || j.exit_code != null) {
-          try {
-            const log = await api.getJobLog(props.jobId!, 200_000);
-            if (!stopped) setJobLog(log);
-          } catch (e) {
-            if (!stopped) setJobLog(null);
-          }
-        }
-      } catch (e) {
-        if (!stopped) setErr(String(e));
-      }
-    };
-    tick();
-    const t = setInterval(tick, 1500);
-    return () => {
-      stopped = true;
-      clearInterval(t);
-    };
-  }, [props.jobId]);
+  const jobLogEnabled = Boolean(props.jobId) && job != null && (job.status !== "RUNNING" || job.exit_code != null);
+  const jobLogState = useJobLog({ jobId: props.jobId, enabled: jobLogEnabled, maxChars: 200_000, key: `${props.jobId || ""}:${job?.status || ""}:${job?.exit_code ?? ""}` });
+  const jobLog = jobLogState.data;
+  const err = jobState.error || jobLogState.error || "";
 
   const effectivePlanId = useMemo(() => {
     return job?.plan_id ?? props.selectedPlanId ?? null;

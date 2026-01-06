@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,6 +22,8 @@ from core.prompts import PromptBundle, build_xiaobo_plan_prompt, build_xiaojing_
 from core.runtime_config import get_runtime_config
 from core.reviews import insert_review, write_review_json
 from core.util import ensure_dir, stable_hash_text, utc_now_iso
+from core.state_machine.task_status import transition_task_status
+from core.state_machine.plan_stage import clamp_resume_stage, decide_next_stage, normalize_stage
 
 
 class PlanWorkflowError(RuntimeError):
@@ -80,6 +84,100 @@ def _build_plan_remediation_note(review: Dict[str, Any], *, max_chars: int = 500
 
     note = "\n".join(lines).strip()
     return _limit_chars(note, max_chars=max_chars)
+
+
+def _safe_dir_name(name: str) -> str:
+    s = (name or "").strip()
+    if not s:
+        return "input"
+    s = s.replace("\\", "_").replace("/", "_").replace(":", "_")
+    return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in s)[:80] or "input"
+
+
+def _auto_seed_entry_user_file_inputs(conn: sqlite3.Connection, *, plan_id: str, top_task_text: str) -> None:
+    """
+    Auto-satisfy required USER FILE inputs for entry tasks (no DEPENDS_ON in-edges),
+    using generated files under workspace/inputs/ so the plan doesn't start with Missing Inputs.
+
+    Best-effort; must never raise.
+    """
+    try:
+        plan_id = str(plan_id or "").strip()
+        top_task_text = str(top_task_text or "").strip()
+        if not plan_id or not top_task_text:
+            return
+
+        rows_req = conn.execute(
+            """
+            SELECT
+              r.requirement_id,
+              r.task_id,
+              r.name,
+              COALESCE(r.min_count, 1) AS min_count
+            FROM input_requirements r
+            JOIN task_nodes tn ON tn.task_id = r.task_id
+            WHERE tn.plan_id = ?
+              AND tn.active_branch = 1
+              AND COALESCE(r.required, 0) = 1
+              AND r.kind = 'FILE'
+              AND r.source = 'USER'
+              AND NOT EXISTS (
+                SELECT 1 FROM task_edges e
+                WHERE e.plan_id = tn.plan_id
+                  AND e.edge_type = 'DEPENDS_ON'
+                  AND e.to_task_id = r.task_id
+              )
+            ORDER BY r.created_at ASC
+            """,
+            (plan_id,),
+        ).fetchall()
+        if not rows_req:
+            return
+
+        now = utc_now_iso()
+        for rr in rows_req:
+            rid = str(rr["requirement_id"] or "").strip()
+            req_name = str(rr["name"] or "").strip()
+            if not rid or not req_name:
+                continue
+            try:
+                min_count = int(rr["min_count"] or 1)
+            except Exception:
+                min_count = 1
+            if min_count <= 0:
+                min_count = 1
+
+            have = conn.execute("SELECT COUNT(1) FROM evidences WHERE requirement_id = ?", (rid,)).fetchone()[0]
+            try:
+                have_i = int(have or 0)
+            except Exception:
+                have_i = 0
+            if have_i >= min_count:
+                continue
+
+            dir_name = _safe_dir_name(req_name)
+            base_dir = config.INPUTS_DIR / dir_name
+            ensure_dir(base_dir)
+
+            for i in range(have_i, min_count):
+                suffix = "" if i == 0 else f"_{i+1}"
+                path = base_dir / f"top_task{suffix}.txt"
+                if not path.exists():
+                    path.write_text(top_task_text + "\n", encoding="utf-8")
+                sha = hashlib.sha256(path.read_bytes()).hexdigest()
+                ref_id = sha if i == 0 else f"{sha}:{i+1}"
+                try:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO evidences(evidence_id, requirement_id, evidence_type, ref_id, ref_path, sha256, added_at)
+                        VALUES(?, ?, 'FILE', ?, ?, ?, ?)
+                        """,
+                        (str(uuid.uuid4()), rid, ref_id, str(path), sha, now),
+                    )
+                except Exception:
+                    continue
+    except Exception:
+        return
 
 
 def _summarize_plan_review(review: Dict[str, Any]) -> str:
@@ -340,12 +438,15 @@ def generate_and_review_plan(
     review_notes = ""
 
     last_review: Dict[str, Any] = {}
+    passed_stage_reviews: Dict[str, Dict[str, Any]] = {}
     plan_id: Optional[str] = None
     if max_total_attempts is None:
         max_total_attempts = int(max_plan_attempts)
     max_total_attempts = max(1, int(max_total_attempts))
 
     attempt = 0
+    resume_stage = "STRUCTURE"
+    passed_plan_id: Optional[str] = None
     last_plan_json_for_remediation: Optional[Dict[str, Any]] = None
     last_plan_gen_call_id_for_remediation: Optional[str] = None
     last_review_call_id_for_remediation: Optional[str] = None
@@ -688,7 +789,11 @@ def generate_and_review_plan(
         prev_gen_id = last_plan_gen_call_id_for_remediation if prev_json is not None else None
         prev_review_id = last_review_call_id_for_remediation if prev_json is not None else None
 
-        _step_started("STRUCTURE_GEN", plan_id_for_event=None, payload={"attempt": int(attempt), "stage": "STRUCTURE"})
+        gen_stage = str(resume_stage or "STRUCTURE").strip().upper() or "STRUCTURE"
+        if gen_stage not in {"STRUCTURE", "BINDINGS", "EXECUTION"}:
+            gen_stage = "STRUCTURE"
+        gen_step = f"{gen_stage}_GEN"
+        _step_started(gen_step, plan_id_for_event=None, payload={"attempt": int(attempt), "stage": gen_stage})
         plan_prompt = build_xiaobo_plan_prompt(
             prompts,
             top_task=user_top_task,
@@ -703,9 +808,9 @@ def generate_and_review_plan(
         _wf(
             event_type="LLM_CALL_REQUESTED",
             severity="INFO",
-            message="STRUCTURE: PLAN_GEN request",
+            message=f"{gen_stage}: PLAN_GEN request",
             plan_id_for_event=None,
-            payload={"step": "STRUCTURE_GEN", "agent": "xiaobo", "scope": "PLAN_GEN", "attempt": int(attempt), "stage": "STRUCTURE"},
+            payload={"step": gen_step, "agent": "xiaobo", "scope": "PLAN_GEN", "attempt": int(attempt), "stage": gen_stage},
         )
         plan_res = llm.call_json(plan_prompt)
         # NOTE: plan_workflow doesn't track llm_calls budget, but we still record extra_calls in telemetry/logs via meta.
@@ -731,21 +836,21 @@ def generate_and_review_plan(
             validator_error=None,
             error_code=plan_res.error_code,
             error_message=plan_res.error,
-            meta={"attempt": attempt, "stage": "STRUCTURE", "extra_calls": int(getattr(plan_res, "extra_calls", 0)), "repair_used": bool(getattr(plan_res, "repair_used", False))},
+            meta={"attempt": attempt, "stage": gen_stage, "extra_calls": int(getattr(plan_res, "extra_calls", 0)), "repair_used": bool(getattr(plan_res, "repair_used", False))},
         )
         _flush_telemetry()
         _wf(
             event_type="LLM_CALL_RECORDED",
             severity="INFO",
-            message="STRUCTURE: PLAN_GEN recorded",
+            message=f"{gen_stage}: PLAN_GEN recorded",
             plan_id_for_event=None,
             llm_call_id=str(plan_gen_call_id),
             payload={
-                "step": "STRUCTURE_GEN",
+                "step": gen_step,
                 "agent": "xiaobo",
                 "scope": "PLAN_GEN",
                 "attempt": int(attempt),
-                "stage": "STRUCTURE",
+                "stage": gen_stage,
                 "llm_call_id": str(plan_gen_call_id),
             },
         )
@@ -768,7 +873,7 @@ def generate_and_review_plan(
                 "error": {"code": plan_res.error_code, "message": plan_res.error} if plan_res.error else None,
                 "scope": "PLAN_GENERATION",
                 "attempt": attempt,
-                "stage": "STRUCTURE",
+                "stage": gen_stage,
             },
         )
         if plan_res.error or not plan_res.parsed_json:
@@ -776,7 +881,7 @@ def generate_and_review_plan(
                 "Plan generation failed (must return valid xiaobo_plan_v1 JSON). Error:\n" + str(plan_res.error or plan_res.error_code),
                 max_chars=500,
             )
-            _step_finished("STRUCTURE_GEN", plan_id_for_event=None, ok=False, payload={"attempt": int(attempt), "stage": "STRUCTURE"})
+            _step_finished(gen_step, plan_id_for_event=None, ok=False, payload={"attempt": int(attempt), "stage": gen_stage})
             _wf(
                 event_type="DECISION_MADE",
                 severity="WARN",
@@ -784,9 +889,9 @@ def generate_and_review_plan(
                 plan_id_for_event=None,
                 llm_call_id=str(plan_gen_call_id),
                 payload={
-                    "step": "STRUCTURE_GEN",
+                    "step": gen_step,
                     "attempt": int(attempt),
-                    "stage": "STRUCTURE",
+                    "stage": gen_stage,
                     "why": "PLAN_GEN_ERROR",
                     "retry_reason": str(plan_res.error or plan_res.error_code or "")[:300],
                     "next": "NEXT_ATTEMPT" if (keep_trying or attempt < max_plan_attempts) else "STOP",
@@ -800,20 +905,20 @@ def generate_and_review_plan(
         if outer.get("schema_version") != "xiaobo_plan_v1" or not isinstance(outer.get("plan_json"), dict):
             msg = "plan generation output must be JSON with schema_version=xiaobo_plan_v1 and plan_json object"
             gen_notes = msg
-            _step_finished("STRUCTURE_GEN", plan_id_for_event=None, ok=False, payload={"attempt": int(attempt), "stage": "STRUCTURE"})
+            _step_finished(gen_step, plan_id_for_event=None, ok=False, payload={"attempt": int(attempt), "stage": gen_stage})
             _wf(
                 event_type="DECISION_MADE",
                 severity="WARN",
                 message="PLAN_GEN contract mismatch; retry attempt",
                 plan_id_for_event=None,
                 llm_call_id=str(plan_gen_call_id),
-                payload={"step": "STRUCTURE_GEN", "attempt": int(attempt), "stage": "STRUCTURE", "why": "CONTRACT_MISMATCH", "retry_reason": msg, "next": "NEXT_ATTEMPT"},
+                payload={"step": gen_step, "attempt": int(attempt), "stage": gen_stage, "why": "CONTRACT_MISMATCH", "retry_reason": msg, "next": "NEXT_ATTEMPT"},
             )
             if keep_trying or attempt < max_plan_attempts:
                 continue
             raise PlanWorkflowError(msg)
         plan_json = outer.get("plan_json")  # type: ignore[assignment]
-        _step_finished("STRUCTURE_GEN", plan_id_for_event=None, ok=True, payload={"attempt": int(attempt), "stage": "STRUCTURE"})
+        _step_finished(gen_step, plan_id_for_event=None, ok=True, payload={"attempt": int(attempt), "stage": gen_stage})
 
         # Normalize+validate with the original user top task, not the retry feedback.
         plan_json, plan_err = normalize_and_validate("PLAN_GEN", plan_json, {"top_task": user_top_task, "utc_now_iso": utc_now_iso})
@@ -825,7 +930,7 @@ def generate_and_review_plan(
                 message="PLAN_GEN schema validation failed",
                 plan_id_for_event=None,
                 llm_call_id=str(plan_gen_call_id),
-                payload={"step": "STRUCTURE_GEN", "attempt": int(attempt), "stage": "STRUCTURE", "why": "PLAN_INVALID", "validator_error": msg},
+                payload={"step": gen_step, "attempt": int(attempt), "stage": gen_stage, "why": "PLAN_INVALID", "validator_error": msg},
             )
             _wf(
                 event_type="DECISION_MADE",
@@ -833,7 +938,7 @@ def generate_and_review_plan(
                 message="PLAN_GEN invalid; retry attempt",
                 plan_id_for_event=None,
                 llm_call_id=str(plan_gen_call_id),
-                payload={"step": "STRUCTURE_GEN", "attempt": int(attempt), "stage": "STRUCTURE", "why": "PLAN_INVALID", "retry_reason": msg[:300], "next": "NEXT_ATTEMPT"},
+                payload={"step": gen_step, "attempt": int(attempt), "stage": gen_stage, "why": "PLAN_INVALID", "retry_reason": msg[:300], "next": "NEXT_ATTEMPT"},
             )
             # Emit task_events safely even when the plan never becomes valid (FK requires a plans row).
             try:
@@ -875,6 +980,11 @@ def generate_and_review_plan(
         plan_id = plan.get("plan_id")
         if not isinstance(plan_id, str) or not plan_id:
             raise PlanWorkflowError("plan.plan_id missing after coercion")
+        # If the model changed plan_id across attempts, treat it as a new plan and do not reuse "passed" stage state.
+        if passed_plan_id and str(passed_plan_id).strip() and str(passed_plan_id).strip() != str(plan_id).strip():
+            passed_stage_reviews.clear()
+            resume_stage = "STRUCTURE"
+            passed_plan_id = None
 
         # Back-fill PLAN_GEN telemetry row with resolved plan_id (so UI can show plan_title/plan_id).
         if plan_gen_call_id and plan_gen_call_id != "UNKNOWN":
@@ -922,14 +1032,45 @@ def generate_and_review_plan(
             pass
 
         last_plan_json_for_remediation = plan_json
-
-        review_json = _review_stage(stage="STRUCTURE", plan_id=plan_id, plan_json=plan_json)
-        last_review = review_json
-        total_score = int(review_json.get("total_score") or 0)
-        action_required = str(review_json.get("action_required") or "")
-
         cfg = get_runtime_config()
-        if total_score >= int(cfg.plan_review_pass_score):
+        pass_score = int(cfg.plan_review_pass_score)
+
+        def _is_passed_stage(review_obj: Optional[Dict[str, Any]]) -> bool:
+            if not isinstance(review_obj, dict) or not review_obj:
+                return False
+            if str(review_obj.get("task_id") or "").strip() != str(plan_id).strip():
+                return False
+            try:
+                score_i = int(review_obj.get("total_score") or 0)
+            except Exception:
+                score_i = 0
+            if score_i < pass_score:
+                return False
+            return str(review_obj.get("action_required") or "").strip().upper() == "APPROVE"
+
+        prior_structure = passed_stage_reviews.get("STRUCTURE") if isinstance(passed_stage_reviews.get("STRUCTURE"), dict) else None
+        structure_passed = _is_passed_stage(prior_structure)
+        prior_bindings_for_clamp = passed_stage_reviews.get("BINDINGS") if isinstance(passed_stage_reviews.get("BINDINGS"), dict) else None
+        bindings_passed_for_clamp = _is_passed_stage(prior_bindings_for_clamp)
+        resume_stage = clamp_resume_stage(resume_stage=normalize_stage(str(resume_stage)), passed={"STRUCTURE": structure_passed, "BINDINGS": bindings_passed_for_clamp})
+
+        if str(resume_stage).upper() == "STRUCTURE":
+            review_json = _review_stage(stage="STRUCTURE", plan_id=plan_id, plan_json=plan_json)
+            last_review = review_json
+            total_score = int(review_json.get("total_score") or 0)
+            action_required = str(review_json.get("action_required") or "")
+            structure_passed = total_score >= pass_score and str(action_required).strip().upper() == "APPROVE"
+            if structure_passed:
+                passed_stage_reviews["STRUCTURE"] = dict(review_json)
+                passed_plan_id = str(plan_id)
+                resume_stage = decide_next_stage(current_stage="STRUCTURE", score=int(total_score), pass_score=int(pass_score)).stage
+        else:
+            # Resume after STRUCTURE passed in a previous attempt: do not re-run STRUCTURE review.
+            review_json = prior_structure or {}
+            total_score = int(review_json.get("total_score") or pass_score)
+            action_required = str(review_json.get("action_required") or "APPROVE")
+
+        if structure_passed:
             # Stage 2: deterministic artifact bindings based on DEPENDS_ON edges, then review again.
             _step_started("BINDINGS_APPLY", plan_id_for_event=plan_id, payload={"attempt": int(attempt), "stage": "BINDINGS"})
             plan_json = add_default_upstream_bindings(plan_json)
@@ -995,21 +1136,31 @@ def generate_and_review_plan(
                 with transaction(conn):
                     emit_event(conn, plan_id=plan_id, event_type="ERROR", payload={"error_code": "PLAN_INVALID", "message": msg, "context": {"stage": "BINDINGS"}})
                 gen_notes = _limit_chars(msg, max_chars=500)
+                resume_stage = "BINDINGS"
                 if keep_trying or attempt < max_plan_attempts:
                     continue
                 raise PlanWorkflowError(msg)
 
-            bindings_review = _review_stage(
-                stage="BINDINGS",
-                plan_id=plan_id,
-                plan_json=plan_json,
-                stage_checklist=[
-                    "Each ACTION clearly lists required upstream artifacts (bindings) for its DEPENDS_ON edges.",
-                    "If a binding references an upstream task, the graph contains a corresponding DEPENDS_ON edge.",
-                ],
-            )
+            prior_bindings = passed_stage_reviews.get("BINDINGS") if isinstance(passed_stage_reviews.get("BINDINGS"), dict) else None
+            bindings_passed = _is_passed_stage(prior_bindings)
+            # Never skip BINDINGS unless we have a recorded passing review for this plan_id.
+            if str(resume_stage).upper() == "EXECUTION" and not bindings_passed:
+                resume_stage = "BINDINGS"
+
+            if str(resume_stage).upper() == "EXECUTION":
+                bindings_review = prior_bindings or {}
+            else:
+                bindings_review = _review_stage(
+                    stage="BINDINGS",
+                    plan_id=plan_id,
+                    plan_json=plan_json,
+                    stage_checklist=[
+                        "Each ACTION clearly lists required upstream artifacts (bindings) for its DEPENDS_ON edges.",
+                        "If a binding references an upstream task, the graph contains a corresponding DEPENDS_ON edge.",
+                    ],
+                )
             last_review = bindings_review
-            if int(bindings_review.get("total_score") or 0) < int(cfg.plan_review_pass_score):
+            if str(resume_stage).upper() != "EXECUTION" and int(bindings_review.get("total_score") or 0) < pass_score:
                 _wf(
                     event_type="DECISION_MADE",
                     severity="WARN",
@@ -1034,6 +1185,7 @@ def generate_and_review_plan(
                 except Exception:
                     pass
                 gen_notes = ""
+                resume_stage = "BINDINGS"
                 if not keep_trying and attempt >= int(max_plan_attempts):
                     _wf(
                         event_type="DECISION_MADE",
@@ -1044,6 +1196,10 @@ def generate_and_review_plan(
                     )
                     raise PlanNotApprovedError(plan_id=locals().get("plan_id"), max_attempts=max_plan_attempts, last_review=last_review)
                 continue
+            if str(resume_stage).upper() != "EXECUTION":
+                passed_stage_reviews["BINDINGS"] = dict(bindings_review)
+                passed_plan_id = str(plan_id)
+                resume_stage = decide_next_stage(current_stage="BINDINGS", score=int(bindings_review.get("total_score") or 0), pass_score=int(pass_score)).stage
 
             # Stage 3: record a distinct EXECUTION GEN node for workflow visibility (even if no plan_json change).
             _step_started("EXECUTION_SNAPSHOT", plan_id_for_event=plan_id, payload={"attempt": int(attempt), "stage": "EXECUTION"})
@@ -1162,9 +1318,14 @@ def generate_and_review_plan(
                     if isinstance(tags, list) and "review" in tags and "plan" in tags:
                         check_task_id = n.get("task_id")
                         if isinstance(check_task_id, str):
-                            conn.execute(
-                                "UPDATE task_nodes SET status='DONE', blocked_reason=NULL, updated_at=? WHERE task_id=?",
-                                (utc_now_iso(), check_task_id),
+                            transition_task_status(
+                                conn,
+                                plan_id=str(plan_id),
+                                task_id=check_task_id,
+                                to_status="DONE",
+                                blocked_reason=None,
+                                workflow="CREATE_PLAN",
+                                source="plan_workflow_finalize",
                             )
                             # Store the final stage review as the plan review artifact for this CHECK task.
                             write_review_json(config.REVIEWS_DIR, task_id=check_task_id, review=exec_review)
@@ -1178,6 +1339,11 @@ def generate_and_review_plan(
                 except Exception:
                     pass
             _step_finished("FINALIZE", plan_id_for_event=plan_id, ok=True, payload={"attempt": int(attempt)})
+            try:
+                with transaction(conn):
+                    _auto_seed_entry_user_file_inputs(conn, plan_id=str(plan_id), top_task_text=user_top_task)
+            except Exception:
+                pass
             return PlanWorkflowResult(plan_json=plan_json, review_json=exec_review, plan_path=plan_output_path)
 
         with transaction(conn):

@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
-import * as api from "../api";
+import React, { useMemo, useState } from "react";
 import type { ErrorsResp } from "../types";
 import { formatLocalDateTime, formatLocalTime } from "../time";
+import { useErrors } from "../hooks/useErrors";
 
 type Props = {
   title?: string;
@@ -26,9 +26,7 @@ export default function ErrorsPanel({
   onSelectPlanId,
   onSetViewMode,
 }: Props) {
-  const [errors, setErrors] = useState<ErrorsResp["errors"]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [errText, setErrText] = useState<string>("");
 
   const query = useMemo(() => {
     if (planId) return { plan_id: planId, limit: 200 };
@@ -36,28 +34,14 @@ export default function ErrorsPanel({
     return null;
   }, [planId, followCreatePlanWithoutPlanId]);
 
-  useEffect(() => {
-    if (!query) {
-      setErrors([]);
-      return;
-    }
-    let stopped = false;
-    const tick = () =>
-      api
-        .getErrors(query)
-        .then((r) => {
-          if (!stopped) setErrors(r.errors);
-        })
-        .catch((e) => {
-          if (!stopped) setErrText(String(e));
-        });
-    tick();
-    const t = setInterval(tick, 1500);
-    return () => {
-      stopped = true;
-      clearInterval(t);
-    };
-  }, [query]);
+  const errorsState = useErrors({
+    enabled: Boolean(query),
+    planId: (query as any)?.plan_id ?? null,
+    planIdMissing: Boolean((query as any)?.plan_id_missing),
+    limit: (query as any)?.limit ?? 200,
+    pollMs: 1500,
+  });
+  const errors = (errorsState.data?.errors ?? []) as ErrorsResp["errors"];
 
   const selected = useMemo(() => {
     if (!selectedKey) return null;
@@ -122,7 +106,7 @@ export default function ErrorsPanel({
 
           <div style={{ minHeight: 0, overflow: "auto", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
             {!selected ? (
-              <div className="muted">{errText ? `Load error: ${errText}` : "Click an error to inspect."}</div>
+              <div className="muted">{errorsState.error ? `Load error: ${errorsState.error}` : "Click an error to inspect."}</div>
             ) : (
               <>
                 <div className="kv">

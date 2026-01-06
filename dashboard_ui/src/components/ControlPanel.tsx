@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
-import type { ConfigResp, PlansResp } from "../types";
+import type { ConfigResp, PlansResp, RunStatusResp } from "../types";
 import * as api from "../api";
+import { useRunStatus } from "../hooks/useRunStatus";
 
 function getNumber(obj: unknown, key: string): number | null {
   if (!obj || typeof obj !== "object") return null;
@@ -24,6 +25,7 @@ export default function ControlPanel(props: {
   onLog: (s: string) => void;
 }) {
   const [showSettings, setShowSettings] = useState(false);
+  const runStatus = useRunStatus({ planId: props.selectedPlanId });
 
   const [maxIterations, setMaxIterations] = useState(10000);
   const [includeReviews, setIncludeReviews] = useState(false);
@@ -97,9 +99,56 @@ export default function ControlPanel(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.config?.runtime_config]);
 
+  const runStatusErr = runStatus.error;
+  const lastFinished = runStatus.data?.last_finished ?? null;
+  const lastGuardrail = runStatus.data?.last_guardrail_hit ?? null;
+
   return (
     <div className="panel">
       <h3>控制面板</h3>
+
+      <div className="field">
+        <label>Run 状态</label>
+        <div className="row" style={{ gap: 8 }}>
+          <span className="pill" style={{ background: runStatus.data?.alive ? "#22c55e" : "#ef4444" }}>
+            {runStatus.data?.alive ? "RUNNING" : "STOPPED"}
+          </span>
+          {runStatus.data?.pid ? <span className="mono">pid={runStatus.data.pid}</span> : null}
+          {runStatus.data?.reason ? <span className="mono">{runStatus.data.reason}</span> : null}
+          <div className="spacer" />
+          <button
+            onClick={() => {
+              runStatus.refresh();
+            }}
+          >
+            检查
+          </button>
+        </div>
+        {!runStatus.data?.alive ? (
+          <div className="muted">
+            {runStatus.data?.reason === "PROCESS_DEAD" ? "检测到后台进程已退出；点击“运行”可重新启动。" : null}
+            {lastFinished ? (
+              <div>
+                上次停止：<span className="mono">{lastFinished.reason ?? "-"}</span>{" "}
+                <span className="mono">{lastFinished.created_at}</span>
+                {typeof lastFinished.llm_calls === "number" ? <span className="mono"> llm_calls={lastFinished.llm_calls}</span> : null}
+              </div>
+            ) : null}
+            {lastGuardrail ? (
+              <div>
+                guardrail：<span className="mono">{lastGuardrail.guardrail ?? "-"}</span>{" "}
+                {typeof lastGuardrail.llm_calls === "number" && typeof lastGuardrail.limit === "number" ? (
+                  <span className="mono">
+                    ({lastGuardrail.llm_calls}/{lastGuardrail.limit})
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            {lastFinished?.reason === "GUARDRAIL_HIT" ? <div>建议：修复阻塞后重新运行，或提高 runtime_config.json 的 guardrails.max_llm_calls_per_run。</div> : null}
+          </div>
+        ) : null}
+        {runStatusErr ? <div className="muted">run/status error: {runStatusErr}</div> : null}
+      </div>
 
       <div className="field">
         <label>计划</label>

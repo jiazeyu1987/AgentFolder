@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import time
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -30,6 +32,8 @@ from core.util import ensure_dir, safe_read_text, stable_hash_text, utc_now_iso
 from core.workflow_mode import WorkflowModeGuardError, ensure_mode_supported_for_action
 from core.v2_review_gate import ReviewContractMismatch, run_check_once as run_v2_check_once
 from core.workflow_events import emit_workflow_event
+from core.state_machine.task_status import transition_task_status
+from core.audit_log import annotate_llm_output_for_retry
 from skills.registry import load_registry, run_skill
 
 RUN_JOB_ID: Optional[str] = None
@@ -85,45 +89,16 @@ def _handle_error(conn, *, plan_id: str, task_id: Optional[str], error_code: str
 
 
 def _set_status(conn, *, plan_id: str, task_id: str, status: str, blocked_reason: Optional[str] = None) -> None:
-    row = conn.execute("SELECT status FROM task_nodes WHERE task_id = ?", (task_id,)).fetchone()
-    before = str(row["status"]) if row and row["status"] is not None else None
-    conn.execute(
-        "UPDATE task_nodes SET status = ?, blocked_reason = ?, updated_at = ? WHERE task_id = ?",
-        (status, blocked_reason, utc_now_iso(), task_id),
+    transition_task_status(
+        conn,
+        plan_id=plan_id,
+        task_id=task_id,
+        to_status=str(status),
+        blocked_reason=blocked_reason,
+        workflow="RUN",
+        job_id=RUN_JOB_ID,
+        source="run.py",
     )
-    emit_event(conn, plan_id=plan_id, task_id=task_id, event_type="STATUS_CHANGED", payload={"status": status, "blocked_reason": blocked_reason})
-    try:
-        from core.audit_log import log_audit
-
-        log_audit(
-            conn,
-            category="STATUS_CHANGED",
-            action="TASK_STATUS_CHANGED",
-            message=f"Task status changed: {before or '-'} -> {status}",
-            plan_id=plan_id,
-            task_id=task_id,
-            status_before=before,
-            status_after=status,
-            ok=True,
-            payload={"blocked_reason": blocked_reason},
-        )
-    except Exception:
-        pass
-    # Event-first: best-effort status change event for RUN workflow (SSOT reads from workflow_events).
-    try:
-        emit_workflow_event(
-            conn,
-            workflow="RUN",
-            event_type="STATUS_CHANGED",
-            severity="INFO",
-            message=f"status: {before or '-'} -> {status}",
-            job_id=RUN_JOB_ID,
-            plan_id=plan_id,
-            task_id=task_id,
-            payload={"status_before": before, "status_after": status, "blocked_reason": blocked_reason, "source": "run.py"},
-        )
-    except Exception:
-        pass
 
 
 def _apply_modify_or_escalate(conn, *, plan_id: str, task_id: str, suggestions: Any) -> None:
@@ -234,6 +209,45 @@ def _select_best_inputs_per_requirement(files: List[Dict[str, Any]]) -> tuple[Li
     return selected, conflicts
 
 
+def _task_prompt_variant(task: Any) -> str:
+    """
+    task may be sqlite3.Row (mapping-like) or a plain dict.
+    """
+    try:
+        attempt_count = int((task["attempt_count"] if isinstance(task, (sqlite3.Row, dict)) else getattr(task, "attempt_count", 0)) or 0)
+    except Exception:
+        attempt_count = 0
+    try:
+        status = str((task["status"] if isinstance(task, (sqlite3.Row, dict)) else getattr(task, "status", "")) or "")
+    except Exception:
+        status = ""
+    return "TASK_ACTION_ITERATE" if (attempt_count > 0 or status == "TO_BE_MODIFY") else "TASK_ACTION_INIT"
+
+
+def _build_task_action_contract_retry_prompt(*, original_prompt: str, invalid_response: str, reason: str, task_id: str) -> str:
+    return (
+        "Your previous response did NOT match the required TASK_ACTION JSON contract.\n"
+        f"Contract error: {reason}\n"
+        "\n"
+        "Rewrite the response as ONE valid JSON object only (no markdown, no code fences, no extra text).\n"
+        "It MUST follow this contract:\n"
+        '- "schema_version": "xiaobo_action_v1"\n'
+        f'- "task_id": "{task_id}"\n'
+        '- "result_type": one of ["NEEDS_INPUT","ARTIFACT","NOOP","ERROR"]\n'
+        '- If result_type=="NEEDS_INPUT": include needs_input.required_docs (non-empty array of {name,description,accepted_types?}).\n'
+        '- If result_type=="ARTIFACT": include artifact {name,format,content}; format must be one of ["md","txt","json","html","css","js"].\n'
+        '- If result_type=="ERROR": include error {code,message}.\n'
+        "\n"
+        "INVALID_RESPONSE_START\n"
+        f"{invalid_response}\n"
+        "INVALID_RESPONSE_END\n"
+        "\n"
+        "ORIGINAL_PROMPT_START\n"
+        f"{original_prompt}\n"
+        "ORIGINAL_PROMPT_END\n"
+    )
+
+
 def xiaobo_round(
     *,
     conn,
@@ -322,7 +336,10 @@ def xiaobo_round(
             suggestions_text=suggestions_text,
             artifact_text_snippets=extracted_snippets,
         )
-        prompt_variant = "TASK_ACTION_ITERATE" if (int(task.get("attempt_count") or 0) > 0 or str(task.get("status") or "") == "TO_BE_MODIFY") else "TASK_ACTION_INIT"
+        # Mark the task as IN_PROGRESS before executing; later transitions (e.g. READY_TO_CHECK)
+        # must be reached from IN_PROGRESS per the state machine.
+        _set_status(conn, plan_id=plan_id, task_id=task_id, status="IN_PROGRESS")
+        prompt_variant = _task_prompt_variant(task)
         res = llm.call_json(prompt)
         extra = int(getattr(res, "extra_calls", 0))
         llm_calls += 1 + extra
@@ -351,13 +368,14 @@ def xiaobo_round(
 
         normalized_obj: Optional[Dict[str, Any]] = None
         validator_error: Optional[str] = None
+        llm_call_id = None
         if not res.error and res.parsed_json:
             normalized, err = normalize_and_validate("TASK_ACTION", res.parsed_json, {"task_id": task_id})
             if isinstance(normalized, dict):
                 normalized_obj = normalized
             if err:
                 validator_error = format_contract_error_short(err)
-        record_llm_call(
+        llm_call_id = record_llm_call(
             conn,
             plan_id=plan_id,
             task_id=task_id,
@@ -389,6 +407,126 @@ def xiaobo_round(
 
         obj = normalized_obj or res.parsed_json
         obj, err = normalize_and_validate("TASK_ACTION", obj, {"task_id": task_id})
+        if err:
+            reason = format_contract_error_short(err)
+
+            # Retry once on contract mismatch for TASK_ACTION, and make it observable.
+            try:
+                annotate_llm_output_for_retry(
+                    conn,
+                    llm_call_id=str(llm_call_id or ""),
+                    retry_kind="CONTRACT_MISMATCH",
+                    retry_reason=reason,
+                )
+            except Exception:
+                pass
+            try:
+                emit_workflow_event(
+                    conn,
+                    workflow="RUN",
+                    event_type="DECISION_MADE",
+                    severity="WARN",
+                    message="TASK_ACTION invalid; retry",
+                    job_id=RUN_JOB_ID,
+                    plan_id=plan_id,
+                    task_id=task_id,
+                    llm_call_id=str(llm_call_id or ""),
+                    payload={"step": "TASK_ACTION", "why": "CONTRACT_MISMATCH", "retry_reason": str(reason)[:300], "next": "RETRY_TASK_ACTION"},
+                )
+            except Exception:
+                pass
+
+            # Guardrail: count the retry against per-task budget too.
+            if not consume_per_task_budget(per_task_llm_calls, task_id=str(task_id), limit=max_task_calls, cost=1):
+                _handle_error(
+                    conn,
+                    plan_id=plan_id,
+                    task_id=task_id,
+                    error_code="GUARDRAIL_MAX_LLM_CALLS_TASK",
+                    message=f"LLM calls for this task reached {max_task_calls} (guardrail).",
+                    context={"hint": "Fix prompts/inputs, then use `agent_cli.py reset-failed --include-blocked` or regenerate the plan."},
+                )
+                continue
+
+            retry_prompt = _build_task_action_contract_retry_prompt(
+                original_prompt=prompt,
+                invalid_response=res.raw_response_text or "",
+                reason=reason,
+                task_id=str(task_id),
+            )
+            res2 = llm.call_json(retry_prompt)
+            extra2 = int(getattr(res2, "extra_calls", 0))
+            llm_calls += 1 + extra2
+            if extra2 > 0:
+                if not consume_per_task_budget(per_task_llm_calls, task_id=str(task_id), limit=max_task_calls, cost=extra2):
+                    per_task_llm_calls[str(task_id)] = int(max_task_calls)
+
+            _append_jsonl(
+                config.LLM_RUNS_LOG_PATH,
+                {
+                    "ts": utc_now_iso(),
+                    "plan_id": plan_id,
+                    "task_id": task_id,
+                    "agent": "xiaobo",
+                    "shared_prompt_version": prompts.shared.version,
+                    "shared_prompt_hash": prompts.shared.sha256,
+                    "agent_prompt_version": prompts.xiaobo.version,
+                    "agent_prompt_hash": prompts.xiaobo.sha256,
+                    "runtime_context_hash": stable_hash_text(retry_prompt),
+                    "final_prompt": retry_prompt,
+                    "response": res2.parsed_json or res2.raw_response_text,
+                    "error": {"code": res2.error_code, "message": res2.error} if res2.error else None,
+                    "retry_of_llm_call_id": str(llm_call_id or ""),
+                    "retry_kind": "CONTRACT_MISMATCH",
+                },
+            )
+
+            normalized_obj2: Optional[Dict[str, Any]] = None
+            validator_error2: Optional[str] = None
+            if not res2.error and res2.parsed_json:
+                normalized2, err2a = normalize_and_validate("TASK_ACTION", res2.parsed_json, {"task_id": task_id})
+                if isinstance(normalized2, dict):
+                    normalized_obj2 = normalized2
+                if err2a:
+                    validator_error2 = format_contract_error_short(err2a)
+            record_llm_call(
+                conn,
+                plan_id=plan_id,
+                task_id=task_id,
+                agent="xiaobo",
+                scope="TASK_ACTION",
+                provider=res2.provider,
+                prompt_text=retry_prompt,
+                response_text=res2.raw_response_text,
+                started_at_ts=res2.started_at_ts,
+                finished_at_ts=res2.finished_at_ts,
+                runtime_context_hash=stable_hash_text(retry_prompt),
+                shared_prompt_version=prompts.shared.version,
+                shared_prompt_hash=prompts.shared.sha256,
+                agent_prompt_version=prompts.xiaobo.version,
+                agent_prompt_hash=prompts.xiaobo.sha256,
+                parsed_json=res2.parsed_json,
+                normalized_json=normalized_obj2,
+                validator_error=validator_error2,
+                error_code=res2.error_code,
+                error_message=res2.error,
+                meta={
+                    "prompt_variant": prompt_variant,
+                    "retry_of_llm_call_id": str(llm_call_id or ""),
+                    "retry_kind": "CONTRACT_MISMATCH",
+                    "retry_reason": str(reason)[:300],
+                },
+            )
+
+            if res2.error or not res2.parsed_json:
+                _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code=res2.error_code or "LLM_FAILED", message=res2.error or "llm failed")
+                if _attempt_exceeded(conn, task_id):
+                    _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="MAX_ATTEMPTS_EXCEEDED", message="Max attempts exceeded")
+                continue
+
+            obj = normalized_obj2 or res2.parsed_json
+            obj, err = normalize_and_validate("TASK_ACTION", obj, {"task_id": task_id})
+
         if err:
             reason = format_contract_error_short(err)
             _handle_error(conn, plan_id=plan_id, task_id=task_id, error_code="LLM_UNPARSEABLE", message=reason, context={"validator_error": reason, "validator_error_obj": err})
@@ -1291,6 +1429,49 @@ def write_blocked_summary(conn, plan_id: str) -> Path:
     return path
 
 
+def _record_run_fatal(conn, *, plan_id: str, job_id: Optional[str], exc: BaseException) -> None:
+    """
+    Record an unhandled run crash using the existing, unified error viewing mechanism.
+
+    - task_events(event_type='ERROR') so `agent_cli.py errors` and `/api/errors` can show it
+    - workflow_events(JOB_FINISHED severity=ERROR) so UI timeline can show the run ended
+    Best-effort and never raises.
+    """
+    try:
+        tb = traceback.format_exc()
+    except Exception:
+        tb = ""
+    try:
+        record_error(
+            conn,
+            plan_id=plan_id,
+            task_id=None,
+            error_code="RUN_FATAL",
+            message=f"{type(exc).__name__}: {exc}",
+            context={"job_id": str(job_id or ""), "traceback": tb[:50_000]},
+        )
+    except Exception:
+        pass
+    try:
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="JOB_FINISHED",
+            severity="ERROR",
+            message="run job crashed",
+            job_id=str(job_id or "") or None,
+            plan_id=plan_id,
+            payload={"ok": False, "why": "RUN_FATAL", "error": f"{type(exc).__name__}: {exc}", "traceback": tb[:2_000]},
+        )
+    except Exception:
+        pass
+    try:
+        if getattr(conn, "in_transaction", False):
+            conn.commit()
+    except Exception:
+        pass
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Single-machine serial CLI agent (xiaobo/xiaojing).")
     parser.add_argument("--plan", type=Path, default=config.PLAN_PATH_DEFAULT, help="Path to tasks/plan.json")
@@ -1313,177 +1494,181 @@ def main(argv: Optional[List[str]] = None) -> int:
     plan_id = load_plan_into_db_if_needed(conn, args.plan)
     global RUN_JOB_ID
     RUN_JOB_ID = str(args.job_id).strip() if isinstance(args.job_id, str) and str(args.job_id).strip() else str(uuid.uuid4())
-    emit_workflow_event(
-        conn,
-        workflow="RUN",
-        event_type="JOB_STARTED",
-        severity="INFO",
-        message="run job started",
-        job_id=RUN_JOB_ID,
-        plan_id=plan_id,
-        payload={"max_iterations": int(args.max_iterations)},
-    )
-    cfg = get_runtime_config()
-    if not bool(getattr(args, "skip_doctor", False)):
-        from core.doctor import format_findings_human, run_doctor
-
-        findings = run_doctor(conn, plan_id=plan_id, workflow_mode=cfg.workflow_mode)
-        if findings:
-            print("doctor failed (preflight):")
-            print(format_findings_human(findings))
-            print("hint: fix the above issues, or re-run with --skip-doctor for debugging.")
-            emit_workflow_event(
-                conn,
-                workflow="RUN",
-                event_type="JOB_FINISHED",
-                severity="ERROR",
-                message="run job stopped: doctor failed",
-                job_id=RUN_JOB_ID,
-                plan_id=plan_id,
-                payload={"ok": False, "why": "DOCTOR_FAILED"},
-            )
-            return 2
-    prompts = register_prompt_versions(conn, load_prompts(config.PROMPTS_SHARED_PATH, config.PROMPTS_AGENTS_DIR))
-    rubric_all = json.loads(config.REVIEW_RUBRIC_PATH.read_text(encoding="utf-8"))
-    rubric = rubric_all.get("node_review") or rubric_all
-
-    # Skills registry is loaded so it can be surfaced to the executor prompt later (MVP keeps it minimal).
-    skills_registry = load_registry(config.SKILLS_REGISTRY_PATH)
-    emit_event(conn, plan_id=plan_id, event_type="SKILLS_LOADED", payload={"count": len(skills_registry), "skills": sorted(skills_registry.keys())})
-
-    llm = LLMClient()
-    t0 = time.time()
-    llm_calls = 0
-    per_task_llm_calls: Dict[str, int] = {}
-
-    max_iters = min(int(args.max_iterations), int(cfg.guardrails.max_run_iterations))
-    if int(args.max_iterations) > max_iters:
-        print(f"guardrail: max_run_iterations capped to {max_iters} (from runtime_config.guardrails.max_run_iterations).")
-
-    max_llm_calls_run = int(cfg.guardrails.max_llm_calls_per_run)
-
-    emit_workflow_event(
-        conn,
-        workflow="RUN",
-        event_type="STEP_STARTED",
-        severity="INFO",
-        message="RUN_LOOP started",
-        job_id=RUN_JOB_ID,
-        plan_id=plan_id,
-        payload={"step": "RUN_LOOP"},
-    )
-    exit_reason = "UNKNOWN"
-    for _ in range(max_iters):
-        if time.time() - t0 > config.MAX_PLAN_RUNTIME_SECONDS:
-            record_error(conn, plan_id=plan_id, task_id=None, error_code="PLAN_TIMEOUT", message="Plan runtime exceeded")
-            exit_reason = "GUARDRAIL_HIT"
-            break
-
-        if llm_calls >= max_llm_calls_run:
-            emit_event(
-                conn,
-                plan_id=plan_id,
-                task_id=None,
-                event_type="GUARDRAIL_HIT",
-                payload={"guardrail": "max_llm_calls_per_run", "limit": max_llm_calls_run, "llm_calls": llm_calls},
-            )
-            emit_workflow_event(
-                conn,
-                workflow="RUN",
-                event_type="GUARDRAIL_HIT",
-                severity="WARN",
-                message="guardrail hit: max_llm_calls_per_run",
-                job_id=RUN_JOB_ID,
-                plan_id=plan_id,
-                payload={"guardrail": "max_llm_calls_per_run", "limit": int(max_llm_calls_run), "llm_calls": int(llm_calls)},
-            )
-            emit_workflow_event(
-                conn,
-                workflow="RUN",
-                event_type="DECISION_MADE",
-                severity="WARN",
-                message="stop run: guardrail reached",
-                job_id=RUN_JOB_ID,
-                plan_id=plan_id,
-                payload={"step": "RUN_LOOP", "why": "GUARDRAIL_HIT", "next": "STOP"},
-            )
-            print(f"guardrail hit: max_llm_calls_per_run={max_llm_calls_run}, stopping run loop.")
-            print(f"hint: fix blockers, then re-run `agent_cli.py run --max-iterations {max_iters}` (or raise guardrails in runtime_config.json).")
-            break
-
-        with transaction(conn):
-            scan_inputs_and_bind_evidence_all(conn, plan_id=plan_id, inputs_dirs=[config.INPUTS_DIR, config.BASELINE_INPUTS_DIR])
-            detect_removed_input_files_all(conn, plan_id=plan_id, inputs_dirs=[config.INPUTS_DIR, config.BASELINE_INPUTS_DIR])
-            maybe_reset_failed_to_ready(conn, plan_id=plan_id)
-            recompute_readiness_for_plan(conn, plan_id=plan_id)
-
-        if is_plan_done(conn, plan_id):
-            exit_reason = "PLAN_DONE"
-            break
-        if is_plan_blocked_waiting_user(conn, plan_id):
-            exit_reason = "WAITING_USER"
-            break
-
-        llm_calls = xiaobo_round(
-            conn=conn,
+    try:
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="JOB_STARTED",
+            severity="INFO",
+            message="run job started",
+            job_id=RUN_JOB_ID,
             plan_id=plan_id,
-            prompts=prompts,
-            llm=llm,
-            llm_calls=llm_calls,
-            skills_registry=skills_registry,
-            per_task_llm_calls=per_task_llm_calls,
+            payload={"max_iterations": int(args.max_iterations)},
         )
-        if cfg.workflow_mode == "v2":
-            llm_calls = v2_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls)
-        else:
-            llm_calls = xiaojing_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
-            llm_calls = xiaojing_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
-            llm_calls = xiaoxie_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+        cfg = get_runtime_config()
+        if not bool(getattr(args, "skip_doctor", False)):
+            from core.doctor import format_findings_human, run_doctor
 
-        # Ensure progress persists: rounds write to DB and SQLite keeps an implicit transaction open
-        # until commit/rollback; without this, the process exit rolls back work and the UI sees no change.
+            findings = run_doctor(conn, plan_id=plan_id, workflow_mode=cfg.workflow_mode)
+            if findings:
+                print("doctor failed (preflight):")
+                print(format_findings_human(findings))
+                print("hint: fix the above issues, or re-run with --skip-doctor for debugging.")
+                emit_workflow_event(
+                    conn,
+                    workflow="RUN",
+                    event_type="JOB_FINISHED",
+                    severity="ERROR",
+                    message="run job stopped: doctor failed",
+                    job_id=RUN_JOB_ID,
+                    plan_id=plan_id,
+                    payload={"ok": False, "why": "DOCTOR_FAILED"},
+                )
+                return 2
+        prompts = register_prompt_versions(conn, load_prompts(config.PROMPTS_SHARED_PATH, config.PROMPTS_AGENTS_DIR))
+        rubric_all = json.loads(config.REVIEW_RUBRIC_PATH.read_text(encoding="utf-8"))
+        rubric = rubric_all.get("node_review") or rubric_all
+
+        # Skills registry is loaded so it can be surfaced to the executor prompt later (MVP keeps it minimal).
+        skills_registry = load_registry(config.SKILLS_REGISTRY_PATH)
+        emit_event(conn, plan_id=plan_id, event_type="SKILLS_LOADED", payload={"count": len(skills_registry), "skills": sorted(skills_registry.keys())})
+
+        llm = LLMClient()
+        t0 = time.time()
+        llm_calls = 0
+        per_task_llm_calls: Dict[str, int] = {}
+
+        max_iters = min(int(args.max_iterations), int(cfg.guardrails.max_run_iterations))
+        if int(args.max_iterations) > max_iters:
+            print(f"guardrail: max_run_iterations capped to {max_iters} (from runtime_config.guardrails.max_run_iterations).")
+
+        max_llm_calls_run = int(cfg.guardrails.max_llm_calls_per_run)
+
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_STARTED",
+            severity="INFO",
+            message="RUN_LOOP started",
+            job_id=RUN_JOB_ID,
+            plan_id=plan_id,
+            payload={"step": "RUN_LOOP"},
+        )
+        exit_reason = "UNKNOWN"
+        for _ in range(max_iters):
+            if time.time() - t0 > config.MAX_PLAN_RUNTIME_SECONDS:
+                record_error(conn, plan_id=plan_id, task_id=None, error_code="PLAN_TIMEOUT", message="Plan runtime exceeded")
+                exit_reason = "GUARDRAIL_HIT"
+                break
+
+            if llm_calls >= max_llm_calls_run:
+                emit_event(
+                    conn,
+                    plan_id=plan_id,
+                    task_id=None,
+                    event_type="GUARDRAIL_HIT",
+                    payload={"guardrail": "max_llm_calls_per_run", "limit": max_llm_calls_run, "llm_calls": llm_calls},
+                )
+                emit_workflow_event(
+                    conn,
+                    workflow="RUN",
+                    event_type="GUARDRAIL_HIT",
+                    severity="WARN",
+                    message="guardrail hit: max_llm_calls_per_run",
+                    job_id=RUN_JOB_ID,
+                    plan_id=plan_id,
+                    payload={"guardrail": "max_llm_calls_per_run", "limit": int(max_llm_calls_run), "llm_calls": int(llm_calls)},
+                )
+                emit_workflow_event(
+                    conn,
+                    workflow="RUN",
+                    event_type="DECISION_MADE",
+                    severity="WARN",
+                    message="stop run: guardrail reached",
+                    job_id=RUN_JOB_ID,
+                    plan_id=plan_id,
+                    payload={"step": "RUN_LOOP", "why": "GUARDRAIL_HIT", "next": "STOP"},
+                )
+                print(f"guardrail hit: max_llm_calls_per_run={max_llm_calls_run}, stopping run loop.")
+                print(f"hint: fix blockers, then re-run `agent_cli.py run --max-iterations {max_iters}` (or raise guardrails in runtime_config.json).")
+                break
+
+            with transaction(conn):
+                scan_inputs_and_bind_evidence_all(conn, plan_id=plan_id, inputs_dirs=[config.INPUTS_DIR, config.BASELINE_INPUTS_DIR])
+                detect_removed_input_files_all(conn, plan_id=plan_id, inputs_dirs=[config.INPUTS_DIR, config.BASELINE_INPUTS_DIR])
+                maybe_reset_failed_to_ready(conn, plan_id=plan_id)
+                recompute_readiness_for_plan(conn, plan_id=plan_id)
+
+            if is_plan_done(conn, plan_id):
+                exit_reason = "PLAN_DONE"
+                break
+            if is_plan_blocked_waiting_user(conn, plan_id):
+                exit_reason = "WAITING_USER"
+                break
+
+            llm_calls = xiaobo_round(
+                conn=conn,
+                plan_id=plan_id,
+                prompts=prompts,
+                llm=llm,
+                llm_calls=llm_calls,
+                skills_registry=skills_registry,
+                per_task_llm_calls=per_task_llm_calls,
+            )
+            if cfg.workflow_mode == "v2":
+                llm_calls = v2_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls)
+            else:
+                llm_calls = xiaojing_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+                llm_calls = xiaojing_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+                llm_calls = xiaoxie_check_round(conn=conn, plan_id=plan_id, prompts=prompts, llm=llm, llm_calls=llm_calls, rubric_json=rubric)
+
+            # Ensure progress persists: rounds write to DB and SQLite keeps an implicit transaction open
+            # until commit/rollback; without this, the process exit rolls back work and the UI sees no change.
+            try:
+                if getattr(conn, "in_transaction", False):
+                    conn.commit()
+            except Exception:
+                pass
+
+            if is_plan_done(conn, plan_id):
+                break
+            if is_plan_blocked_waiting_user(conn, plan_id):
+                write_blocked_summary(conn, plan_id)
+                break
+
+            time.sleep(config.POLL_INTERVAL_SECONDS)
+
+        # Ensure any implicit transaction is committed so final workflow events are durable.
         try:
             if getattr(conn, "in_transaction", False):
                 conn.commit()
         except Exception:
             pass
 
-        if is_plan_done(conn, plan_id):
-            break
-        if is_plan_blocked_waiting_user(conn, plan_id):
-            write_blocked_summary(conn, plan_id)
-            break
-
-        time.sleep(config.POLL_INTERVAL_SECONDS)
-
-    # Ensure any implicit transaction is committed so final workflow events are durable.
-    try:
-        if getattr(conn, "in_transaction", False):
-            conn.commit()
-    except Exception:
-        pass
-
-    emit_workflow_event(
-        conn,
-        workflow="RUN",
-        event_type="STEP_FINISHED",
-        severity="INFO",
-        message="RUN_LOOP finished",
-        job_id=RUN_JOB_ID,
-        plan_id=plan_id,
-        payload={"step": "RUN_LOOP", "ok": True, "reason": exit_reason},
-    )
-    emit_workflow_event(
-        conn,
-        workflow="RUN",
-        event_type="JOB_FINISHED",
-        severity="INFO",
-        message="run job finished",
-        job_id=RUN_JOB_ID,
-        plan_id=plan_id,
-        payload={"ok": True, "reason": exit_reason, "llm_calls": int(llm_calls)},
-    )
-    return 0
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="STEP_FINISHED",
+            severity="INFO",
+            message="RUN_LOOP finished",
+            job_id=RUN_JOB_ID,
+            plan_id=plan_id,
+            payload={"step": "RUN_LOOP", "ok": True, "reason": exit_reason},
+        )
+        emit_workflow_event(
+            conn,
+            workflow="RUN",
+            event_type="JOB_FINISHED",
+            severity="INFO",
+            message="run job finished",
+            job_id=RUN_JOB_ID,
+            plan_id=plan_id,
+            payload={"ok": True, "reason": exit_reason, "llm_calls": int(llm_calls)},
+        )
+        return 0
+    except Exception as exc:  # noqa: BLE001 - ensure any fatal error is visible via existing mechanisms
+        _record_run_fatal(conn, plan_id=str(plan_id), job_id=RUN_JOB_ID, exc=exc)
+        return 1
 
 
 if __name__ == "__main__":

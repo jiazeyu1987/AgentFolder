@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import * as api from "../api";
 import type { AuditResp, LlmCallsQueryResp, TopTasksResp } from "../types";
 import { formatLocalDateTime, formatLocalTime } from "../time";
+import { useAudit } from "../hooks/useAudit";
+import { useTopTasks } from "../hooks/useTopTasks";
 
 type Props = {
   selectedPlanId: string | null;
@@ -28,11 +30,9 @@ function parsePayload(payloadJson: string | null): Record<string, any> | null {
 }
 
 export default function AuditLogPage(props: Props) {
-  const [tops, setTops] = useState<TopTasksResp["top_tasks"]>([]);
   const [topHash, setTopHash] = useState<string>("");
   const [category, setCategory] = useState<string>("");
   const [filterPlan, setFilterPlan] = useState<boolean>(false);
-  const [events, setEvents] = useState<AuditResp["events"]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [err, setErr] = useState<string>("");
 
@@ -41,50 +41,28 @@ export default function AuditLogPage(props: Props) {
   const [ioErr, setIoErr] = useState<string>("");
   const [ioCall, setIoCall] = useState<LlmCallsQueryResp["calls"][number] | null>(null);
 
+  const topTasks = useTopTasks(50);
+  const tops = (topTasks.data?.top_tasks ?? []) as TopTasksResp["top_tasks"];
   useEffect(() => {
-    api
-      .getTopTasks(50)
-      .then((r) => {
-        setTops(r.top_tasks);
-        if (!topHash && r.top_tasks.length) setTopHash(r.top_tasks[0].top_task_hash);
-      })
-      .catch((e) => setErr(String(e)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (topHash) return;
+    if (tops.length) setTopHash(tops[0].top_task_hash);
+  }, [topHash, tops]);
 
-  const query = useMemo(() => {
-    return {
-      top_task_hash: topHash || undefined,
-      plan_id: filterPlan ? props.selectedPlanId || undefined : undefined,
-      category: category.trim() ? category.trim() : undefined,
-      limit: 300,
-    };
-  }, [topHash, category, filterPlan, props.selectedPlanId]);
-
+  const audit = useAudit({
+    enabled: Boolean(topHash),
+    pollMs: 1500,
+    topTaskHash: topHash || undefined,
+    planId: filterPlan ? props.selectedPlanId || undefined : undefined,
+    category: category.trim() ? category.trim() : undefined,
+    limit: 300,
+  });
+  const events = (audit.data?.events ?? []) as AuditResp["events"];
   useEffect(() => {
-    if (!topHash) return;
-    let stopped = false;
-    const tick = () =>
-      api
-        .getAudit(query)
-        .then((r) => {
-          if (!stopped) setEvents(r.events);
-        })
-        .catch((e) => {
-          if (stopped) return;
-          const msg = String(e);
-          // During reset-db, backend intentionally returns 503 for DB reads.
-          // Don't treat it as a user-facing error; keep polling until it recovers.
-          if (msg.includes("503") && msg.toLowerCase().includes("db reset in progress")) return;
-          setErr(msg);
-        });
-    tick();
-    const t = setInterval(tick, 1500);
-    return () => {
-      stopped = true;
-      clearInterval(t);
-    };
-  }, [query, topHash]);
+    if (topTasks.error) setErr(topTasks.error);
+  }, [topTasks.error]);
+  useEffect(() => {
+    if (audit.error) setErr(audit.error);
+  }, [audit.error]);
 
   const selected = useMemo(() => {
     if (!selectedId) return null;
@@ -156,10 +134,8 @@ export default function AuditLogPage(props: Props) {
         <div className="spacer" />
         <button
           onClick={() => {
-            api
-              .getAudit(query)
-              .then((r) => setEvents(r.events))
-              .catch((e) => setErr(String(e)));
+            topTasks.refresh();
+            audit.refresh();
           }}
         >
           Refresh

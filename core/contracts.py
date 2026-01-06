@@ -129,6 +129,9 @@ def normalize_xiaobo_action(obj: Dict[str, Any], *, task_id: str) -> Dict[str, A
         t = sv.strip()
         if t.lower() in {"xiaobo_action", "xiaobo_action_v0", "action_v1", "xiaobo_action_v1.0"}:
             t = "xiaobo_action_v1"
+        # Some providers/models emit semantic versions like "1.0.0".
+        if re.fullmatch(r"[0-9]+(\.[0-9]+)*", t) or re.fullmatch(r"v[0-9]+(\.[0-9]+)*", t.lower()):
+            t = "xiaobo_action_v1"
         if t.lower().startswith("xiaobo_action"):
             t = "xiaobo_action_v1"
         obj["schema_version"] = t
@@ -188,7 +191,21 @@ def normalize_xiaobo_action(obj: Dict[str, Any], *, task_id: str) -> Dict[str, A
         if isinstance(art, dict):
             fmt = art.get("format")
             if isinstance(fmt, str):
-                art["format"] = fmt.strip().lower().lstrip(".")
+                f0 = fmt.strip().lower().lstrip(".")
+                # Handle MIME-ish formats like "text/html" or "text/html; charset=utf-8".
+                f0 = f0.split(";", 1)[0].strip()
+                mime_map = {
+                    "text/html": "html",
+                    "application/xhtml+xml": "html",
+                    "text/plain": "txt",
+                    "text/markdown": "md",
+                    "application/json": "json",
+                    "text/css": "css",
+                    "application/javascript": "js",
+                    "text/javascript": "js",
+                }
+                alias_map = {"htm": "html", "markdown": "md", "plaintext": "txt"}
+                art["format"] = alias_map.get(mime_map.get(f0, f0), mime_map.get(f0, f0))
 
     return obj
 
@@ -206,8 +223,10 @@ def validate_xiaobo_action(obj: Dict[str, Any]) -> Tuple[bool, str]:
     err = require_keys(obj, ["schema_version", "task_id", "result_type"])
     if err:
         return False, err
-    if obj.get("schema_version") != "xiaobo_action_v1":
-        return False, f"schema_version mismatch (got {obj.get('schema_version')})"
+    # NOTE: Do not hard-fail on schema_version value here.
+    # We normalize common variants to "xiaobo_action_v1" upstream, but validation should
+    # focus on required fields and shapes to reduce brittle failures caused by providers
+    # returning semantic versions (e.g. "1.0.0").
     if not is_str(obj.get("task_id")):
         return False, "task_id must be string"
     result_type = obj.get("result_type")

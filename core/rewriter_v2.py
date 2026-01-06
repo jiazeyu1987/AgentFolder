@@ -13,6 +13,7 @@ from core.doctor import run_doctor
 from core.reporting import generate_plan_report
 from core.runtime_config import get_runtime_config
 from core.util import ensure_dir, utc_now_iso
+from core.state_machine.task_status import transition_task_status
 
 
 @dataclass(frozen=True)
@@ -415,20 +416,42 @@ def apply_rewrite(conn: sqlite3.Connection, patch_plan: Dict[str, Any], *, dry_r
                     parts = max(2, parts)
 
                     # Deactivate any CHECKs bound to this ACTION to avoid invalid bindings after conversion.
-                    conn.execute(
+                    chk_rows = conn.execute(
                         """
-                        UPDATE task_nodes
-                        SET status='ABANDONED', blocked_reason=NULL, review_target_task_id=NULL, updated_at=?
-                        WHERE plan_id=? AND node_type='CHECK' AND review_target_task_id = ?
+                        SELECT task_id
+                        FROM task_nodes
+                        WHERE plan_id=? AND node_type='CHECK' AND review_target_task_id = ? AND active_branch = 1
                         """,
+                        (plan_id, parent_id),
+                    ).fetchall()
+                    for cr in chk_rows:
+                        transition_task_status(
+                            conn,
+                            plan_id=str(plan_id),
+                            task_id=str(cr["task_id"]),
+                            to_status="ABANDONED",
+                            blocked_reason=None,
+                            workflow="RUN",
+                            source="rewriter_v2",
+                            payload={"reason": "rewrite_parent_action_to_goal"},
+                        )
+                    conn.execute(
+                        "UPDATE task_nodes SET review_target_task_id=NULL, blocked_reason=NULL, updated_at=? WHERE plan_id=? AND node_type='CHECK' AND review_target_task_id = ?",
                         (_now(), plan_id, parent_id),
                     )
 
                     # Convert parent ACTION -> GOAL (keeps task_id so existing edges remain).
-                    conn.execute(
-                        "UPDATE task_nodes SET node_type='GOAL', status='PENDING', blocked_reason=NULL, updated_at=? WHERE task_id=?",
-                        (_now(), parent_id),
+                    transition_task_status(
+                        conn,
+                        plan_id=str(plan_id),
+                        task_id=str(parent_id),
+                        to_status="PENDING",
+                        blocked_reason=None,
+                        workflow="RUN",
+                        source="rewriter_v2",
+                        payload={"reason": "rewrite_parent_action_to_goal"},
                     )
+                    conn.execute("UPDATE task_nodes SET node_type='GOAL', blocked_reason=NULL, updated_at=? WHERE task_id=?", (_now(), parent_id))
 
                     # Create child ACTIONs + their CHECKs + DECOMPOSE edges.
                     remaining = epd

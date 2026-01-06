@@ -92,6 +92,34 @@ export interface ConfigResp {
   paths: Record<string, string>;
 }
 
+export interface RunStatusResp {
+  alive: boolean;
+  pid: number | null;
+  job_id: string | null;
+  started_at: string | null;
+  reason?: string;
+  detail?: string;
+  last_finished?: {
+    created_at: string;
+    job_id: string | null;
+    severity: string | null;
+    message: string | null;
+    ok?: boolean | null;
+    reason?: string | null;
+    llm_calls?: number | null;
+  };
+  last_guardrail_hit?: {
+    created_at: string;
+    job_id: string | null;
+    severity: string | null;
+    message: string | null;
+    guardrail?: string | null;
+    limit?: number | null;
+    llm_calls?: number | null;
+  };
+  last_finished_error?: string;
+}
+
 export type RuntimeConfigPatch = {
   max_decomposition_depth?: number;
   one_shot_threshold_person_days?: number;
